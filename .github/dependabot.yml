@@ -4,6 +4,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # These refs select the compiler, including upstream future-version tags.
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions:
         patterns: ['*']

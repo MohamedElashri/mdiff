@@ -5,6 +5,7 @@
 ## [0.1.0] - Unreleased
 
 ### Added
+- Automatic macOS and Linux installation and updates.
 
 - Native code review for macOS and Linux.
 - Working-tree, branch, commit, and range-diff comparisons.

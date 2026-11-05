@@ -1,5 +1,5 @@
 """Collect the desktop dependency license files present in the local Cargo/npm cache.
-Run after compiling on the target platform; upstream engine notices ship separately.
+Run after compiling on the target platform; all distribution notices are consolidated in LICENCE.md.
 """
 from pathlib import Path
 import json, tomllib, os
@@ -8,7 +8,7 @@ engine = tomllib.loads((root/'vendor/diffle/Cargo.lock').read_text())
 known = {(p['name'],p['version']) for p in engine['package']}
 lock = tomllib.loads((root/'src-tauri/Cargo.lock').read_text())
 registries = list((Path(os.environ.get('CARGO_HOME', str(Path.home()/'.cargo')))/'registry/src').glob('*'))
-output = ['# mdiff desktop dependency notices\n\nThe Diffle engine and its dependencies are documented separately in THIRD_PARTY_NOTICES.md. This supplementary inventory includes desktop build dependencies as well as runtime dependencies.\n']
+output = ['# mdiff desktop dependency notices\n\nThe engine dependency licences appear above. This supplementary inventory includes desktop build dependencies as well as runtime dependencies.\n']
 for package in lock['package']:
     key = package['name'], package['version']
     if key in known or 'source' not in package: continue
@@ -29,4 +29,9 @@ for name in font_names + ['@tauri-apps/api','@tauri-apps/plugin-dialog','@tauri-
     output.append(f'\n## {name} {metadata["version"]}\n\nLicense: {metadata.get("license", "See package")}\n')
     for path in directory.glob('LICENSE*'):
         if path.is_file(): output.append(path.read_text(errors='replace')+'\n')
-(root/'NATIVE_THIRD_PARTY_NOTICES.md').write_text('\n'.join(output))
+licence = root / 'LICENCE.md'
+text = licence.read_text()
+start, end = '<!-- desktop-licenses:start -->', '<!-- desktop-licenses:end -->'
+prefix, remainder = text.split(start, 1)
+_, suffix = remainder.split(end, 1)
+licence.write_text(prefix + start + '\n' + '\n'.join(output) + '\n' + end + suffix)

@@ -1,25 +1,23 @@
 # mdiff
 
-Native code review for macOS and Linux. Open a repository, review changes, and leave feedback—all in one desktop window.
+mdiff is a native code review app for macOS and Linux. Review local changes, GitHub pull requests, and GitLab merge requests with split or unified diffs, threaded feedback, code navigation, and customizable themes and fonts.
 
 [![CI](https://github.com/MohamedElashri/mdiff/actions/workflows/check.yml/badge.svg)](https://github.com/MohamedElashri/mdiff/actions/workflows/check.yml)
 [![Release](https://github.com/MohamedElashri/mdiff/actions/workflows/release.yml/badge.svg)](https://github.com/MohamedElashri/mdiff/actions/workflows/release.yml)
 [![Version](https://img.shields.io/badge/version-0.1.0--unreleased-blue)](CHANGELOG.md)
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENCE.md)
 
 ![mdiff reviewing a feature branch in the native macOS app](assets/demo.png)
 
-## Features
+## Quick start
 
-- Split and unified diffs for working changes, branches, commits, and range-diffs.
-- GitHub pull requests and GitLab merge requests, including self-managed hosts.
-- Threaded comments, review drafts, and agent prompt export.
-- Code navigation, search, dependency graphs, and image comparisons.
-- 40 themes, independent app/code fonts, and compact layouts.
+Install or update the latest release:
 
-## Get started
+```sh
+curl -fsSL https://raw.githubusercontent.com/MohamedElashri/mdiff/main/install.sh | bash
+```
 
-**v0.1.0 is in preparation.** Packages will be available from [Releases](https://github.com/MohamedElashri/mdiff/releases).
+Installs to `~/Applications` on macOS or `~/.local/bin` on Linux, with an application menu entry. Supports Apple Silicon, Intel Macs, and Linux x86_64 (Ubuntu 24.04 or compatible, with FUSE 2). Downloads are checksum-verified. **Installation requires the first published release.** [Manual downloads](https://github.com/MohamedElashri/mdiff/releases).
 
 Open mdiff, choose **Open repository**, and select a Git folder. Use **New review** for another comparison or a PR/MR URL. Configure appearance and connections in **Preferences**; press `?` for review shortcuts.
 
@@ -37,8 +35,10 @@ npm run tauri build    # desktop packages
 
 ## License
 
-[GPL-3.0-only](LICENSE). Built on [Diffle](https://github.com/moritzwilksch/diffle), with its Apache-2.0 license and [attribution](vendor/diffle/MDIFF-PROVENANCE.md) retained. Dependencies retain their respective licenses.
+[GPL-3.0-only](LICENCE.md).
 
-Releases are published from `v<version>` tags after CI passes. Tags must match the app version; packages and checksums use the matching changelog entry.
+## Releases
 
-Action dependencies use Sanad and `.github/workflows/actions.lock`. After workflow edits, run `sanad sync --write` and `sanad check`.
+Push a `v<version>` tag matching the app version to run CI and publish packages, the installer, and checksums using the changelog entry. Prerelease tags are marked as prereleases.
+
+Action dependencies use Sanad and `actions.lock`. After workflow edits, run `sanad sync --write` and `sanad check`.

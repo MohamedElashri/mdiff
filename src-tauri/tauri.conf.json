@@ -36,11 +36,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../vendor/diffle/LICENSE": "licenses/diffle-LICENSE",
-      "../vendor/diffle/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
-      "../vendor/diffle/MDIFF-PROVENANCE.md": "licenses/MDIFF-PROVENANCE.md",
-      "../NATIVE_THIRD_PARTY_NOTICES.md": "licenses/NATIVE_THIRD_PARTY_NOTICES.md",
-      "../LICENSE": "licenses/mdiff-LICENSE"
+      "../LICENCE.md": "licenses/LICENCE.md"
     },
     "license": "GPL-3.0-only"
   }
