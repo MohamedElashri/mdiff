@@ -2,7 +2,7 @@
 
 <!-- Keep entries concise and user-facing. Use Added, Changed, and Fixed bullets only. -->
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-05
 
 ### Added
 
