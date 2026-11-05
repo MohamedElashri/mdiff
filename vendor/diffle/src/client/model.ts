@@ -75,6 +75,16 @@ export function patchBatches(
   let batch: string[] = [];
   let lines = 0;
   for (const p of order) {
+    // An explicitly selected file gets an interactive request, independent of bulk loading.
+    if (priority.has(p)) {
+      if (batch.length) {
+        batches.push(batch);
+        batch = [];
+        lines = 0;
+      }
+      batches.push([p]);
+      continue;
+    }
     const n = linesOf(byPath.get(p)!);
     if (batch.length > 0 && (batch.length >= PATCH_BATCH_FILES || lines + n > PATCH_BATCH_LINES)) {
       batches.push(batch);

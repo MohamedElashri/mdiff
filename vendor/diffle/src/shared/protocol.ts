@@ -408,8 +408,25 @@ export type Moved = z.infer<typeof MovedSchema>;
 /** Body of `POST /api/patch`: the changed files whose patches to return, concatenated. Unknown paths are skipped. */
 export const PatchRequestSchema = z.object({
   paths: z.string().array().max(200),
+  version: z.number().int().optional(),
 });
 export type PatchRequest = z.infer<typeof PatchRequestSchema>;
+
+/** Bounded UTF-8 patch chunks, pinned to one snapshot and content digest. */
+export const PatchPageRequestSchema = z.object({
+  path: z.string(),
+  version: z.number().int(),
+  offset: z.number().int().nonnegative().optional(),
+  digest: z.string().optional(),
+});
+export const PatchPageResponseSchema = z.object({
+  version: z.number().int(),
+  patch: z.string(),
+  next: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  digest: z.string(),
+  done: z.boolean(),
+});
 
 export const FileResponseSchema = z.object({
   path: z.string(),
@@ -569,7 +586,8 @@ export type RefsResponse = z.infer<typeof RefsResponseSchema>;
 
 export const SearchMatchSchema = z.object({
   path: z.string(),
-  /** 1-based line on the new side. */
+  /** Side and 1-based line in the reviewed file. */
+  side: SideSchema.optional(),
   line: z.number().int(),
   text: z.string(),
 });
@@ -580,7 +598,7 @@ export const SearchScopeSchema = z.enum(['file', 'diff', 'repo']);
 export type SearchScope = z.infer<typeof SearchScopeSchema>;
 
 /** Whether search includes whole files or only new-side diff hunks and their context. */
-export const SearchContentSchema = z.enum(['diff', 'full']);
+export const SearchContentSchema = z.enum(['diff', 'full', 'added', 'removed', 'both']);
 export type SearchContent = z.infer<typeof SearchContentSchema>;
 
 export const SearchResponseSchema = z.object({
@@ -657,7 +675,9 @@ export type LspLocation = z.infer<typeof LspLocationSchema>;
  * `POST /api/lsp/hover`. `ownerOnly` asks the file's own server alone: a server joining the
  * language, such as Tailwind's, adds notes for markup that read as noise on a declaration.
  */
-export const LspHoverRequestSchema = LspPositionSchema.extend({ ownerOnly: z.boolean().optional() });
+export const LspHoverRequestSchema = LspPositionSchema.extend({
+  ownerOnly: z.boolean().optional(),
+});
 export type LspHoverRequest = z.infer<typeof LspHoverRequestSchema>;
 
 /** One language server process, as its bridge sees it. */
@@ -721,7 +741,9 @@ export type LspLogEntry = z.infer<typeof LspLogEntrySchema>;
 
 /** `GET /api/lsp/log?server=<command>`: the retained lines of one server, oldest first. */
 export const LspLogQuerySchema = z.object({ server: z.string().min(1) });
-export const LspLogResponseSchema = z.object({ entries: LspLogEntrySchema.array() });
+export const LspLogResponseSchema = z.object({
+  entries: LspLogEntrySchema.array(),
+});
 export type LspLogResponse = z.infer<typeof LspLogResponseSchema>;
 
 /**
@@ -850,7 +872,10 @@ export const LspSymbolSchema = z.object({
 export type LspSymbol = z.infer<typeof LspSymbolSchema>;
 
 /** `GET /api/lsp/symbols`: a file's outline with `path`, else the repository's symbols matching `q`. */
-export const LspSymbolsResponseSchema = z.object({ symbols: LspSymbolSchema.array(), inconclusive });
+export const LspSymbolsResponseSchema = z.object({
+  symbols: LspSymbolSchema.array(),
+  inconclusive,
+});
 export type LspSymbolsResponse = z.infer<typeof LspSymbolsResponseSchema>;
 
 /** A changed symbol carries its change; a `consumer` is unchanged code that uses one. */
@@ -993,13 +1018,20 @@ export const ConfigUpdateSchema = z.object({
 });
 export type ConfigUpdate = z.infer<typeof ConfigUpdateSchema>;
 export const ResolvedRequestSchema = z.object({ resolved: z.boolean() });
-export const ViewedBulkRequestSchema = z.object({ entries: ViewedEntrySchema.array() });
-export const FileQuerySchema = z.object({ path: z.string().min(1), rev: SideSchema });
+export const ViewedBulkRequestSchema = z.object({
+  entries: ViewedEntrySchema.array(),
+});
+export const FileQuerySchema = z.object({
+  path: z.string().min(1),
+  rev: SideSchema,
+});
 /**
  * `GET /api/image`: one side of a file as image bytes. The server answers 404 unless `key` is that side's
  * `imageKey` in its current snapshot, the bytes are still the ones the key names, and they are a raster image.
  */
-export const ImageQuerySchema = FileQuerySchema.extend({ key: z.string().min(1) });
+export const ImageQuerySchema = FileQuerySchema.extend({
+  key: z.string().min(1),
+});
 
 /**
  * Names the bytes of one side of `path`, or null when the side has no name: a changed file's blob on that
@@ -1020,7 +1052,10 @@ const offsetSchema = z
   .regex(/^[0-9]+$/)
   .transform(Number)
   .pipe(z.number().int().nonnegative());
-export const LastCommitsQuerySchema = z.object({ oldOffset: offsetSchema, newOffset: offsetSchema });
+export const LastCommitsQuerySchema = z.object({
+  oldOffset: offsetSchema,
+  newOffset: offsetSchema,
+});
 const flagSchema = z
   .enum(['0', '1'])
   .optional()
@@ -1042,10 +1077,20 @@ export type SymbolsQuery = z.infer<typeof SymbolsQuerySchema>;
  * `GET /api/lsp/graph`: `all` lifts the cap on changed symbols; `scope`, a folder without its
  * trailing slash, graphs only the changed files under it, whose dependents may live anywhere.
  */
-export const GraphQuerySchema = z.object({ all: z.literal('1').optional(), scope: z.string().min(1).optional() });
+export const GraphQuerySchema = z.object({
+  all: z.literal('1').optional(),
+  scope: z.string().min(1).optional(),
+  phase: z.enum(['symbols', 'references']).optional(),
+  node: z.string().optional(),
+});
 export type GraphQuery = z.infer<typeof GraphQuerySchema>;
-export const ClearThreadsQuerySchema = z.object({ stale: z.literal('1').optional() });
-export const PatchQuerySchema = z.object({ path: z.string().optional() });
+export const ClearThreadsQuerySchema = z.object({
+  stale: z.literal('1').optional(),
+});
+export const PatchQuerySchema = z.object({
+  path: z.string().optional(),
+  version: z.string().optional(),
+});
 /**
  * What `GET /api/version` answers before anything else is ready: the server's release, so a
  * client can tell whether it speaks this server's contract.

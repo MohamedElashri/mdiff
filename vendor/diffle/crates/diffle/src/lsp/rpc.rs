@@ -70,6 +70,19 @@ pub struct Connection {
     inner: Arc<Inner>,
 }
 
+struct PendingRequest {
+    connection: Connection,
+    id: i64,
+}
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        let pending = self.connection.inner.pending.lock().unwrap().remove(&self.id).is_some();
+        if pending {
+            self.connection.notify("$/cancelRequest", json!({ "id": self.id }));
+        }
+    }
+}
+
 impl Connection {
     pub fn new(
         reader: impl AsyncRead + Unpin + Send + 'static,
@@ -98,6 +111,7 @@ impl Connection {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.inner.pending.lock().unwrap().insert(id, tx);
+        let _guard = PendingRequest { connection: self.clone(), id };
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
         let answer = async { rx.await.unwrap_or_else(|_| Err(RequestError::Closed("connection closed".into()))) };
@@ -106,10 +120,7 @@ impl Connection {
         }
         match tokio::time::timeout(timeout, answer).await {
             Ok(answer) => answer,
-            Err(_) => {
-                self.inner.pending.lock().unwrap().remove(&id);
-                Err(RequestError::Timeout(format!("{method} timed out after {} ms", timeout.as_millis())))
-            }
+            Err(_) => Err(RequestError::Timeout(format!("{method} timed out after {} ms", timeout.as_millis()))),
         }
     }
 

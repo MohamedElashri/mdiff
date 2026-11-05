@@ -2,6 +2,25 @@
 
 <!-- Keep entries concise and user-facing. Use Added, Changed, and Fixed bullets only. -->
 
+## [Unreleased]
+
+### Added
+
+- Unified build, test, and release preparation commands with Make.
+- Load change dependents and symbol uses on demand.
+- Search added or removed code and saved discussions.
+
+### Changed
+
+- Reuse cached patches and refresh edited files selectively.
+- Prioritize interactive work and load large diffs in bounded chunks.
+- Reduce language-server updates and bound document memory.
+- Store reviews transactionally and compare larger commit ranges.
+
+### Fixed
+
+- Follow renamed files and disambiguate comment anchors.
+
 ## [0.1.1] - 2026-11-05
 
 ### Changed

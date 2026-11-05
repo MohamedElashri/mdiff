@@ -450,3 +450,27 @@ async fn writes_the_config_file_and_its_directory_owner_only() {
     assert_eq!(mode(&s.repo.path.join("cfg")), 0o700);
     s.close().await;
 }
+
+#[tokio::test]
+async fn searches_added_removed_and_deleted_files_with_side_coordinates() {
+    let s = TestServer::start().await;
+    s.repo.write("edited.txt", "context\nneedle old\n");
+    s.repo.write("deleted.txt", "needle deleted\n");
+    s.repo.commit("search sides");
+    s.repo.write("edited.txt", "context\nneedle new\n");
+    std::fs::remove_file(s.repo.path.join("deleted.txt")).unwrap();
+    s.session.refresh().await;
+    let old = s.get("/api/search?q=needle&content=removed").await.json();
+    let matches = old["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 2);
+    assert!(matches.iter().all(|m| m["side"] == "old"));
+    assert!(matches.iter().any(|m| m["path"] == "deleted.txt" && m["line"] == 1));
+    let new = s.get("/api/search?q=needle&content=added").await.json();
+    assert_eq!(new["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(new["matches"][0]["side"], "new");
+    assert_eq!(new["matches"][0]["line"], 2);
+    let both = s.get("/api/search?q=needle&content=both").await.json();
+    assert_eq!(both["matches"].as_array().unwrap().len(), 3);
+    assert!(search_paths(&s, "q=context&content=both").await.is_empty());
+    s.close().await;
+}

@@ -56,6 +56,7 @@ pub struct Watcher {
 
 enum Signal {
     Changed,
+    Paths(Vec<PathBuf>),
     /// A directory appeared that a per-directory backend must start watching.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     NewDir(PathBuf),
@@ -67,6 +68,15 @@ impl Watcher {
         target: WatchTarget,
         debounce: Duration,
         on_dirty: impl Fn() + Send + Sync + 'static,
+    ) -> anyhow::Result<Self> {
+        Self::start_changes(target, debounce, move |_| on_dirty()).await
+    }
+
+    /// None means metadata, a rename, a lost event, or another change needing a full scan.
+    pub async fn start_changes(
+        target: WatchTarget,
+        debounce: Duration,
+        on_dirty: impl Fn(Option<HashSet<String>>) + Send + Sync + 'static,
     ) -> anyhow::Result<Self> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Signal>();
         let target = Arc::new(target);
@@ -84,16 +94,21 @@ impl Watcher {
         let (native_for_dirs, target_for_dirs) = (native.clone(), target.clone());
         let debounced = tokio::spawn(async move {
             while let Some(signal) = rx.recv().await {
+                let mut paths = Some(HashSet::new());
+                collect_paths(&signal, &target_for_dirs, &mut paths);
                 handle(signal, &native_for_dirs, &target_for_dirs);
                 // Each further signal restarts the quiet period.
                 loop {
                     match tokio::time::timeout(debounce, rx.recv()).await {
-                        Ok(Some(signal)) => handle(signal, &native_for_dirs, &target_for_dirs),
+                        Ok(Some(signal)) => {
+                            collect_paths(&signal, &target_for_dirs, &mut paths);
+                            handle(signal, &native_for_dirs, &target_for_dirs);
+                        }
                         Ok(None) => return,
                         Err(_) => break,
                     }
                 }
-                on_dirty();
+                on_dirty(paths);
             }
         });
         Ok(Self { _native: native, tasks: vec![meta, debounced] })
@@ -131,7 +146,17 @@ fn watch_worktree(
 ) -> anyhow::Result<RecommendedWatcher> {
     let filter = target.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
-        let Ok(event) = event else { return };
+        let event = match event {
+            Ok(event) => event,
+            Err(_) => {
+                let _ = tx.send(Signal::Changed);
+                return;
+            }
+        };
+        if event.need_rescan() {
+            let _ = tx.send(Signal::Changed);
+            return;
+        }
         if !counts(&event.kind) {
             return;
         }
@@ -142,7 +167,11 @@ fn watch_worktree(
             if cfg!(target_os = "linux") && matches!(event.kind, EventKind::Create(_)) && path.is_dir() {
                 let _ = tx.send(Signal::NewDir(path.clone()));
             }
-            let _ = tx.send(Signal::Changed);
+            let simple = matches!(
+                event.kind,
+                EventKind::Modify(ModifyKind::Data(_)) | EventKind::Access(AccessKind::Close(AccessMode::Write))
+            );
+            let _ = tx.send(if simple { Signal::Paths(vec![path.clone()]) } else { Signal::Changed });
         }
     })?;
     if cfg!(target_os = "linux") {
@@ -286,5 +315,56 @@ mod tests {
         assert!(!is_ignored(&target, Path::new("/repo")));
         assert!(is_git_lock(&target, &git_dir.join("refs/heads/main.lock")));
         assert!(!is_git_lock(&target, &at("Cargo.lock")));
+    }
+}
+
+fn collect_paths(signal: &Signal, target: &WatchTarget, paths: &mut Option<HashSet<String>>) {
+    let Some(set) = paths.as_mut() else { return };
+    if let (Signal::Paths(changed), WatchTarget::Worktree { root, .. }) = (signal, target) {
+        for path in changed {
+            let Ok(relative) = path.strip_prefix(root) else {
+                *paths = None;
+                return;
+            };
+            let Some(relative) = relative.to_str() else {
+                *paths = None;
+                return;
+            };
+            // Ignore/attribute edits affect other files, even when the file already existed.
+            if relative.split('/').any(|p| p == ".gitignore" || p == ".gitattributes") {
+                *paths = None;
+                return;
+            }
+            set.insert(relative.to_owned());
+            if set.len() > 200 {
+                *paths = None;
+                return;
+            }
+        }
+    } else {
+        *paths = None;
+    }
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+    #[test]
+    fn coalesces_paths_and_escalates_ambiguous_changes_to_full_scan() {
+        let target = WatchTarget::Worktree {
+            root: "/repo".into(),
+            git_dir: "/repo/.git".into(),
+            common_dir: "/repo/.git".into(),
+            ignored: Arc::new(Arc::default),
+        };
+        let mut paths = Some(HashSet::new());
+        collect_paths(&Signal::Paths(vec!["/repo/a".into(), "/repo/b".into(), "/repo/a".into()]), &target, &mut paths);
+        assert_eq!(paths.as_ref().unwrap().len(), 2);
+        collect_paths(&Signal::Paths(vec!["/repo/src/.gitattributes".into()]), &target, &mut paths);
+        assert!(paths.is_none());
+        paths = Some(HashSet::new());
+        collect_paths(&Signal::Changed, &target, &mut paths);
+        collect_paths(&Signal::Paths(vec!["/repo/a".into()]), &target, &mut paths);
+        assert!(paths.is_none());
     }
 }

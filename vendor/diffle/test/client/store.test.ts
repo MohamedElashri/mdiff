@@ -78,6 +78,7 @@ const api = {
   file: vi.fn(),
   patch: vi.fn(),
   patches: vi.fn(),
+  patchPages: vi.fn(),
   setResolved: vi.fn(),
   reply: vi.fn(),
   addThread: vi.fn(),
@@ -517,6 +518,10 @@ describe('client transitions', () => {
       order.push([p]);
       return patchesFor([p]);
     });
+    api.patchPages.mockImplementation(async (p: string) => {
+      order.push([p]);
+      return patchesFor([p]);
+    });
     api.file.mockResolvedValue({ contents: 'y\n', binary: false });
     useStore.setState({ activePath: 'z.txt' });
     api.snapshot.mockResolvedValueOnce({
@@ -528,7 +533,7 @@ describe('client transitions', () => {
       changed,
     });
     await useStore.getState().refreshSnapshot();
-    expect(order).toEqual([['z.txt', 'a.txt', 'c.txt', 'd.txt'], ['big.txt']]);
+    expect(order).toEqual([['z.txt'], ['a.txt', 'c.txt', 'd.txt'], ['big.txt']]);
     const s = useStore.getState();
     expect(s.loaded['big.txt']).toEqual(expect.objectContaining({ kind: 'diff' }));
     expect(s.loaded['huge.lock']).toEqual({ kind: 'oversized', lines: OVERSIZED_LINES + 1 });
@@ -2186,6 +2191,20 @@ describe('goToLine', () => {
 });
 
 describe('jumplist', () => {
+  it('searching removed code selects the deletion side', async () => {
+    api.patch.mockResolvedValue('diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-removed\n+added\n');
+    api.snapshot.mockResolvedValueOnce({ ...snap(1, 'working', ['a.py']), changed: [file({ path: 'a.py' })] });
+    await useStore.getState().refreshSnapshot();
+    api.search.mockResolvedValue({
+      query: 'removed',
+      matches: [{ path: 'a.py', line: 1, text: 'removed', side: 'old' }],
+      truncated: false,
+    });
+    await useStore.getState().runSearch('removed');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useStore.getState().selection?.range.side).toBe('deletions');
+  });
+
   it('a search jump records the origin once, so one Ctrl+o restores it', async () => {
     const at = (path: string) => file({ path, blob: `b-${path}` });
     api.patch.mockImplementation(
@@ -2312,6 +2331,21 @@ describe('change graph', () => {
     nodes: [{ id: path, name: 'f', kind: 12, path, line: 1, startLine: 1, endLine: 1, col: 0, status: 'modified' }],
     edges: [],
     cut: [],
+  });
+
+  it('loads symbols first and requests dependents only when explicitly expanded', async () => {
+    const { useGraph } = await import('@/client/graph/state.js');
+    useStore.setState({ snapshot: snap(1, 'working', ['a.py']) });
+    useGraph.setState({ scope: null, all: false, filters: { symbols: false, consumers: false, tests: false } });
+    api.lspGraph.mockResolvedValueOnce(graphOf('a.py')).mockResolvedValueOnce(graphOf('a.py'));
+    await useGraph.getState().reload();
+    expect(api.lspGraph).toHaveBeenCalledTimes(1);
+    expect(api.lspGraph.mock.calls[0]![0]).toEqual({ phase: 'symbols' });
+    await useGraph.getState().expand('a.py');
+    expect(api.lspGraph.mock.calls[1]![0]).toEqual({ node: 'a.py' });
+    expect(useGraph.getState().expanding).toBe(false);
+    expect(useGraph.getState().filters.consumers).toBe(true);
+    useGraph.setState({ filters: { symbols: false, consumers: false, tests: false } });
   });
 
   it('commits only the latest reload, so a folder picked while the graph loads keeps its graph', async () => {

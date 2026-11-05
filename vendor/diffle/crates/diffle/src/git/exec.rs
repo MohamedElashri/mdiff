@@ -38,6 +38,10 @@ pub struct ExecOptions<'a> {
 
 pub fn command(cwd: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
+    // Diff paths come from the snapshot allowlist, never from a user pathspec expression.
+    if args.first() == Some(&"diff") {
+        cmd.arg("--literal-pathspecs");
+    }
     cmd.args(CONFIG_ARGS).args(args).current_dir(cwd).env("GIT_OPTIONAL_LOCKS", "0").kill_on_drop(true);
     cmd
 }
@@ -53,6 +57,7 @@ fn spawn_error(args: &[&str], e: &std::io::Error) -> GitError {
 
 /// Runs git to completion and returns stdout; a non-zero exit outside `ok_codes` is a `GitError`.
 pub async fn exec_git(cwd: &Path, args: &[&str], opts: ExecOptions<'_>) -> Result<Vec<u8>, GitError> {
+    let _permit = crate::scheduler::acquire().await;
     let mut cmd = command(cwd, args);
     cmd.envs(opts.env.iter().copied())
         .stdin(if opts.input.is_some() { Stdio::piped() } else { Stdio::null() })
@@ -70,8 +75,40 @@ pub async fn exec_git(cwd: &Path, args: &[&str], opts: ExecOptions<'_>) -> Resul
             }
         }
     };
-    let (output, ()) = tokio::join!(child.wait_with_output(), feed);
-    let output = output.map_err(|e| spawn_error(args, &e))?;
+    // Large patches are explicitly bounded before buffering or IPC, not after allocation.
+    // Whole-review exports retain their existing limit-free path (no explicit pathspec).
+    let bounded = args.first() == Some(&"diff") && args.contains(&"--");
+    let (output, ()) = if bounded {
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let collect = async {
+            const LIMIT: u64 = 16 * 1024 * 1024;
+            let mut bytes = Vec::new();
+            (&mut stdout).take(LIMIT + 1).read_to_end(&mut bytes).await.map_err(|e| spawn_error(args, &e))?;
+            if bytes.len() as u64 > LIMIT {
+                let _ = child.kill().await;
+                return Err(GitError::refused(
+                    "Patch exceeds the 16 MiB preview limit; open this file in your editor",
+                    args,
+                ));
+            }
+            let status = child.wait().await.map_err(|e| spawn_error(args, &e))?;
+            Ok((status, bytes))
+        };
+        let drain = async {
+            let mut stderr = stderr;
+            let mut bytes = Vec::new();
+            let _ = (&mut stderr).take(64 * 1024).read_to_end(&mut bytes).await;
+            let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+            bytes
+        };
+        let (collected, stderr, ()) = tokio::join!(collect, drain, feed);
+        let (status, stdout) = collected?;
+        (std::process::Output { status, stdout, stderr }, ())
+    } else {
+        let (output, ()) = tokio::join!(child.wait_with_output(), feed);
+        (output.map_err(|e| spawn_error(args, &e))?, ())
+    };
     let code = output.status.code();
     if output.status.success() || code.is_some_and(|c| opts.ok_codes.contains(&c)) {
         return Ok(output.stdout);
@@ -103,6 +140,7 @@ pub async fn exec_records(
     max: usize,
     opts: RecordOptions<'_>,
 ) -> Result<Vec<String>, GitError> {
+    let _permit = crate::scheduler::acquire().await;
     let mut child = command(cwd, args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -192,4 +230,61 @@ pub fn split_z(buf: &[u8]) -> Vec<String> {
 
 pub fn text(buf: Vec<u8>) -> String {
     String::from_utf8(buf).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+/// Stream commit patches through Git's fingerprint process, retaining only its small output.
+pub async fn patch_fingerprints(cwd: &Path, shas: &[String]) -> Result<String, GitError> {
+    let _permit = crate::scheduler::acquire().await;
+    let mut args = vec![
+        "log",
+        "-p",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-walk",
+        "--no-show-signature",
+        "--format=%H",
+        "--end-of-options",
+    ];
+    args.extend(shas.iter().map(String::as_str));
+    args.push("--");
+    let mut producer = command(cwd, &args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| spawn_error(&args, &e))?;
+    let mut consumer = command(cwd, &["patch-id", "--stable"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| spawn_error(&["patch-id"], &e))?;
+    let mut source = producer.stdout.take().unwrap();
+    let mut sink = consumer.stdin.take().unwrap();
+    let output = consumer.stdout.take().unwrap();
+    let job = async {
+        let feed = async {
+            tokio::io::copy(&mut source, &mut sink).await?;
+            drop(sink);
+            Ok::<_, std::io::Error>(())
+        };
+        let drain = async {
+            let mut bytes = Vec::new();
+            output.take(1024 * 1024 + 1).read_to_end(&mut bytes).await?;
+            Ok::<_, std::io::Error>(bytes)
+        };
+        let (_, bytes) = tokio::try_join!(feed, drain)?;
+        let (a, b) = tokio::try_join!(producer.wait(), consumer.wait())?;
+        if !a.success() || !b.success() || bytes.len() > 1024 * 1024 {
+            return Err(std::io::Error::other("commit fingerprint generation failed"));
+        }
+        Ok::<_, std::io::Error>(text(bytes))
+    };
+    match tokio::time::timeout(Duration::from_secs(60), job).await {
+        Ok(Ok(out)) => Ok(out),
+        _ => Err(GitError::refused(
+            "Commit fingerprints exceeded their processing budget; compare a smaller range",
+            &["patch-id"],
+        )),
+    }
 }

@@ -45,8 +45,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
         run: |
-          python3 scripts/release-notes.py --tag "$RELEASE_TAG" --output release-notes.txt
-          python3 scripts/update-manifest.py
+          make release-manifest
           cp install.sh LICENCE.md release-artifacts/
           cd release-artifacts
           sha256sum ./* > SHA256SUMS

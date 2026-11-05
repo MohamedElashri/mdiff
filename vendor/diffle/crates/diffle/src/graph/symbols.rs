@@ -16,20 +16,45 @@ const NAMESPACE_KINDS: [i64; 8] = [2, 3, 4, 5, 10, 11, 19, 23];
 /// The interface-level symbols of a file outline: kinds in `INTERFACE_KINDS`, enclosed only by
 /// namespace kinds. Every other function here takes such an outline.
 pub fn interface(outline: Vec<LspSymbol>) -> Vec<LspSymbol> {
-    // Servers list a parent before its children, which settles equal spans: tsserver gives
-    // `const useStore = create(...)` and the callback inside it the same lines.
-    let encloses = |(i, a): (usize, &LspSymbol), (j, s): (usize, &LspSymbol)| {
-        i < j && a.start_line <= s.start_line && s.end_line <= a.end_line
-    };
-    let keep: Vec<bool> = outline
-        .iter()
-        .enumerate()
-        .map(|s| {
-            INTERFACE_KINDS.contains(&s.1.kind)
-                && outline.iter().enumerate().all(|a| !encloses(a, s) || NAMESPACE_KINDS.contains(&a.1.kind))
-        })
-        .collect();
-    outline.into_iter().zip(keep).filter_map(|(s, keep)| keep.then_some(s)).collect()
+    // Normal LSP outlines are parent-first, ordered, nested ranges. A stack handles
+    // those in linear time; malformed/overlapping outlines retain the exact fallback.
+    let mut stack: Vec<(i64, bool)> = Vec::new();
+    let mut keep = Vec::with_capacity(outline.len());
+    let mut previous = i64::MIN;
+    let mut ordered = true;
+    for symbol in &outline {
+        if symbol.start_line < previous {
+            ordered = false;
+            break;
+        }
+        previous = symbol.start_line;
+        while stack.last().is_some_and(|(end, _)| *end < symbol.start_line) {
+            stack.pop();
+        }
+        if stack.last().is_some_and(|(end, _)| *end < symbol.end_line) {
+            ordered = false;
+            break;
+        }
+        let blocked = stack.last().is_some_and(|(_, blocked)| *blocked);
+        keep.push(INTERFACE_KINDS.contains(&symbol.kind) && !blocked);
+        stack.push((symbol.end_line, blocked || !NAMESPACE_KINDS.contains(&symbol.kind)));
+    }
+    if !ordered {
+        keep = outline
+            .iter()
+            .enumerate()
+            .map(|(i, symbol)| {
+                INTERFACE_KINDS.contains(&symbol.kind)
+                    && outline.iter().enumerate().all(|(j, parent)| {
+                        j >= i
+                            || parent.start_line > symbol.start_line
+                            || parent.end_line < symbol.end_line
+                            || NAMESPACE_KINDS.contains(&parent.kind)
+                    })
+            })
+            .collect();
+    }
+    outline.into_iter().zip(keep).filter_map(|(symbol, keep)| keep.then_some(symbol)).collect()
 }
 
 /// The innermost symbol of an interface outline whose declaration, decorators included, spans `line`.
@@ -41,12 +66,44 @@ pub fn enclosing(outline: &[LspSymbol], line: i64) -> Option<&LspSymbol> {
 /// change, in outline order, with the changed lines it holds. A symbol is added when the patch adds
 /// every line of it.
 pub fn changed_symbols(outline: &[LspSymbol], changes: &NewSideChanges) -> Vec<Changed> {
-    let lines = changes.added.iter().flat_map(|&(start, end)| start..=end).chain(changes.removed_at.iter().copied());
-    let mut hits = vec![0; outline.len()];
-    for line in lines {
-        if let Some(s) = enclosing(outline, line) {
-            hits[outline.iter().position(|o| std::ptr::eq(o, s)).unwrap()] += 1;
+    // Sweep symbol boundaries instead of scanning every symbol for every changed line.
+    // The active set chooses the shortest enclosing span, with outline order breaking ties.
+    let mut events = Vec::with_capacity(outline.len() * 2);
+    for (i, symbol) in outline.iter().enumerate() {
+        if symbol.end_line < symbol.start_line {
+            continue;
         }
+        events.push((symbol.start_line, true, i));
+        events.push((symbol.end_line.saturating_add(1), false, i));
+    }
+    events.sort_unstable();
+    let mut active = std::collections::BTreeSet::new();
+    let mut hits = vec![0usize; outline.len()];
+    let mut removed = changes.removed_at.clone();
+    removed.sort_unstable();
+    let mut at = 0;
+    while at < events.len() {
+        let start = events[at].0;
+        while at < events.len() && events[at].0 == start {
+            let (_, add, i) = events[at];
+            let key = (outline[i].end_line - outline[i].start_line, i);
+            if add {
+                active.insert(key);
+            } else {
+                active.remove(&key);
+            }
+            at += 1;
+        }
+        let Some(&(end, _, _)) = events.get(at) else { break };
+        let Some(&(_, i)) = active.first() else { continue };
+        let first = changes.added.partition_point(|&(_, hi)| hi < start);
+        for &(lo, hi) in &changes.added[first..] {
+            if lo >= end {
+                break;
+            }
+            hits[i] += (hi.min(end - 1) - lo.max(start) + 1).max(0) as usize;
+        }
+        hits[i] += removed.partition_point(|&line| line < end) - removed.partition_point(|&line| line < start);
     }
     outline
         .iter()
@@ -127,5 +184,56 @@ mod tests {
         let route = LspSymbol { start_line: 3, ..symbol("route", 12, 4, 6) };
         let changes = NewSideChanges { added: vec![(3, 3)], ..Default::default() };
         assert_eq!(names(&changed_symbols(&interface(vec![route]), &changes)), [("route", GraphNodeStatus::Modified)]);
+    }
+}
+
+#[cfg(test)]
+mod indexed_tests {
+    use super::*;
+    fn symbol(i: usize, start: i64, end: i64) -> LspSymbol {
+        LspSymbol {
+            name: i.to_string(),
+            kind: 12,
+            container: None,
+            path: "a.rs".into(),
+            line: start,
+            start_line: start,
+            end_line: end,
+            col: 0,
+        }
+    }
+    #[test]
+    fn indexed_hits_match_line_by_line_reference_for_nested_and_overlapping_spans() {
+        for seed in 1..40 {
+            let outline: Vec<_> = (0..80)
+                .map(|i| {
+                    let start = ((i * 17 + seed * 13) % 120) as i64 + 1;
+                    symbol(i, start, start + ((i * 7 + seed) % 30) as i64)
+                })
+                .collect();
+            let changes = NewSideChanges {
+                added: vec![(3, 15), (30, 55), (80, 110)],
+                removed_at: vec![1, 15, 15, 50, 125],
+                ..Default::default()
+            };
+            let mut expected = vec![0; outline.len()];
+            for line in changes.added.iter().flat_map(|&(lo, hi)| lo..=hi).chain(changes.removed_at.iter().copied()) {
+                if let Some(s) = enclosing(&outline, line) {
+                    expected[outline.iter().position(|x| std::ptr::eq(x, s)).unwrap()] += 1;
+                }
+            }
+            let got = changed_symbols(&outline, &changes);
+            let got: Vec<_> = got.iter().map(|c| (c.symbol.name.parse::<usize>().unwrap(), c.lines)).collect();
+            let expected: Vec<_> = expected.into_iter().enumerate().filter(|(_, hits)| *hits > 0).collect();
+            assert_eq!(got, expected);
+        }
+    }
+    #[test]
+    fn very_large_change_counts_ranges_without_visiting_each_line() {
+        let outline = vec![symbol(0, 1, 1_000_000_000)];
+        let changes = NewSideChanges { added: vec![(1, 1_000_000_000)], ..Default::default() };
+        let start = std::time::Instant::now();
+        assert_eq!(changed_symbols(&outline, &changes)[0].lines, 1_000_000_000);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 }

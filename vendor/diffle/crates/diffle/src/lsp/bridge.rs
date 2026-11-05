@@ -143,6 +143,10 @@ impl LspBridge {
         self.documents.track(paths).await;
     }
 
+    pub async fn track_versions(&self, paths: &[String], versions: &std::collections::HashMap<String, String>) {
+        self.documents.track_versions(paths, versions).await;
+    }
+
     pub async fn document_symbols(&self, path: &str) -> Result<LspSymbolsResponse> {
         let origin = self.document(path)?;
         let params = json!({ "textDocument": { "uri": self.documents.uri(&origin) } });

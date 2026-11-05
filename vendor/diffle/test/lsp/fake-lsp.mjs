@@ -77,9 +77,10 @@ function handle(msg) {
         if (!section?.dynamicRegistration) process.exit(5);
       }
       return reply(msg.id, {
-        capabilities: Object.fromEntries(
-          offers.filter((f) => !registers.includes(f)).map((f) => [`${f}Provider`, true]),
-        ),
+        capabilities: {
+          ...Object.fromEntries(offers.filter((f) => !registers.includes(f)).map((f) => [`${f}Provider`, true])),
+          textDocumentSync: Number(process.env.FAKE_LSP_SYNC ?? '1'),
+        },
       });
     case 'initialized':
       if (!registers.length) return;
@@ -108,9 +109,27 @@ function handle(msg) {
     case 'textDocument/didOpen':
       docs.set(msg.params.textDocument.uri, msg.params.textDocument.text);
       return log(`open ${base(msg.params.textDocument.uri)} v${msg.params.textDocument.version}`);
-    case 'textDocument/didChange':
-      docs.set(msg.params.textDocument.uri, msg.params.contentChanges[0].text);
-      return log(`change ${base(msg.params.textDocument.uri)} v${msg.params.textDocument.version}`);
+    case 'textDocument/didChange': {
+      const uri = msg.params.textDocument.uri;
+      for (const change of msg.params.contentChanges) {
+        const text = docs.get(uri) ?? '';
+        const offset = (p) =>
+          text
+            .split('\n')
+            .slice(0, p.line)
+            .reduce((n, line) => n + line.length + 1, 0) + p.character;
+        docs.set(
+          uri,
+          change.range
+            ? text.slice(0, offset(change.range.start)) + change.text + text.slice(offset(change.range.end))
+            : change.text,
+        );
+        if (change.range) log(`incremental ${base(uri)}`);
+      }
+      return log(`change ${base(uri)} v${msg.params.textDocument.version}`);
+    }
+    case 'test/document':
+      return reply(msg.id, docs.get(msg.params.uri));
     case 'textDocument/didClose':
       docs.delete(msg.params.textDocument.uri);
       return log(`close ${base(msg.params.textDocument.uri)}`);

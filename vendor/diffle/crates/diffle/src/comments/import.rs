@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 use serde_json::{Map, Value};
 
 use super::anchor::anchor_path;
-use super::store::{CommentStore, new_thread, read_store_file, write_store_file};
+use super::store::{CommentStore, new_thread, read_set, write_set};
 use crate::error::{Error, Result};
 use crate::persist::with_file_lock;
 use crate::protocol::{CommentAnchor, CommentThread, Side, ThreadCreate, ThreadCreatePath};
@@ -185,8 +185,7 @@ impl CommentStore {
         source: &impl AnchorSource,
     ) -> Result<(Vec<CommentThread>, usize)> {
         with_file_lock(&self.file, || async {
-            let mut all = read_store_file(&self.file).await?;
-            let mut set = all.sets.remove(&self.key).unwrap_or_default();
+            let mut set = read_set(&self.file, &self.key).await?;
             let mut existing = set.threads.clone();
             let (mut added, mut skipped) = (Vec::new(), 0);
             for t in imports {
@@ -199,14 +198,27 @@ impl CommentStore {
                     Err(e) => return Ok(Err(e)),
                 };
                 let thread = new_thread(anchor, t.body);
+                if let CommentAnchor::Line { path, side, start_line, end_line, .. } = &thread.anchor {
+                    let mut context = super::anchor::Context::default();
+                    for line in (*start_line - 3).max(1)..*start_line {
+                        if let Some(text) = source.quote(path, *side, line, line).await? {
+                            context.before.push(text);
+                        }
+                    }
+                    for line in *end_line + 1..=*end_line + 3 {
+                        if let Some(text) = source.quote(path, *side, line, line).await? {
+                            context.after.push(text);
+                        }
+                    }
+                    set.contexts.insert(thread.id.clone(), context);
+                }
                 // Later imports in the same batch may duplicate this one.
                 existing.push(thread.clone());
                 added.push(thread);
             }
             if !added.is_empty() {
                 set.threads.extend(added.iter().cloned());
-                all.sets.insert(self.key.clone(), set);
-                write_store_file(&self.file, &all).await?;
+                write_set(&self.file, &self.key, set).await?;
             }
             Ok(Ok((added, skipped)))
         })

@@ -262,7 +262,10 @@ async fn keeps_a_file_thread_fresh_while_its_file_is_in_the_review() {
     let unchanged = comments.add_thread(file("same.txt"), "fine".into()).await.unwrap();
     let old_name = comments.add_thread(file("old.txt"), "gone".into()).await.unwrap();
     s.refresh().await;
-    assert_eq!(stale(&comments, &[&renamed.id, &unchanged.id, &old_name.id]).await, [false, false, true]);
+    assert_eq!(stale(&comments, &[&renamed.id, &unchanged.id, &old_name.id]).await, [false, false, false]);
+    assert!(
+        matches!(comments.get(&old_name.id).await.unwrap().unwrap().anchor, CommentAnchor::File { path } if path == "new.txt")
+    );
     // A file thread never has a line to remember.
     assert_eq!(comments.get(&old_name.id).await.unwrap().unwrap().stale_from_line, None);
     assert_eq!(comments.threads(&ThreadQuery::default()).await.unwrap().len(), 3);

@@ -133,6 +133,7 @@ export function CommentPanel() {
           <ButtonLabel text={clear.armed && 'Delete all?'} />
         </Button>
       </div>
+      <DiscussionSearch />
       {staleCount > 0 && (
         <div
           className="flex cursor-default items-center gap-1.5 border-b border-b-border px-2.5 py-1 text-[0.75rem] text-warn"
@@ -265,4 +266,90 @@ function cmp(a: CommentThread, b: CommentThread): number {
   if (a.anchor.path !== b.anchor.path) return a.anchor.path < b.anchor.path ? -1 : 1;
   const line = (x: CommentThread) => (x.anchor.kind === 'line' ? x.anchor.startLine : 0);
   return line(a) - line(b) || (a.messages[0]?.createdAt ?? 0) - (b.messages[0]?.createdAt ?? 0);
+}
+
+function DiscussionSearch() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Awaited<ReturnType<typeof api.searchHistory>>>([]);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const focusThread = useStore((s) => s.focusThread);
+  const openFile = useStore((s) => s.openFile);
+  const setShowResolved = useStore((s) => s.setShowResolved);
+  const threads = useStore((s) => s.threads);
+  const snapshot = useStore((s) => s.snapshot);
+  useEffect(() => {
+    let current = true;
+    setResults([]);
+    setError('');
+    setLoading(false);
+    if (!query.trim()) return;
+    const timer = setTimeout(() => {
+      setLoading(true);
+      void api
+        .searchHistory(query)
+        .then((found) => {
+          if (current) setResults(found);
+        })
+        .catch(() => {
+          if (current) setError('Could not search discussions.');
+        })
+        .finally(() => {
+          if (current) setLoading(false);
+        });
+    }, 250);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [query, snapshot, threads]);
+  return (
+    <div className="border-b border-border p-2">
+      <input
+        aria-label="Search saved discussions"
+        placeholder="Search saved discussions…"
+        value={query}
+        maxLength={500}
+        onChange={(e) => setQuery(e.target.value)}
+        className="w-full min-w-0 rounded-sm border border-border bg-canvas px-2 py-1 text-xs"
+      />
+      {query.trim() && (
+        <div className="max-h-60 overflow-auto text-xs" aria-live="polite">
+          {loading ? (
+            <p>Searching…</p>
+          ) : error ? (
+            <p>{error}</p>
+          ) : results.length === 0 ? (
+            <p>No discussions found.</p>
+          ) : (
+            results.map(({ review, current, thread }) => (
+              <div key={`${review}:${thread.id}`} className="border-t border-border py-2">
+                <p className="break-all text-muted">
+                  {current ? 'Current review' : review} · {thread.anchor.path}
+                </p>
+                <p className="break-words whitespace-pre-wrap">{thread.messages.map((m) => m.body).join('\n')}</p>
+                {current && (
+                  <Button
+                    variant="ghost"
+                    onClick={async () => {
+                      if (thread.resolved) setShowResolved(true);
+                      const anchor = thread.anchor;
+                      await openFile(
+                        anchor.path,
+                        anchor.kind === 'line' ? anchor.startLine : undefined,
+                        anchor.kind === 'line' ? anchor.side : undefined,
+                      );
+                      focusThread(thread.id);
+                    }}
+                  >
+                    Open thread
+                  </Button>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

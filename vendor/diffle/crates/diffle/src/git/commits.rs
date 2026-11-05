@@ -146,7 +146,14 @@ impl GitRepo {
     /// How `git range-diff` pairs the commits of two ranges, in its output order. Summary only, no
     /// patches. Ranges are given as hashes: range-diff learnt `--end-of-options` only in git 2.44.
     pub async fn range_diff(&self, old_range: &str, new_range: &str) -> Result<Vec<RangeDiffRow>, GitError> {
-        let out = self.text(&["range-diff", "-s", "--no-color", CREATION_FACTOR, old_range, new_range]).await?;
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.text(&["range-diff", "-s", "--no-color", CREATION_FACTOR, old_range, new_range]),
+        )
+        .await
+        .map_err(|_| {
+            GitError::refused("Commit pairing exceeded 30 seconds; compare a smaller range", &["range-diff"])
+        })??;
         Ok(out
             .lines()
             .filter_map(|line| RANGE_DIFF_ROW.captures(line))
@@ -161,16 +168,30 @@ impl GitRepo {
     /// Each commit's stable patch id, so two commits with the same change under different messages compare equal.
     pub async fn patch_ids(&self, shas: &[String]) -> Result<HashMap<String, String>, GitError> {
         let mut ids = HashMap::new();
-        if shas.is_empty() {
-            return Ok(ids);
+        let mut missing = std::collections::BTreeSet::new();
+        for sha in shas {
+            if let Some(id) = self.patches.get(&format!("patch-id:{sha}")) {
+                if !id.is_empty() {
+                    ids.insert(sha.clone(), id.to_string());
+                }
+            } else {
+                missing.insert(sha.clone());
+            }
         }
-        let mut args = vec!["log", "-p", "--no-walk", "--no-show-signature", "--format=%H", "--end-of-options"];
-        args.extend(shas.iter().map(String::as_str));
-        let patches = self.exec(&args, ExecOptions::default()).await?;
-        let opts = ExecOptions { input: Some(&patches), ..Default::default() };
-        for line in self.text_with(&["patch-id", "--stable"], opts).await?.lines() {
-            if let Some((id, sha)) = line.split_once(' ') {
-                ids.insert(sha.to_owned(), id.to_owned());
+        // Bounded argv and output, without buffering patch bodies in the app.
+        let missing: Vec<String> = missing.into_iter().collect();
+        for batch in missing.chunks(128) {
+            let out = super::exec::patch_fingerprints(&self.root, batch).await?;
+            let found: HashMap<String, String> = out
+                .lines()
+                .filter_map(|line| line.split_once(' ').map(|(id, sha)| (sha.to_owned(), id.to_owned())))
+                .collect();
+            for sha in batch {
+                let id = found.get(sha).cloned().unwrap_or_default();
+                self.patches.insert(format!("patch-id:{sha}"), id.clone());
+                if !id.is_empty() {
+                    ids.insert(sha.clone(), id);
+                }
             }
         }
         Ok(ids)

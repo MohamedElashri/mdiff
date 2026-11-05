@@ -16,6 +16,7 @@ use crate::protocol::language_of;
 /// Navigation opens whatever file a query lands in. Without a cap every path visited in a long
 /// review stays open in the server, growing its memory and per-save recheck cost.
 pub const MAX_UNTRACKED_OPEN: usize = 64;
+const MAX_OPEN_BYTES: usize = 32 * 1024 * 1024;
 
 /// New-side text of a snapshot path, or none when the snapshot does not expose it.
 pub type ReadFn = Arc<dyn Fn(String) -> BoxFuture<'static, Option<String>> + Send + Sync>;
@@ -54,6 +55,7 @@ struct State {
     syncing: HashMap<String, Shared<BoxFuture<'static, Result<()>>>>,
     /// Documents `track` opened on the snapshot's behalf; closed again when they leave the snapshot.
     tracked: HashSet<String>,
+    identities: HashMap<String, String>,
 }
 
 /// The diff's own files stay open for as long as they are in it, and the files queries land in
@@ -124,6 +126,10 @@ impl Documents {
     /// from the disk. Passes are serialized; the last set wins. Never fails: a path the snapshot
     /// cannot read is skipped.
     pub async fn track(&self, paths: &[String]) {
+        self.track_versions(paths, &HashMap::new()).await;
+    }
+
+    pub async fn track_versions(&self, paths: &[String], versions: &HashMap<String, String>) {
         let _turn = self.tracking.lock().await;
         let Ok(rpc) = self.process.connection().await else { return };
         let next: HashSet<String> = paths.iter().map(|p| (self.uri)(p)).collect();
@@ -133,6 +139,7 @@ impl Documents {
             gone.into_iter()
                 .filter(|uri| {
                     state.tracked.remove(uri);
+                    state.identities.remove(uri);
                     state.open.shift_remove(uri).is_some()
                 })
                 .collect()
@@ -141,8 +148,22 @@ impl Documents {
             rpc.notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
         }
         for path in paths {
+            let uri = (self.uri)(path);
+            let identity = versions.get(path).filter(|id| !id.is_empty());
+            {
+                let state = self.state.lock().unwrap();
+                if identity.is_some_and(|id| state.identities.get(&uri) == Some(id)) && state.open.contains_key(&uri) {
+                    continue;
+                }
+            }
             match self.sync(&Origin::Snapshot(path.clone())).await {
-                Ok(()) => drop(self.state.lock().unwrap().tracked.insert((self.uri)(path))),
+                Ok(()) => {
+                    let mut state = self.state.lock().unwrap();
+                    state.tracked.insert(uri.clone());
+                    if let Some(identity) = identity {
+                        state.identities.insert(uri, identity.clone());
+                    }
+                }
                 Err(Error::LspUnavailable(_)) => return,
                 // Not readable on the new side (deleted, binary, gone since the snapshot): nothing to open.
                 Err(_) => {}
@@ -183,6 +204,11 @@ async fn sync_now(
             Err(_) => return Err(Error::Invalid(format!("{origin} is no longer readable"))),
         },
     };
+    if text.len() > MAX_OPEN_BYTES {
+        return Err(Error::Invalid(
+            "File exceeds the 32 MiB language-server document budget; open it in your editor".into(),
+        ));
+    }
     let path = origin.to_string();
     let mut state = state.lock().unwrap();
     match state.open.shift_remove(uri) {
@@ -196,7 +222,13 @@ async fn sync_now(
         Some(mut doc) => {
             if doc.text != text {
                 doc.version += 1;
-                let change = json!({ "textDocument": { "uri": uri, "version": doc.version }, "contentChanges": [{ "text": text }] });
+                let edit = if process.incremental_sync() {
+                    incremental_edit(&doc.text, &text)
+                } else {
+                    json!({ "text": text })
+                };
+                let change =
+                    json!({ "textDocument": { "uri": uri, "version": doc.version }, "contentChanges": [edit] });
                 doc.text = text;
                 rpc.notify("textDocument/didChange", change);
             }
@@ -218,8 +250,68 @@ fn evict(state: &mut State, rpc: &Connection, max_open: usize) {
         .take(untracked.saturating_sub(max_open))
         .cloned()
         .collect();
+    let mut victims = victims;
+    let mut bytes: usize = state.open.values().map(|doc| doc.text.len()).sum();
+    for uri in &victims {
+        bytes = bytes.saturating_sub(state.open[uri].text.len());
+    }
+    for (uri, doc) in &state.open {
+        if bytes <= MAX_OPEN_BYTES {
+            break;
+        }
+        if state.syncing.contains_key(uri) || victims.contains(uri) {
+            continue;
+        }
+        bytes = bytes.saturating_sub(doc.text.len());
+        victims.push(uri.clone());
+    }
     for uri in victims {
         state.open.shift_remove(&uri);
         rpc.notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
+    }
+}
+
+/// A single minimal replacement, with UTF-16 positions and character-safe boundaries.
+fn incremental_edit(old: &str, new: &str) -> serde_json::Value {
+    let mut prefix = old.chars().zip(new.chars()).take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum::<usize>();
+    if old[..prefix].ends_with('\r') {
+        prefix -= 1;
+    }
+    let mut suffix = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(c, _)| c.len_utf8())
+        .sum::<usize>();
+    if suffix > 0 && old[..old.len() - suffix].ends_with('\r') && old[old.len() - suffix..].starts_with('\n') {
+        suffix -= 1;
+    }
+    let position = |offset: usize| {
+        let before = &old[..offset];
+        let line = before.bytes().filter(|b| *b == b'\n').count();
+        let character = before.rsplit('\n').next().unwrap_or_default().encode_utf16().count();
+        json!({ "line": line, "character": character })
+    };
+    json!({ "range": { "start": position(prefix), "end": position(old.len() - suffix) }, "text": &new[prefix..new.len()-suffix] })
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+    #[test]
+    fn edits_unicode_and_multiline_without_splitting_characters() {
+        assert_eq!(
+            incremental_edit("a😀old\nend", "a😀new\nend"),
+            json!({
+                "range": { "start": {"line":0,"character":3}, "end":{"line":0,"character":6}}, "text":"new"
+            })
+        );
+        assert_eq!(
+            incremental_edit("a\nb", "a\n"),
+            json!({
+                "range": { "start": {"line":1,"character":0}, "end":{"line":1,"character":1}}, "text":""
+            })
+        );
     }
 }

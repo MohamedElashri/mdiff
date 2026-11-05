@@ -6,6 +6,7 @@ pub mod exec;
 mod files;
 mod grep;
 mod patch;
+pub(crate) mod patch_cache;
 mod refs;
 
 use std::path::{Path, PathBuf};
@@ -36,6 +37,8 @@ pub struct GitRepo {
     /// Where this run fetches pull requests; unique, so two servers never share refs.
     pub review_refs: String,
     cat_file: CatFileBatch,
+    pub(crate) hashed_files: std::sync::atomic::AtomicUsize,
+    pub(crate) patches: patch_cache::PatchCache,
 }
 
 impl GitRepo {
@@ -61,6 +64,8 @@ impl GitRepo {
         let common_dir = lines.next().map_or_else(|| git_dir.clone(), |common| native_path(&root.join(native(common))));
         Ok(Self {
             cat_file: CatFileBatch::new(root.clone()),
+            hashed_files: std::sync::atomic::AtomicUsize::new(0),
+            patches: Default::default(),
             review_refs: format!("refs/diffle/{}", uuid::Uuid::new_v4()),
             root,
             git_dir,
@@ -78,6 +83,16 @@ impl GitRepo {
     /// How many `cat-file --batch` processes this repository has started. Diagnostics and tests.
     pub fn cat_file_spawns(&self) -> usize {
         self.cat_file.spawns()
+    }
+
+    /// Worktree entries hashed, for comparing incremental and full refresh work.
+    pub fn worktree_hashes(&self) -> usize {
+        self.hashed_files.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Retained patch bytes and cache hits, for performance diagnostics.
+    pub fn patch_cache_stats(&self) -> (usize, usize) {
+        self.patches.stats()
     }
 
     async fn exec(&self, args: &[&str], opts: ExecOptions<'_>) -> Result<Vec<u8>, GitError> {

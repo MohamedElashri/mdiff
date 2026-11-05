@@ -45,6 +45,64 @@ pub fn relocate(start: i64, end: i64, quoted: &str, contents: &str) -> Option<(i
     best.map(|(at, _)| (at, at + span as i64 - 1))
 }
 
+/// Persisted surrounding lines disambiguate repeated code without guessing by distance.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+pub(super) struct Context {
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+}
+
+pub(super) struct LineIndex {
+    lines: Vec<String>,
+    starts: std::collections::HashMap<String, Vec<usize>>,
+}
+impl LineIndex {
+    pub fn new(contents: &str) -> Self {
+        let lines: Vec<String> = split_lines(contents).into_iter().map(str::to_owned).collect();
+        let mut starts: std::collections::HashMap<String, Vec<usize>> = Default::default();
+        for (i, line) in lines.iter().enumerate() {
+            starts.entry(line.clone()).or_default().push(i);
+        }
+        Self { lines, starts }
+    }
+    pub fn context(&self, start: i64, end: i64) -> Context {
+        let start = (start - 1).max(0) as usize;
+        let end = (end.max(0) as usize).min(self.lines.len());
+        Context {
+            before: self.lines[start.saturating_sub(3)..start.min(self.lines.len())].to_vec(),
+            after: self.lines[end..(end + 3).min(self.lines.len())].to_vec(),
+        }
+    }
+    pub fn locate(&self, quoted: &str, context: Option<&Context>) -> Option<(i64, i64)> {
+        let quote = split_lines(quoted);
+        let first = quote.first()?;
+        let mut best = None;
+        let mut score = 0;
+        let mut tied = false;
+        for &i in self.starts.get(*first)? {
+            if i + quote.len() > self.lines.len()
+                || !self.lines[i..i + quote.len()].iter().zip(&quote).all(|(a, b)| a == b)
+            {
+                continue;
+            }
+            let at = i as i64 + 1;
+            let surrounding = self.context(at, at + quote.len() as i64 - 1);
+            let points = context.map_or(0, |c| {
+                c.before.iter().rev().zip(surrounding.before.iter().rev()).take_while(|(a, b)| a == b).count()
+                    + c.after.iter().zip(&surrounding.after).take_while(|(a, b)| a == b).count()
+            });
+            if best.is_none() || points > score {
+                best = Some((at, at + quote.len() as i64 - 1));
+                score = points;
+                tied = false;
+            } else if points == score {
+                tied = true;
+            }
+        }
+        if tied { None } else { best }
+    }
+}
+
 /// Text of a 1-based inclusive range, or none when the range does not fit the contents: the
 /// server refuses to quote lines that do not exist.
 pub fn quote_range(contents: &str, start: i64, end: i64) -> Option<String> {
@@ -140,5 +198,18 @@ mod tests {
         threads.sort_by(compare_threads);
         let ids: Vec<&str> = threads.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["file", "later-file", "line", "other", "z"]);
+    }
+}
+
+#[cfg(test)]
+mod indexed_tests {
+    use super::*;
+    #[test]
+    fn surrounding_context_distinguishes_repeated_blocks() {
+        let before = LineIndex::new("first\nrepeat\nend\nsecond\nrepeat\nlast\n");
+        let context = before.context(5, 5);
+        let after = LineIndex::new("inserted\nfirst\nrepeat\nend\nsecond\nrepeat\nlast\n");
+        assert_eq!(after.locate("repeat", Some(&context)), Some((6, 6)));
+        assert_eq!(after.locate("repeat", None), None);
     }
 }

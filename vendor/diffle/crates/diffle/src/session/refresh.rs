@@ -29,9 +29,30 @@ impl Session {
     /// behind the running one: a burst of writes yields two recomputes, not one per write, and the
     /// second sees all of them. Failures are logged, not returned: nobody asked for this one.
     pub fn refresh(self: &Arc<Self>) -> Pending {
+        self.refresh_changed(None)
+    }
+
+    pub(super) fn refresh_changed(self: &Arc<Self>, paths: Option<std::collections::HashSet<String>>) -> Pending {
+        {
+            let mut dirty = self.dirty_paths.lock().unwrap();
+            match (&mut *dirty, paths) {
+                (Some(all), Some(paths)) => all.extend(paths),
+                _ => *dirty = None,
+            }
+        }
         let this = self.clone();
         self.coalesced(&self.queued_refresh, "refresh", async move {
             *this.queued_refresh.lock().unwrap() = None;
+            let paths = this.dirty_paths.lock().unwrap().replace(Default::default());
+            if let Some(paths) = paths {
+                let a = this.active()?;
+                if let Some(snap) = a.snapshotter.refresh_paths(&paths, this.next_version()).await? {
+                    this.relocate_changed_comments(&a, &snap, &paths).await?;
+                    this.hub.broadcast(ServerMessage::Snapshot { version: snap.version });
+                    this.announce(&snap);
+                    return Ok(());
+                }
+            }
             this.recompute().await.map(drop)
         })
     }
@@ -140,6 +161,7 @@ impl Session {
             self.hub.broadcast(ServerMessage::Snapshot { version: snap.version });
             return Ok(snap);
         }
+        self.repo.patches.clear();
         a.snapshotter.invalidate(self.next_version());
         self.publish(&a).await
     }

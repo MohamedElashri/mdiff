@@ -19,7 +19,9 @@ impl Session {
         let (session, active) = (Arc::downgrade(self), Arc::downgrade(a));
         if a.follows != Live::Worktree {
             let target = WatchTarget::Refs { git_dir: repo.git_dir.clone(), common_dir: repo.common_dir.clone() };
-            return Ok(Watcher::start(target, DEBOUNCE, move || on_dirty(&session, &active, None)).await?);
+            return Ok(
+                Watcher::start_changes(target, DEBOUNCE, move |paths| on_dirty(&session, &active, None, paths)).await?
+            );
         }
         let ignored: Ignored = Arc::default();
         refresh_ignored(self, &ignored).await?;
@@ -30,7 +32,8 @@ impl Session {
             common_dir: repo.common_dir.clone(),
             ignored: Arc::new(move || read.lock().unwrap().clone()),
         };
-        Ok(Watcher::start(target, DEBOUNCE, move || on_dirty(&session, &active, Some(&ignored))).await?)
+        Ok(Watcher::start_changes(target, DEBOUNCE, move |paths| on_dirty(&session, &active, Some(&ignored), paths))
+            .await?)
     }
 }
 
@@ -41,7 +44,7 @@ async fn refresh_ignored(session: &Session, ignored: &Ignored) -> Result<()> {
 }
 
 /// A change settled: recompute a followed review, or only tell clients that its refs moved.
-fn on_dirty(session: &Weak<Session>, active: &Weak<Active>, ignored: Option<&Ignored>) {
+fn on_dirty(session: &Weak<Session>, active: &Weak<Active>, ignored: Option<&Ignored>, paths: Option<HashSet<String>>) {
     let (Some(session), Some(a)) = (session.upgrade(), active.upgrade()) else { return };
     if !session.is_active(&a) {
         return;
@@ -50,7 +53,11 @@ fn on_dirty(session: &Weak<Session>, active: &Weak<Active>, ignored: Option<&Ign
         drop(session.check_moved(a));
         return;
     }
-    drop(session.refresh());
+    let full = paths.is_none();
+    drop(session.refresh_changed(paths));
+    if !full {
+        return;
+    }
     let Some(ignored) = ignored.cloned() else { return };
     // Queued behind the refresh, so `close` waits for its git process too.
     let this = session.clone();

@@ -98,10 +98,11 @@ impl Session {
             *next.watcher.lock().await = Some(self.start_watcher(&next).await?);
         }
         let prev = self.active.lock().unwrap().replace(next);
-        if let Some(prev) = prev
-            && let Some(watcher) = prev.watcher.lock().await.take()
-        {
-            watcher.close().await;
+        if let Some(prev) = prev {
+            prev.snapshotter.cancel_pending();
+            if let Some(watcher) = prev.watcher.lock().await.take() {
+                watcher.close().await;
+            }
         }
         self.announce(&snap);
         Ok(snap)

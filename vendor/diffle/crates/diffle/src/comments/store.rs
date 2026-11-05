@@ -1,13 +1,13 @@
-//! This mode's threads and viewed marks in `<gitDir>/diffle/comments.json`.
+//! Indexed, transactional threads and viewed marks in `<gitDir>/diffle/comments.sqlite`.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::anchor::{anchor_path, compare_threads};
+use super::anchor::compare_threads;
 use crate::error::{Error, Result};
 use crate::iterations::now_ms;
-use crate::persist::{with_file_lock, write_file_atomic};
+use crate::persist::with_file_lock;
 use crate::protocol::{CommentAnchor, CommentMessage, CommentThread, ThreadQuery, ThreadState, ViewedEntry};
 
 /// Viewed marks kept per path: the current one plus the newest previous, so `restale` is derivable.
@@ -16,6 +16,8 @@ const VIEWED_HISTORY: usize = 2;
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct SetData {
     #[serde(default)]
+    pub(super) contexts: BTreeMap<String, super::anchor::Context>,
+    #[serde(default)]
     pub(super) threads: Vec<CommentThread>,
     #[serde(default)]
     pub(super) viewed: Vec<ViewedEntry>,
@@ -23,14 +25,12 @@ pub(super) struct SetData {
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct StoreFile {
-    version: u8,
+    pub(super) version: u8,
     pub(super) sets: BTreeMap<String, SetData>,
 }
 
-/// Owns one key's set in `comments.json`. Nothing is cached: every read parses the file, and every
-/// mutation is a read-modify-write of fresh disk state under the file lock, touching only its own
-/// key. So any number of stores on one file (two servers on one repository, an old mode's store
-/// finishing a write while its replacement starts) see and keep each other's writes.
+/// One review's data. Writers serialize with a cross-process lock and commit changed rows in
+/// one SQLite transaction; readers use indexed queries and never parse other reviews.
 pub struct CommentStore {
     pub(super) file: PathBuf,
     pub(super) key: String,
@@ -38,7 +38,7 @@ pub struct CommentStore {
 
 impl CommentStore {
     pub async fn open(git_dir: &Path, key: &str) -> Result<Self> {
-        Ok(Self { file: git_dir.join("diffle").join("comments.json"), key: key.to_owned() })
+        Ok(Self { file: git_dir.join("diffle").join("comments.sqlite"), key: key.to_owned() })
     }
 
     pub fn key(&self) -> &str {
@@ -51,25 +51,41 @@ impl CommentStore {
 
     /// Threads matching `q` (every thread by default), ordered by path, line, then creation.
     pub async fn threads(&self, q: &ThreadQuery) -> Result<Vec<CommentThread>> {
-        let state = q.state.unwrap_or(ThreadState::All);
-        let mut threads: Vec<CommentThread> = self
-            .read()
-            .await?
-            .threads
-            .into_iter()
-            .filter(|t| match state {
-                ThreadState::Open => !t.resolved,
-                ThreadState::Resolved => t.resolved,
-                ThreadState::All => true,
-            })
-            .filter(|t| q.path.as_deref().is_none_or(|p| anchor_path(&t.anchor) == p))
-            .collect();
+        let resolved = match q.state.unwrap_or(ThreadState::All) {
+            ThreadState::Open => Some(false),
+            ThreadState::Resolved => Some(true),
+            ThreadState::All => None,
+        };
+        let mut threads = self.query_threads(q.path.clone(), resolved, None).await?;
         threads.sort_by(compare_threads);
         Ok(threads)
     }
 
+    async fn query_threads(
+        &self,
+        path: Option<String>,
+        resolved: Option<bool>,
+        id: Option<String>,
+    ) -> Result<Vec<CommentThread>> {
+        let (file, key) = (self.file.clone(), self.key.clone());
+        with_file_lock(&self.file, || async move {
+            tokio::task::spawn_blocking(move || {
+                super::database::threads(
+                    &super::database::connect(&file)?,
+                    &key,
+                    path.as_deref(),
+                    resolved,
+                    id.as_deref(),
+                )
+            })
+            .await?
+        })
+        .await
+        .map_err(Into::into)
+    }
+
     pub async fn get(&self, id: &str) -> Result<Option<CommentThread>> {
-        Ok(self.read().await?.threads.into_iter().find(|t| t.id == id))
+        Ok(self.query_threads(None, None, Some(id.to_owned())).await?.into_iter().next())
     }
 
     pub async fn add_thread(&self, anchor: CommentAnchor, body: String) -> Result<CommentThread> {
@@ -191,25 +207,35 @@ impl CommentStore {
         .await
     }
 
-    /// This key's set as on disk right now; empty when the file is absent. Malformed JSON fails.
-    async fn read(&self) -> Result<SetData> {
-        Ok(read_store_file(&self.file).await?.sets.remove(&self.key).unwrap_or_default())
+    /// Read one review under the same lock used by writers and legacy migration.
+    pub(super) async fn read(&self) -> Result<SetData> {
+        with_file_lock(&self.file, || async { read_set(&self.file, &self.key).await }).await.map_err(Into::into)
+    }
+
+    /// Search discussions across saved reviews; each result retains its review key for resuming.
+    pub async fn search_history(&self, query: &str) -> Result<Vec<(String, CommentThread)>> {
+        let file = self.file.clone();
+        let query = query.to_owned();
+        with_file_lock(&self.file, || async move {
+            tokio::task::spawn_blocking(move || super::database::search(&super::database::connect(&file)?, &query))
+                .await?
+        })
+        .await
+        .map_err(Into::into)
     }
 
     /// Locked read-modify-write: `f` edits this key's set as read from disk under the lock, other
-    /// keys pass through untouched, and the file is rewritten when `f` reports a change. A failing
+    /// keys remain untouched, and changed rows commit atomically when `f` reports a change. A failing
     /// `f` writes nothing; a failed write fails its caller only.
     async fn mutate<R>(&self, f: impl FnOnce(&mut SetData) -> Result<(R, bool)>) -> Result<R> {
         with_file_lock(&self.file, || async {
-            let mut all = read_store_file(&self.file).await?;
-            let mut set = all.sets.remove(&self.key).unwrap_or_default();
+            let mut set = read_set(&self.file, &self.key).await?;
             let (r, changed) = match f(&mut set) {
                 Ok(done) => done,
                 Err(e) => return Ok(Err(e)),
             };
             if changed {
-                all.sets.insert(self.key.clone(), set);
-                write_store_file(&self.file, &all).await?;
+                write_set(&self.file, &self.key, set).await?;
             }
             Ok(Ok(r))
         })
@@ -221,28 +247,21 @@ fn find_thread<'a>(set: &'a mut SetData, id: &str) -> Result<&'a mut CommentThre
     set.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| Error::NotFound(id.into()))
 }
 
-/// The file as stored, or an empty store when absent. Only the current format is read: any other
-/// shape reads as empty. Malformed JSON fails.
-pub(super) async fn read_store_file(file: &Path) -> anyhow::Result<StoreFile> {
-    let text = match tokio::fs::read_to_string(file).await {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(empty()),
-        Err(e) => return Err(e.into()),
-    };
-    let value: serde_json::Value = serde_json::from_str(&text)?;
-    if value.get("version").and_then(serde_json::Value::as_u64) != Some(3) || !value["sets"].is_object() {
-        return Ok(empty());
-    }
-    Ok(serde_json::from_value(value)?)
+pub(super) async fn read_set(file: &Path, key: &str) -> anyhow::Result<SetData> {
+    let (file, key) = (file.to_owned(), key.to_owned());
+    tokio::task::spawn_blocking(move || super::database::read(&super::database::connect(&file)?, &key)).await?
 }
 
-fn empty() -> StoreFile {
-    StoreFile { version: 3, sets: BTreeMap::new() }
-}
-
-/// Atomic and owner-only: the file quotes source lines.
-pub(super) async fn write_store_file(file: &Path, data: &StoreFile) -> anyhow::Result<()> {
-    write_file_atomic(file, &serde_json::to_string_pretty(data)?).await
+pub(super) async fn write_set(file: &Path, key: &str, set: SetData) -> anyhow::Result<()> {
+    let (file, key) = (file.to_owned(), key.to_owned());
+    tokio::task::spawn_blocking(move || {
+        let mut db = super::database::connect(&file)?;
+        let tx = db.transaction()?;
+        super::database::write(&tx, &key, &set)?;
+        tx.commit()?;
+        Ok(())
+    })
+    .await?
 }
 
 fn new_message(body: String) -> CommentMessage {

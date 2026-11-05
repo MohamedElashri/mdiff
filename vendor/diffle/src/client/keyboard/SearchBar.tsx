@@ -1,6 +1,6 @@
 import { twMerge } from 'tailwind-merge';
 import { Button, TOGGLE_ON } from '@/client/ui/Button.js';
-import { FileDiff, FileSearch, Link2, Search, WholeWord, X } from 'lucide-react';
+import { Link2, Search, WholeWord, X } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { useStore } from '@/client/store.js';
 
@@ -51,7 +51,6 @@ function SearchForm() {
     );
   }
   const fullFile = search.content[search.scope] === 'full';
-  const ScopeIcon = fullFile ? FileSearch : FileDiff;
   return (
     <form
       className="flex items-center gap-2 border-b border-b-border bg-surface px-2.5 py-1.5"
@@ -103,23 +102,22 @@ function SearchForm() {
       >
         .*
       </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        className={twMerge(
-          `rounded-sm border border-transparent px-1.5 py-[2px] font-mono text-[0.6875rem] leading-[normal] text-muted ${!fullFile ? '' : TOGGLE_ON}`,
-        )}
-        aria-label="Search full file"
-        aria-pressed={fullFile}
-        onClick={() => setSearchOptions({ content: fullFile ? 'diff' : 'full' })}
-        title={
-          fullFile
-            ? 'Searching full file; click to search diff + context'
-            : 'Searching diff + context; click to search full file'
+      <select
+        aria-label="Search content"
+        className="max-w-28 min-w-0 rounded-sm border border-border bg-canvas text-xs"
+        value={search.content[search.scope]}
+        onChange={(e) =>
+          setSearchOptions({
+            content: e.target.value as typeof search.content.file,
+          })
         }
       >
-        <ScopeIcon size="0.75rem" />
-      </Button>
+        <option value="diff">Diff + context</option>
+        <option value="added">Added</option>
+        <option value="removed">Removed</option>
+        <option value="both">Both sides</option>
+        <option value="full">Full files</option>
+      </select>
       <span className="min-w-17.5 text-right font-mono text-[0.75rem] leading-[normal] text-muted">
         {search.loading
           ? 'searching…'

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tokio::time::{Instant, timeout_at};
 
-use crate::comments::hunks::new_side_changes;
+use crate::comments::hunks::NewSideChanges;
 use crate::concurrency::map_limit;
 use crate::error::{Error, Result};
 use crate::lsp::pool::LspPool;
@@ -44,6 +44,19 @@ pub async fn build(
     cap: Option<usize>,
     scope: Option<&str>,
 ) -> Result<GraphResponse> {
+    build_phase(pool, snapshotter, snap, cap, scope, true, None).await
+}
+
+/// First return changed symbols; callers explicitly request references for all or one node.
+pub async fn build_phase(
+    pool: &LspPool,
+    snapshotter: &Arc<Snapshotter>,
+    snap: &Snapshot,
+    cap: Option<usize>,
+    scope: Option<&str>,
+    expand: bool,
+    selected: Option<&str>,
+) -> Result<GraphResponse> {
     let under = scope.map(|dir| format!("{dir}/"));
     let by = Instant::now() + BUDGET;
     let mut reasons = Vec::new();
@@ -56,18 +69,49 @@ pub async fn build(
         .map(|f| f.path.clone())
         .collect();
 
-    let moves = moved::Moves::of(&new_side_changes(&snapshotter.patch_all().await?));
-    let changed_files = map_limit(files, PARALLEL, |path| async move {
-        let patch = snapshotter.patch(&path).await?;
-        Ok::<_, Error>((outline(pool, &path, by).await, patch.map(|p| new_side_changes(&p)), path))
-    })
-    .await;
+    // Each patch is parsed once and shared with future graph passes. Include deleted files
+    // in move detection without concatenating another full-review patch allocation.
+    let all_files: Vec<String> = snap.changed.iter().filter(|f| !f.binary).map(|f| f.path.clone()).collect();
+    let mut changes = HashMap::new();
+    let mut combined = NewSideChanges::default();
+    let mut retained = 0usize;
+    for batch in all_files.chunks(4) {
+        if Instant::now() >= by || retained >= 16 * 1024 * 1024 {
+            reasons.push("Some files exceeded the analysis budget; links may be missing".into());
+            break;
+        }
+        let parsed = map_limit(batch.to_vec(), 4, |path| async move {
+            (path.clone(), timeout_at(by, snapshotter.changes(&path)).await)
+        })
+        .await;
+        for (path, result) in parsed {
+            match result {
+                Ok(Ok(change)) => {
+                    let size: usize =
+                        change.added_runs.iter().flatten().map(|(_, text)| text.len() + 64).sum::<usize>()
+                            + change.removed_runs.iter().flatten().map(|text| text.len() + 64).sum::<usize>();
+                    if retained + size > 16 * 1024 * 1024 {
+                        reasons.push("Some files exceeded the analysis budget; links may be missing".into());
+                        continue;
+                    }
+                    retained += size;
+                    combined.added_runs.extend(change.added_runs.clone());
+                    combined.removed_runs.extend(change.removed_runs.clone());
+                    changes.insert(path, change);
+                }
+                _ => reasons.push("Some files exceeded the analysis budget; links may be missing".into()),
+            }
+        }
+    }
+    let moves = moved::Moves::of(&combined);
+    drop(combined);
+    let changed_files = map_limit(files, PARALLEL, |path| async move { (outline(pool, &path, by).await, path) }).await;
     let mut outlines = HashMap::new();
     let mut changed = Vec::new();
     for file in changed_files {
-        let (outline, changes, path) = file?;
+        let (outline, path) = file;
         reasons.extend(outline.why);
-        let (Some(outline), Some(mut changes)) = (outline.found, changes) else { continue };
+        let (Some(outline), Some(mut changes)) = (outline.found, changes.remove(&path)) else { continue };
         moves.drop_from(&mut changes);
         changed.extend(symbols::changed_symbols(&outline, &changes));
         outlines.insert(path, outline);
@@ -80,8 +124,19 @@ pub async fn build(
     };
     let cut = cut.iter().map(|c| link::node(&c.symbol, link::node_id(&c.symbol), c.status, None)).collect();
 
+    if !expand {
+        let nodes = changed.iter().map(|c| link::node(&c.symbol, link::node_id(&c.symbol), c.status, None)).collect();
+        return Ok(GraphResponse { nodes, edges: Vec::new(), cut, inconclusive: reasons.into_iter().next() });
+    }
     let symbols: Vec<LspSymbol> = changed.iter().map(|c| c.symbol.clone()).collect();
-    let references = map_limit(symbols, PARALLEL, |symbol| async move { references(pool, &symbol, by).await }).await;
+    let references = map_limit(symbols, PARALLEL, |symbol| async move {
+        if selected.is_some_and(|id| id != link::node_id(&symbol) && id != symbol.path) {
+            Answer { found: Some(Vec::new()), why: None }
+        } else {
+            references(pool, &symbol, by).await
+        }
+    })
+    .await;
     let mut locations = Vec::with_capacity(references.len());
     for answer in references {
         reasons.extend(answer.why);

@@ -17,5 +17,5 @@ pub use language::*;
 pub use lsp::*;
 pub use snapshot::*;
 
-/** Mirrors `MAX_RANGE_COMMITS`: the commits a snapshot lists, and the most a range-diff takes. */
+/** Mirrors `MAX_RANGE_COMMITS`: the commits a snapshot lists, and the threshold for exhaustive Git pairing. */
 pub const MAX_RANGE_COMMITS: usize = 250;

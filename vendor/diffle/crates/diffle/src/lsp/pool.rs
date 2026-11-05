@@ -1,6 +1,6 @@
 //! The language servers of one run: started as snapshots name their languages, asked like an editor.
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -67,6 +67,9 @@ pub struct LspPool {
     resolved: Mutex<HashSet<LanguageId>>,
     closing: AtomicBool,
     publish: Mutex<Publish>,
+    query_cache: crate::git::patch_cache::PatchCache,
+    query_epoch: AtomicU64,
+    cache_started: std::time::Instant,
 }
 
 impl LspPool {
@@ -79,6 +82,9 @@ impl LspPool {
             resolved: Mutex::default(),
             closing: AtomicBool::new(false),
             publish: Mutex::default(),
+            query_cache: Default::default(),
+            query_epoch: AtomicU64::new(0),
+            cache_started: std::time::Instant::now(),
         });
         pool.ensure(&preload);
         pool
@@ -128,7 +134,22 @@ impl LspPool {
     }
 
     pub async fn references(&self, pos: &LspPosition) -> Result<LspLocationsResponse> {
-        self.locations(pos, Locate::References).await
+        let epoch = self.query_epoch.load(Ordering::SeqCst);
+        let key = format!(
+            "refs:{epoch}:{}:{}",
+            self.cache_started.elapsed().as_secs() / 5,
+            serde_json::to_string(pos).unwrap()
+        );
+        if let Some(cached) = self.query_cache.get(&key)
+            && let Ok(answer) = serde_json::from_str(&cached)
+        {
+            return Ok(answer);
+        }
+        let answer = self.locations(pos, Locate::References).await?;
+        if answer.inconclusive.is_none() && epoch == self.query_epoch.load(Ordering::SeqCst) {
+            self.query_cache.insert(key, serde_json::to_string(&answer).unwrap());
+        }
+        Ok(answer)
     }
 
     /// Every server's hover for `pos`, owner first; with `owner_only`, the owner's alone.
@@ -143,7 +164,18 @@ impl LspPool {
     }
 
     pub async fn document_symbols(&self, path: &str) -> Result<LspSymbolsResponse> {
-        self.owner_for(path)?.bridge.document_symbols(path).await
+        let epoch = self.query_epoch.load(Ordering::SeqCst);
+        let key = format!("outline:{epoch}:{}:{path}", self.cache_started.elapsed().as_secs() / 5);
+        if let Some(cached) = self.query_cache.get(&key)
+            && let Ok(answer) = serde_json::from_str(&cached)
+        {
+            return Ok(answer);
+        }
+        let answer = self.owner_for(path)?.bridge.document_symbols(path).await?;
+        if answer.inconclusive.is_none() && epoch == self.query_epoch.load(Ordering::SeqCst) {
+            self.query_cache.insert(key, serde_json::to_string(&answer).unwrap());
+        }
+        Ok(answer)
     }
 
     /// Symbols matching `query` from every running server, best fuzzy match first. Ranked before
@@ -171,6 +203,8 @@ impl LspPool {
     /// left the diff stays up with nothing tracked, so its index is warm if the reader switches back.
     /// Nothing is tracked when the new side is not the checkout: a server would see text contradicting its disk.
     pub fn track(self: &Arc<Self>, snap: &Snapshot) -> impl Future<Output = ()> + use<> {
+        self.query_epoch.fetch_add(1, Ordering::SeqCst);
+        self.query_cache.clear();
         let mut by_language = PathsByLanguage::new();
         if follows_checkout(snap) {
             for f in snap.changed.iter().filter(|f| f.status != ChangeStatus::D && !f.binary) {
@@ -185,10 +219,13 @@ impl LspPool {
             self.ensure(&by_language);
         }
         let servers = if closing { Vec::new() } else { self.servers() };
+        let versions: std::collections::HashMap<String, String> =
+            snap.changed.iter().map(|f| (f.path.clone(), f.blob.clone())).collect();
         let passes = servers.into_iter().map(|s| {
+            let versions = versions.clone();
             let tracked = paths_of(&s.routes(), &by_language);
             s.follow(&tracked);
-            async move { s.bridge.track(&tracked).await }
+            async move { s.bridge.track_versions(&tracked, &versions).await }
         });
         futures::future::join_all(passes).map(drop)
     }
@@ -301,6 +338,8 @@ impl LspPool {
     }
 
     fn publish(self: &Arc<Self>) {
+        self.query_epoch.fetch_add(1, Ordering::SeqCst);
+        self.query_cache.clear();
         if self.closing.load(Ordering::SeqCst) {
             return;
         }

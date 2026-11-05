@@ -105,6 +105,7 @@ pub struct Session {
     ready: signal::Sender<Option<Result<()>>>,
     /// The refresh, and the refs check, waiting for the queue, if any. Later requests join them.
     queued_refresh: Mutex<Option<Pending>>,
+    dirty_paths: Mutex<Option<std::collections::HashSet<String>>>,
     queued_check: Mutex<Option<Pending>>,
     listeners: Mutex<Vec<Listener>>,
     readable: Mutex<Option<(Arc<Snapshot>, Arc<ReadablePaths>)>>,
@@ -132,6 +133,7 @@ impl Session {
             jobs,
             ready: signal::channel(None).0,
             queued_refresh: Mutex::new(None),
+            dirty_paths: Mutex::new(Some(Default::default())),
             queued_check: Mutex::new(None),
             listeners: Mutex::new(Vec::new()),
             readable: Mutex::new(None),
@@ -242,10 +244,11 @@ impl Session {
     pub async fn close(self: &Arc<Self>) {
         let _ = self.run(async { Ok(()) }).await;
         let active = self.active.lock().unwrap().clone();
-        if let Some(active) = active
-            && let Some(watcher) = active.watcher.lock().await.take()
-        {
-            watcher.close().await;
+        if let Some(active) = active {
+            active.snapshotter.cancel_pending();
+            if let Some(watcher) = active.watcher.lock().await.take() {
+                watcher.close().await;
+            }
         }
     }
 }

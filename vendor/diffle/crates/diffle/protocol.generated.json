@@ -673,6 +673,16 @@
         "scope": {
           "type": "string",
           "minLength": 1
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "symbols",
+            "references"
+          ]
+        },
+        "node": {
+          "type": "string"
         }
       },
       "description": "`GET /api/lsp/graph`: `all` lifts the cap on changed symbols; `scope`, a folder without its\ntrailing slash, graphs only the changed files under it, whose dependents may live anywhere."
@@ -1598,10 +1608,76 @@
       ],
       "description": "How a commit of the older iteration relates to one of the newer, as `git range-diff` pairs them."
     },
+    "PatchPageRequest": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "version"
+      ],
+      "description": "Bounded UTF-8 patch chunks, pinned to one snapshot and content digest."
+    },
+    "PatchPageResponse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "patch": {
+          "type": "string"
+        },
+        "next": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "digest": {
+          "type": "string"
+        },
+        "done": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "version",
+        "patch",
+        "next",
+        "total",
+        "digest",
+        "done"
+      ]
+    },
     "PatchQuery": {
       "type": "object",
       "properties": {
         "path": {
+          "type": "string"
+        },
+        "version": {
           "type": "string"
         }
       }
@@ -1615,6 +1691,11 @@
           "items": {
             "type": "string"
           }
+        },
+        "version": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
         }
       },
       "required": [
@@ -2117,7 +2198,10 @@
       "type": "string",
       "enum": [
         "diff",
-        "full"
+        "full",
+        "added",
+        "removed",
+        "both"
       ],
       "description": "Whether search includes whole files or only new-side diff hunks and their context."
     },
@@ -2127,11 +2211,14 @@
         "path": {
           "type": "string"
         },
+        "side": {
+          "$ref": "#/$defs/Side",
+          "description": "Side and 1-based line in the reviewed file."
+        },
         "line": {
           "type": "integer",
           "minimum": -9007199254740991,
-          "maximum": 9007199254740991,
-          "description": "1-based line on the new side."
+          "maximum": 9007199254740991
         },
         "text": {
           "type": "string"

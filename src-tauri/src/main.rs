@@ -36,6 +36,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(engine::Engine::default())
+        .manage(transport::Requests::default())
         .invoke_handler(tauri::generate_handler![
             updater::updater_info,
             updater::restart_after_update,
@@ -44,6 +45,7 @@ fn main() {
             engine::open_review,
             engine::close_review,
             transport::review_request,
+            transport::cancel_review_request,
             gitlab::gitlab_action,
             settings::desktop_settings,
             settings::save_desktop_settings
