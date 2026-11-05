@@ -27,6 +27,14 @@ curl -fsSL https://raw.githubusercontent.com/MohamedElashri/mdiff/main/install.s
 
 Installs to `~/Applications` on macOS or `~/.local/bin` on Linux, with an application menu entry. Supports Apple Silicon, Intel Macs, and Linux x86_64 (Ubuntu 24.04 or compatible, with FUSE 2). Downloads are checksum-verified. [Manual downloads](https://github.com/MohamedElashri/mdiff/releases).
 
+> **macOS:** mdiff is not signed with an Apple Developer ID or notarized by Apple. If macOS blocks a copy downloaded from this repository's releases, remove its quarantine attribute:
+>
+> ```sh
+> xattr -dr com.apple.quarantine /Applications/mdiff.app
+> ```
+>
+> For script installs, use `"$HOME/Applications/mdiff.app"` instead of `/Applications/mdiff.app`.
+
 Open mdiff, choose **Open repository**, and select a Git folder. Use **New review** for another comparison or a PR/MR URL. Configure appearance and connections in **Preferences**; press `?` for review shortcuts.
 
 Git is required. Code intelligence needs a language server. Connection tokens stay in memory until you quit. GitLab supports HTTPS hosts and custom ports; installations under URL subpaths are not supported.
