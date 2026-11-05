@@ -49,6 +49,21 @@ jobs:
           npm run lint --prefix vendor/diffle
           npx tsc --noEmit
           npm run typecheck --prefix vendor/diffle
+  installer:
+    name: Installer upgrade (${{ matrix.os }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test installation, upgrade, and rollback
+        run: python3 tests/test_installer.py
   test:
     name: Unit tests and frontend
     needs: lint

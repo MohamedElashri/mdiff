@@ -24,4 +24,6 @@
 
 ### Fixed
 
+- Preserve and restore the previous macOS app when an update fails.
+
 - Checkbox contrast, configuration feedback, and keyboard handling in settings.
