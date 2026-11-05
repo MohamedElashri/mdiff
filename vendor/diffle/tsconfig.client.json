@@ -12,7 +12,9 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "paths": { "@/*": ["./src/*"] }
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
-  "include": ["src/client", "src/shared", "test/client"]
+  "include": ["src/client", "src/shared", "test/client", "test/desktop"]
 }

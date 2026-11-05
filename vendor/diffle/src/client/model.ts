@@ -65,8 +65,9 @@ export function patchBatches(
   isCollapsed: (path: string) => boolean,
 ): string[][] {
   const byPath = new Map(files.map((f) => [f.path, f]));
+  const priority = new Set(first);
   const rank = (p: string) =>
-    first.includes(p) ? 0 : (isCollapsed(p) ? 4 : 2) + (linesOf(byPath.get(p)!) > PATCH_BATCH_LINES ? 1 : 0);
+    priority.has(p) ? 0 : (isCollapsed(p) ? 4 : 2) + (linesOf(byPath.get(p)!) > PATCH_BATCH_LINES ? 1 : 0);
   const order = orderedPaths(snapshot)
     .filter((p) => byPath.has(p))
     .sort((a, b) => rank(a) - rank(b));

@@ -1,3 +1,4 @@
+import { FloatingPanel } from '@/client/ui/FloatingPanel.js';
 import { GitPullRequest, ExternalLink } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { useStore } from '@/client/store.js';
@@ -11,11 +12,13 @@ export function GithubMenu() {
   const metadata = github.data;
   const repository = metadata?.repository;
   const wrap = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const outside = (event: MouseEvent) => {
-      if (!wrap.current?.contains(event.target as Node)) setOpen(false);
+      if (!wrap.current?.contains(event.target as Node) && !panelRef.current?.contains(event.target as Node))
+        setOpen(false);
     };
     document.addEventListener('mousedown', outside);
     return () => document.removeEventListener('mousedown', outside);
@@ -45,11 +48,13 @@ export function GithubMenu() {
         <GitPullRequest size="1rem" /> <span className="max-lg:hidden">GitHub</span>
       </Button>
       {open && (
-        <section
+        <FloatingPanel
+          anchor={wrap}
+          panelRef={panelRef}
           id="github-menu"
           role="dialog"
           aria-label="GitHub information"
-          className="absolute top-[calc(100%+0.375rem)] left-0 z-30 w-80 max-w-[85vw] rounded-lg border border-border bg-surface p-3 text-[0.8125rem] shadow-lg"
+          className="w-80 max-w-[85vw] rounded-lg border border-border bg-surface p-3 text-[0.8125rem] shadow-lg"
         >
           <strong>Repository</strong>
           <p className="mt-1 mb-3 wrap-anywhere">
@@ -90,7 +95,7 @@ export function GithubMenu() {
               <p className="text-muted">{metadata?.reason ?? 'No matching pull request'}</p>
             )}
           </div>
-        </section>
+        </FloatingPanel>
       )}
     </div>
   );

@@ -39,14 +39,14 @@ const press = (key: string) =>
 it('o opens repository information during lookup; Escape and outside clicks dismiss it', async () => {
   await act(() => root.render(createElement(App)));
   await act(() => press('o'));
-  expect(host.querySelector('[role="dialog"]')).not.toBeNull();
-  expect(host.textContent).toContain('Loading…');
-  expect(host.textContent).not.toContain('No GitHub origin');
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(document.body.textContent).toContain('Loading…');
+  expect(document.body.textContent).not.toContain('No GitHub origin');
   await act(() => press('Escape'));
-  expect(host.querySelector('[role="dialog"]')).toBeNull();
-  await act(() => host.querySelector('button')!.click());
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  await act(() => document.querySelector('button')!.click());
   await act(() => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
-  expect(host.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
 
 it('shows PR metadata from another repository, then the origin when no PR matches', async () => {
@@ -66,10 +66,10 @@ it('shows PR metadata from another repository, then the origin when no PR matche
   };
   useStore.setState({ githubMenuOpen: true, github: { status: 'ready', data: metadata } });
   await act(() => root.render(createElement(App)));
-  expect(host.textContent).toContain('#42 Improve parsing');
-  expect(host.textContent).toContain('upstream/project');
-  expect(host.textContent).toContain(metadata.reason);
-  expect(host.querySelector(`a[href="${metadata.pullRequest!.url}"]`)).not.toBeNull();
+  expect(document.body.textContent).toContain('#42 Improve parsing');
+  expect(document.body.textContent).toContain('upstream/project');
+  expect(document.body.textContent).toContain(metadata.reason);
+  expect(document.querySelector(`a[href="${metadata.pullRequest!.url}"]`)).not.toBeNull();
   await act(() =>
     useStore.setState({
       github: {
@@ -78,7 +78,7 @@ it('shows PR metadata from another repository, then the origin when no PR matche
       },
     }),
   );
-  expect(host.textContent).toContain('Lookup failed: gh is not installed');
-  expect(host.textContent).toContain('alice/fork');
-  expect(host.querySelector('a')?.href).toBe('https://github.com/alice/fork');
+  expect(document.body.textContent).toContain('Lookup failed: gh is not installed');
+  expect(document.body.textContent).toContain('alice/fork');
+  expect(document.querySelector('a')?.href).toBe('https://github.com/alice/fork');
 });

@@ -14,7 +14,8 @@
     "setup": "npm ci && npm ci --prefix vendor/diffle",
     "test:review": "npm test --prefix vendor/diffle",
     "test:engine": "cargo test --manifest-path vendor/diffle/Cargo.toml",
-    "test:updater": "node --test tests/updater.test.mjs"
+    "test:updater": "node --test tests/updater.test.mjs",
+    "test:performance": "npm run test:performance --prefix vendor/diffle"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

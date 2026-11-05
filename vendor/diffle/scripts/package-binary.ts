@@ -63,13 +63,18 @@ try {
     .update(readFileSync(join(out, archive)))
     .digest('hex');
   writeFileSync(join(release, 'SHA256SUMS'), `${sum}  ${archive}\n`);
+  // Resolve files before accepting requests; request strings never become filesystem paths.
+  const assets = new Map([
+    [`/${archive}`, readFileSync(join(release, archive))],
+    ['/SHA256SUMS', readFileSync(join(release, 'SHA256SUMS'))],
+  ]);
   const server = createServer((req, res) => {
-    const name = decodeURIComponent((req.url ?? '/').replace(/^\/+/, ''));
-    if (name !== archive && name !== 'SHA256SUMS') {
+    const asset = assets.get(req.url ?? '/');
+    if (!asset) {
       res.writeHead(404).end();
       return;
     }
-    res.writeHead(200).end(readFileSync(join(release, name)));
+    res.writeHead(200).end(asset);
   });
   await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));
   const { port } = server.address() as { port: number };

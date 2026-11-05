@@ -989,7 +989,7 @@ export function ReviewPane() {
     [resizeHeader],
   );
 
-  if (error)
+  if (error && !snapshot)
     return (
       <main className="relative flex min-h-0 min-w-0 flex-col outline-none">
         <div className="border-b border-b-border bg-hover px-3 py-2 text-danger">{error}</div>
@@ -1013,6 +1013,14 @@ export function ReviewPane() {
 
   return (
     <main className="relative flex min-h-0 min-w-0 flex-col outline-none" tabIndex={-1}>
+      {error && (
+        <div role="alert" className="flex items-center gap-2 border-b border-border bg-hover px-3 py-2 text-danger">
+          <span className="flex-1">{error}</span>
+          <button type="button" aria-label="Dismiss review error" onClick={() => useStore.setState({ error: null })}>
+            Dismiss
+          </button>
+        </div>
+      )}
       <SearchBar />
       <SymbolPicker />
       <SymbolMenu />

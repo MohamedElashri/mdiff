@@ -1,3 +1,4 @@
+import { FloatingPanel } from '@/client/ui/FloatingPanel.js';
 import { twMerge } from 'tailwind-merge';
 import { Check, CircleAlert, Compass, Copy, LoaderCircle, X } from 'lucide-react';
 import { Fragment, useEffect, useRef, useState } from 'react';
@@ -13,6 +14,8 @@ import { languagesLabel } from '@/shared/lsp.js';
  */
 export function LspIndicator({ lsp }: { lsp: LspStatus }) {
   const popup = useRef<HTMLDetailsElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
   const close = () => {
     if (!popup.current) return;
     popup.current.open = false;
@@ -21,7 +24,8 @@ export function LspIndicator({ lsp }: { lsp: LspStatus }) {
   useEffect(() => {
     const outside = (event: PointerEvent) => {
       const el = popup.current;
-      if (el?.open && !el.contains(event.target as Node)) el.open = false;
+      if (el?.open && !el.contains(event.target as Node) && !panelRef.current?.contains(event.target as Node))
+        el.open = false;
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || !popup.current?.open) return;
@@ -51,7 +55,7 @@ export function LspIndicator({ lsp }: { lsp: LspStatus }) {
     (logs && 'logs') ||
     '';
   return (
-    <details ref={popup} className="relative">
+    <details ref={popup} className="relative" onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary
         className={twMerge(
           `flex cursor-pointer list-none items-center gap-1.25 text-xs whitespace-nowrap text-muted [&::-webkit-details-marker]:hidden ${error || broken ? 'text-warn' : ''}`,
@@ -61,41 +65,46 @@ export function LspIndicator({ lsp }: { lsp: LspStatus }) {
         {busy ? <LoaderCircle size="0.875rem" className="animate-spin" /> : <Compass size="0.875rem" />}
         <span className="max-lg:hidden">{label}</span>
       </summary>
-      <section
-        className="absolute top-[calc(100%+0.75rem)] right-0 z-100 max-h-[65vh] w-[min(28rem,85vw)] overflow-auto rounded-lg border border-border bg-surface p-2.5 text-[0.8125rem] text-foreground shadow-lg"
-        aria-label="Language server status"
-      >
-        <div className="flex items-center justify-between gap-2">
-          <strong>Language servers</strong>
-          <Button
-            variant="ghost"
-            icon
-            type="button"
-            aria-label="Close language server status"
-            className="border-0 p-0.5 text-muted hover:text-foreground"
-            onClick={close}
-          >
-            <X size="0.875rem" />
-          </Button>
-        </div>
-        {lsp.servers.map((s) => (
-          <ServerStatus key={s.command} server={s} />
-        ))}
-        {!lsp.servers.length && !lsp.missing.length && <p className="text-muted">No servers</p>}
-        {lsp.missing.map((m) => (
-          <div
-            className="mt-1.5 flex items-center gap-2 border-t border-border pt-1.5 text-muted"
-            key={m.language}
-            title={m.why ?? m.tried.join(', ')}
-          >
-            <X size="0.875rem" className="shrink-0" />
-            <span className="min-w-0 flex-1 font-medium wrap-anywhere text-foreground">{m.language}</span>
-            <span className="shrink-0 text-[0.6875rem]">
-              {m.why ? 'Incomplete' : m.tried.length ? 'Not on PATH' : 'Disabled'}
-            </span>
+      {expanded && (
+        <FloatingPanel
+          anchor={popup}
+          panelRef={panelRef}
+          align="end"
+          className="w-[min(28rem,85vw)] overflow-auto rounded-lg border border-border bg-surface p-2.5 text-[0.8125rem] text-foreground shadow-lg"
+          aria-label="Language server status"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <strong>Language servers</strong>
+            <Button
+              variant="ghost"
+              icon
+              type="button"
+              aria-label="Close language server status"
+              className="border-0 p-0.5 text-muted hover:text-foreground"
+              onClick={close}
+            >
+              <X size="0.875rem" />
+            </Button>
           </div>
-        ))}
-      </section>
+          {lsp.servers.map((s) => (
+            <ServerStatus key={s.command} server={s} />
+          ))}
+          {!lsp.servers.length && !lsp.missing.length && <p className="text-muted">No servers</p>}
+          {lsp.missing.map((m) => (
+            <div
+              className="mt-1.5 flex items-center gap-2 border-t border-border pt-1.5 text-muted"
+              key={m.language}
+              title={m.why ?? m.tried.join(', ')}
+            >
+              <X size="0.875rem" className="shrink-0" />
+              <span className="min-w-0 flex-1 font-medium wrap-anywhere text-foreground">{m.language}</span>
+              <span className="shrink-0 text-[0.6875rem]">
+                {m.why ? 'Incomplete' : m.tried.length ? 'Not on PATH' : 'Disabled'}
+              </span>
+            </div>
+          ))}
+        </FloatingPanel>
+      )}
     </details>
   );
 }

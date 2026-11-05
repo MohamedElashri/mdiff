@@ -1,3 +1,4 @@
+import { FloatingPanel } from '@/client/ui/FloatingPanel.js';
 import { SegmentedControl, ToggleButton } from '@/client/ui/ToggleButton.js';
 import { twMerge } from 'tailwind-merge';
 import { Button } from '@/client/ui/Button.js';
@@ -64,6 +65,7 @@ export function ModePicker() {
   }, [open, pane]);
 
   const wrap = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const targetRef = useRef<HTMLInputElement>(null);
   /** The range-diff pane's tip inputs at odd indices, so Enter in one input moves to the next. */
   const rangeInputs = useRef<(HTMLInputElement | null)[]>([]);
@@ -85,7 +87,7 @@ export function ModePicker() {
         if (current) useStore.getState().report('Loading refs', e);
       });
     const onDoc = (e: MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+      if (!wrap.current?.contains(e.target as Node) && !panelRef.current?.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener('mousedown', onDoc);
     return () => {
@@ -155,8 +157,10 @@ export function ModePicker() {
         <ChevronDown size="0.875rem" />
       </Button>
       {open && (
-        <div
-          className="absolute top-[calc(100%_+_0.375rem)] left-0 z-20 flex w-max max-w-[calc(100vw_-_2rem)] min-w-60 rounded-[0.625rem] border border-border bg-canvas p-1.5 shadow-[0_0.625rem_1.875rem_rgba(0,_0,_0,_0.18)] max-[640px]:fixed max-[640px]:top-12 max-[640px]:left-2 max-[640px]:max-w-[calc(100vw_-_1rem)]"
+        <FloatingPanel
+          anchor={wrap}
+          panelRef={panelRef}
+          className="flex w-max min-w-60 rounded-[0.625rem] border border-border bg-canvas p-1.5 shadow-lg"
           id="mode-picker"
           role="dialog"
           aria-label="Compare"
@@ -420,7 +424,7 @@ export function ModePicker() {
               </Button>
             </form>
           )}
-        </div>
+        </FloatingPanel>
       )}
     </div>
   );

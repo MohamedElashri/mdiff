@@ -141,8 +141,12 @@ async fn navigates_on_from_files_outside_the_snapshot_that_the_language_server_n
     std::fs::create_dir(dir.join("sub")).unwrap();
     let detour = dir.join("sub/../site.py").to_string_lossy().into_owned();
     for unnamed in [&secret_s, &detour] {
-        assert_eq!(s.json("POST", "/api/lsp/hover", at(unnamed)).await.status, 409, "{unnamed}");
-        assert_eq!(s.get(&file_query(unnamed, "new")).await.status, 404, "{unnamed}");
+        assert_eq!(
+            s.json("POST", "/api/lsp/hover", at(unnamed)).await.status,
+            409,
+            "unnamed external path must be rejected"
+        );
+        assert_eq!(s.get(&file_query(unnamed, "new")).await.status, 404, "unnamed external file must not be readable");
     }
     assert_eq!(s.json("POST", "/api/lsp/hover", at("missing.py")).await.status, 409);
     s.close().await;

@@ -356,3 +356,7 @@ mod tests {
         runtime.close().await;
     }
 }
+
+#[cfg(test)]
+#[path = "desktop_performance.rs"]
+mod desktop_performance;

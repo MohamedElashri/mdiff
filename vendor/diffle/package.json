@@ -35,7 +35,9 @@
     "test:e2e:report": "playwright show-report playwright-report",
     "snapshot-report": "tsx scripts/snapshot-report.ts",
     "quality-gate": "tsx scripts/quality-gate.ts",
-    "check-version": "tsx scripts/check-version.ts"
+    "check-version": "tsx scripts/check-version.ts",
+    "test:tooling": "MDIFF_TEST_TOOLING=1 vitest run",
+    "test:performance": "vitest run test/desktop"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
