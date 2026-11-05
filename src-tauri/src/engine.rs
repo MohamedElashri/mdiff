@@ -34,6 +34,13 @@ pub struct ReviewRuntime {
     _clone: Option<tempfile::TempDir>,
 }
 impl ReviewRuntime {
+    pub(crate) fn repository_root(&self) -> &std::path::Path {
+        &self.repo.root
+    }
+    pub(crate) fn temporary_repository(&self) -> bool {
+        self._clone.is_some()
+    }
+
     async fn close(mut self) {
         self.hub.close();
         if let Some(events) = self.events.take() {
@@ -312,6 +319,18 @@ mod tests {
         .await
         .unwrap();
         assert!(forbidden.status >= 400);
+        let prompt = dispatch(
+            router.clone(),
+            "GET",
+            "/api/threads/export?state=open",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prompt.status, 200);
+        let prompt = String::from_utf8(prompt.body.to_vec()).unwrap();
+        assert!(prompt.contains("Native review comment"));
+        assert!(prompt.contains("example.txt"));
         assert!(
             dispatch(router, "GET", "https://evil.invalid/api/snapshot", None)
                 .await

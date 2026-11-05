@@ -588,3 +588,60 @@ body {
   margin: 12px 0;
   font-size: 13px;
 }
+
+.editor-picker {
+  width: 420px;
+}
+.editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.editor-heading h2 {
+  margin: 0;
+}
+.editor-list {
+  display: grid;
+  gap: 3px;
+  margin: 12px 0 6px;
+  max-height: 36vh;
+  overflow: auto;
+}
+.editor-list button {
+  justify-content: flex-start;
+  text-align: left;
+  padding: 10px;
+}
+.editor-list small {
+  margin-left: auto;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+.editor-agent {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 14px;
+}
+.editor-agent h3 {
+  margin: 0;
+}
+.editor-agent small {
+  display: block;
+  color: var(--fg-2);
+  margin-top: 6px;
+}
+.editor-status {
+  min-height: 18px;
+  overflow-wrap: anywhere;
+}
+.editor-picker .editor-warning {
+  color: var(--warn);
+}
+@media (max-width: 760px) {
+  .editor-button-label {
+    display: none;
+  }
+  .reviewing .window-actions {
+    gap: 2px;
+  }
+}

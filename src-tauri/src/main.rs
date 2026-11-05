@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod editors;
 mod engine;
 mod gitlab;
 mod settings;
@@ -34,6 +35,8 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(engine::Engine::default())
         .invoke_handler(tauri::generate_handler![
+            editors::discover_editors,
+            editors::open_in_editor,
             engine::open_review,
             engine::close_review,
             transport::review_request,

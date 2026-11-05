@@ -5,6 +5,9 @@
 ## [0.1.0] - Unreleased
 
 ### Added
+
+- Open repositories in automatically discovered IDEs.
+- Copy review prompts when opening an editor.
 - Automatic macOS and Linux installation and updates.
 
 - Native code review for macOS and Linux.

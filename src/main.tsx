@@ -24,6 +24,7 @@ const ReviewWorkspace = lazy(() =>
 import { applyTheme, readTheme } from "../vendor/diffle/src/client/theme";
 applyTheme(readTheme());
 import { bindReview } from "./transport";
+import { OpenInEditor } from "./OpenInEditor";
 import { GitlabPanel } from "./GitlabPanel";
 import "../vendor/diffle/src/client/styles.css";
 import "./style.css";
@@ -311,6 +312,7 @@ function App() {
         <span className="header-divider" />
         <span className="subtitle">{review ? review.root : "Code review"}</span>
         <div className="window-actions">
+          {review && <OpenInEditor key={review.id} id={review.id} />}
           {review && (
             <button onClick={home}>
               <ArrowLeft size={15} />
