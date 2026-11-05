@@ -1,0 +1,302 @@
+import { request, reviewTransport } from './transport.js';
+import { z } from 'zod';
+import {
+  ConfigUpdateSchema,
+  GithubExportRequestSchema,
+  LspHoverRequestSchema,
+  LspPositionSchema,
+  MessagePatchSchema,
+  EnterRequestSchema,
+  RangeViewSchema,
+  PatchRequestSchema,
+  ReplyCreateSchema,
+  ResolvedRequestSchema,
+  ThreadCreateSchema,
+  ViewedBulkRequestSchema,
+  ApiErrorSchema,
+  CommentThreadSchema,
+  FileResponseSchema,
+  GithubExportResponseSchema,
+  GithubMetadataSchema,
+  GraphResponseSchema,
+  LastCommitsPreviewSchema,
+  LspHoverResponseSchema,
+  LspLocationsResponseSchema,
+  LspOccurrencesResponseSchema,
+  LspStatusSchema,
+  LspLogResponseSchema,
+  LspSymbolsResponseSchema,
+  MovedSchema,
+  PermalinkRequestSchema,
+  PermalinkSchema,
+  RefsResponseSchema,
+  SearchResponseSchema,
+  ServerMessageSchema,
+  SnapshotSchema,
+  UserConfigSchema,
+  VersionResponseSchema,
+  ViewedEntrySchema,
+} from '@/shared/protocol.js';
+import type {
+  GraphQuery,
+  GithubExportRequest,
+  LspHoverRequest,
+  LspPosition,
+  EnterRequest,
+  PermalinkRequest,
+  RangeView,
+  ReplyCreate,
+  SearchScope,
+  SearchContent,
+  ServerMessage,
+  Side,
+  ThreadCreate,
+  ThreadQuery,
+  ViewedEntry,
+  ConfigUpdate,
+  SymbolsQuery,
+} from '@/shared/protocol.js';
+
+// The only module that knows URLs.
+
+function encode<S extends z.ZodType>(schema: S, value: z.input<S>): string {
+  return JSON.stringify(schema.parse(value));
+}
+
+async function json<T>(schema: z.ZodType<T>, input: string, init?: RequestInit): Promise<T> {
+  const res = await request(input, {
+    ...init,
+    headers: { 'content-type': 'application/json', ...init?.headers },
+  });
+  if (!res.ok) throw new ApiError(res.status, await safeMessage(res));
+  return schema.parse(res.status === 204 ? undefined : await res.json());
+}
+
+async function text(input: string, init?: RequestInit): Promise<string> {
+  const res = await request(input, init);
+  if (!res.ok) throw new ApiError(res.status, await safeMessage(res));
+  return res.text();
+}
+
+async function safeMessage(res: Response): Promise<string> {
+  try {
+    const result = ApiErrorSchema.safeParse(await res.json());
+    return result.success ? result.data.error : res.statusText;
+  } catch {
+    return res.statusText;
+  }
+}
+
+class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const q = (params: Record<string, string | undefined>) =>
+  new URLSearchParams(Object.entries(params).filter((e): e is [string, string] => e[1] != null)).toString();
+
+export const api = {
+  /** The server's release; answers before the first review resolves. */
+  version: () => json(VersionResponseSchema, 'api/version'),
+  github: () => json(GithubMetadataSchema, 'api/github'),
+  /** A link to lines on origin's forge, or why there is none; local refs only, so it answers at once. */
+  permalink: (req: PermalinkRequest) =>
+    json(PermalinkSchema, 'api/permalink', { method: 'POST', body: encode(PermalinkRequestSchema, req) }),
+  snapshot: () => json(SnapshotSchema, 'api/snapshot'),
+  moved: () => json(MovedSchema.nullable(), 'api/moved'),
+  /** Recompute the snapshot where the refs point now. */
+  reload: () => json(SnapshotSchema, 'api/reload', { method: 'POST' }),
+  /** Forget the range's recorded iterations; the snapshot returned records its current state as #1. */
+  clearIterations: () => json(SnapshotSchema, 'api/iterations', { method: 'DELETE' }),
+  /** Forget one recorded iteration; the latest cannot go. */
+  deleteIteration: (n: number) => json(SnapshotSchema, `api/iterations/${n}`, { method: 'DELETE' }),
+  /** Enter another review, as the CLI does. */
+  enter: (req: EnterRequest) =>
+    json(SnapshotSchema, 'api/review', { method: 'POST', body: encode(EnterRequestSchema, req) }),
+  /** Show a slice of the active range. */
+  show: (view: RangeView) => json(SnapshotSchema, 'api/view', { method: 'PUT', body: encode(RangeViewSchema, view) }),
+  refs: () => json(RefsResponseSchema, 'api/refs'),
+  lastCommitsPreview: (oldOffset: number, newOffset: number, signal?: AbortSignal) =>
+    json(
+      LastCommitsPreviewSchema,
+      `api/last-commits-preview?${q({ oldOffset: String(oldOffset), newOffset: String(newOffset) })}`,
+      { signal },
+    ),
+  patch: (path: string) => text(`api/patch?${q({ path })}`),
+  /** Patches of several changed files in one response. */
+  patches: (paths: string[]) =>
+    text('api/patch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: encode(PatchRequestSchema, { paths }),
+    }),
+  /** One side's full contents; `signal` aborts the request when its consumer no longer wants it. */
+  file: (path: string, rev: Side, signal?: AbortSignal) =>
+    json(FileResponseSchema, `api/file?${q({ path, rev })}`, { signal }),
+  /** Where an `<img>` loads one side of a file; `key` is that side's `imageKey`. */
+  imageUrl: (path: string, rev: Side, key: string) => {
+    const pathUrl = `api/image?${q({ path, rev, key })}`;
+    return reviewTransport() ? pathUrl : new URL(pathUrl, location.href).href;
+  },
+  image: async (url: string) => {
+    const res = await request(url);
+    if (!res.ok) throw new Error(await safeMessage(res));
+    return res.blob();
+  },
+  /** `path` names the file a `scope: 'file'` search is confined to. */
+  search: (
+    query: string,
+    opts: {
+      word?: boolean;
+      ignoreCase?: boolean;
+      regex?: boolean;
+      scope?: SearchScope;
+      content?: SearchContent;
+      path?: string;
+    } = {},
+  ) =>
+    json(
+      SearchResponseSchema,
+      `api/search?${q({ q: query, word: opts.word ? '1' : undefined, i: opts.ignoreCase ? '1' : undefined, re: opts.regex ? '1' : undefined, scope: opts.scope, content: opts.content, path: opts.path })}`,
+    ),
+  threads: (query: ThreadQuery = {}) =>
+    json(CommentThreadSchema.array(), `api/threads?${q({ state: query.state, path: query.path })}`),
+  /** Open threads as the agent prompt. */
+  exportComments: () => text(`api/threads/export?${q({ state: 'open' })}`),
+  /** One message, with its thread's location and quote, as an agent prompt. */
+  exportComment: (threadId: string, messageId: string) =>
+    text(`api/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/export`),
+  /** Posts threads to the matching PR's pending review; all unresolved ones without `threadIds`. */
+  exportToGithub: (req: GithubExportRequest) =>
+    json(GithubExportResponseSchema, 'api/github/export', {
+      method: 'POST',
+      body: encode(GithubExportRequestSchema, req),
+    }),
+  addThread: (t: ThreadCreate) =>
+    json(CommentThreadSchema.array(), 'api/threads', { method: 'POST', body: encode(ThreadCreateSchema, t) }),
+  reply: (id: string, r: ReplyCreate) =>
+    json(CommentThreadSchema, `api/threads/${encodeURIComponent(id)}/replies`, {
+      method: 'POST',
+      body: encode(ReplyCreateSchema, r),
+    }),
+  editMessage: (id: string, mid: string, body: string) =>
+    json(CommentThreadSchema, `api/threads/${encodeURIComponent(id)}/messages/${encodeURIComponent(mid)}`, {
+      method: 'PATCH',
+      body: encode(MessagePatchSchema, { body }),
+    }),
+  deleteMessage: (id: string, mid: string) =>
+    json(
+      CommentThreadSchema.or(z.undefined()),
+      `api/threads/${encodeURIComponent(id)}/messages/${encodeURIComponent(mid)}`,
+      {
+        method: 'DELETE',
+      },
+    ),
+  setResolved: (id: string, resolved: boolean) =>
+    json(CommentThreadSchema, `api/threads/${encodeURIComponent(id)}/resolved`, {
+      method: 'PUT',
+      body: encode(ResolvedRequestSchema, { resolved }),
+    }),
+  deleteThread: (id: string) => json(z.undefined(), `api/threads/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  clearThreads: () => json(z.undefined(), 'api/threads', { method: 'DELETE' }),
+  deleteStaleThreads: () => json(z.undefined(), 'api/threads?stale=1', { method: 'DELETE' }),
+  viewed: () => json(ViewedEntrySchema.array(), 'api/viewed'),
+  setViewedBulk: (entries: ViewedEntry[]) =>
+    json(ViewedEntrySchema.array(), 'api/viewed/bulk', {
+      method: 'PUT',
+      body: encode(ViewedBulkRequestSchema, { entries }),
+    }),
+  setViewed: (path: string, blob: string, viewed: boolean) =>
+    json(ViewedEntrySchema.array(), 'api/viewed', {
+      method: 'PUT',
+      body: encode(ViewedEntrySchema, { path, blob, viewed }),
+    }),
+  lspStatus: () => json(LspStatusSchema, 'api/lsp/status'),
+  /** The retained log lines of the server started by `command`. */
+  lspLog: (command: string) => json(LspLogResponseSchema, `api/lsp/log?${q({ server: command })}`),
+  lspDefinition: (pos: LspPosition) =>
+    json(LspLocationsResponseSchema, 'api/lsp/definition', { method: 'POST', body: encode(LspPositionSchema, pos) }),
+  lspTypeDefinition: (pos: LspPosition) =>
+    json(LspLocationsResponseSchema, 'api/lsp/type-definition', {
+      method: 'POST',
+      body: encode(LspPositionSchema, pos),
+    }),
+  /** What the server knows about the symbol at `pos`, as markdown. */
+  lspHover: (req: LspHoverRequest) =>
+    json(LspHoverResponseSchema, 'api/lsp/hover', { method: 'POST', body: encode(LspHoverRequestSchema, req) }),
+  /** What class of token sits at `pos`; `keyword` means symbol navigation has nothing to offer. */
+  lspReferences: (pos: LspPosition) =>
+    json(LspLocationsResponseSchema, 'api/lsp/references', { method: 'POST', body: encode(LspPositionSchema, pos) }),
+  /** The snapshot's changed symbols and the code using them. */
+  lspGraph: (query: GraphQuery) => json(GraphResponseSchema, `api/lsp/graph?${q(query)}`),
+  lspOccurrences: (pos: LspPosition) =>
+    json(LspOccurrencesResponseSchema, 'api/lsp/occurrences', { method: 'POST', body: encode(LspPositionSchema, pos) }),
+
+  /** Document symbols for a path, or workspace symbols matching a query. */
+  lspSymbols: (query: SymbolsQuery) => json(LspSymbolsResponseSchema, `api/lsp/symbols?${q(query)}`),
+  config: () => json(UserConfigSchema, 'api/config'),
+  /** lspCommands and githubHosts are CLI-only; the server ignores them. */
+  saveConfig: (config: ConfigUpdate) =>
+    json(UserConfigSchema, 'api/config', { method: 'PUT', body: encode(ConfigUpdateSchema, config) }),
+};
+
+/** A local server answers the upgrade in milliseconds; one that has not after this is hung. */
+const CONNECT_TIMEOUT_MS = 2000;
+
+/**
+ * Auto-reconnecting WebSocket for server pushes. `onOpen` fires on every connection, the first
+ * included: pushes are not replayed, so the caller resyncs there, and fetching only once the
+ * socket is subscribed is what makes the resync authoritative. `onLost` fires once per dropped
+ * connection, before the retries begin; the next `onOpen` ends the outage. An attempt that has
+ * not opened after `CONNECT_TIMEOUT_MS` is abandoned and retried.
+ */
+export function connectWs(onMessage: (msg: ServerMessage) => void, onOpen: () => void, onLost: () => void): () => void {
+  const native = reviewTransport();
+  if (native) return native.subscribe(onMessage, onOpen, onLost);
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let delay = 500;
+  let connected = false;
+  const open = () => {
+    if (closed) return;
+    const url = new URL('ws', location.href);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(url.href);
+    ws = socket;
+    // Firefox holds back every other socket to this host while one connects, for up to 20 s if the
+    // server hangs (a frozen diffle): other diffle tabs and localhost apps must not wait that long.
+    const abandon = setTimeout(() => socket.close(), CONNECT_TIMEOUT_MS);
+    ws.onopen = () => {
+      clearTimeout(abandon);
+      delay = 500;
+      connected = true;
+      onOpen();
+    };
+    ws.onmessage = (e) => {
+      try {
+        onMessage(ServerMessageSchema.parse(JSON.parse(String(e.data))));
+      } catch {
+        /* ignore malformed */
+      }
+    };
+    ws.onclose = () => {
+      clearTimeout(abandon);
+      if (closed) return;
+      if (connected) {
+        connected = false;
+        onLost();
+      }
+      setTimeout(open, delay);
+      delay = Math.min(delay * 2, 10_000);
+    };
+  };
+  open();
+  return () => {
+    closed = true;
+    ws?.close();
+  };
+}

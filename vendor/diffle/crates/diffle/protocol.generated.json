@@ -1,0 +1,2596 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ApiError": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ]
+    },
+    "ChangedFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "New path (or old path for deletions)."
+        },
+        "oldPath": {
+          "type": "string",
+          "description": "Set for R/C."
+        },
+        "status": {
+          "$ref": "#/$defs/ChangeStatus"
+        },
+        "additions": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "deletions": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "blob": {
+          "type": "string",
+          "description": "New-side blob sha. '' for deletions. Keys the viewed state."
+        },
+        "oldBlob": {
+          "type": "string",
+          "description": "Old-side blob sha. '' for additions. A worktree side's blob, like `blob`, is '' when the file cannot be hashed."
+        },
+        "generated": {
+          "type": "boolean",
+          "description": "The `linguist-generated` gitattribute, a path pattern or a content sniff said this file is generated. Feeds auto-collapse and risk ranking."
+        },
+        "submodule": {
+          "type": "boolean",
+          "const": true,
+          "description": "A gitlink (mode 160000): `blob` is the recorded commit, the patch shows the commit-id change, and there is no file to open."
+        }
+      },
+      "required": [
+        "path",
+        "status",
+        "additions",
+        "deletions",
+        "binary",
+        "blob",
+        "oldBlob",
+        "generated"
+      ]
+    },
+    "ChangeStatus": {
+      "type": "string",
+      "enum": [
+        "A",
+        "M",
+        "D",
+        "R",
+        "C",
+        "T",
+        "U"
+      ]
+    },
+    "ClearThreadsQuery": {
+      "type": "object",
+      "properties": {
+        "stale": {
+          "type": "string",
+          "const": "1"
+        }
+      }
+    },
+    "CommentAnchor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "line"
+            },
+            "path": {
+              "type": "string"
+            },
+            "side": {
+              "$ref": "#/$defs/Side",
+              "description": "Column the user selected in a diff; 'new' for file items."
+            },
+            "startLine": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "endLine": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "quoted": {
+              "type": "string",
+              "description": "Exact text of [startLine, endLine] at creation."
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "side",
+            "startLine",
+            "endLine",
+            "quoted"
+          ],
+          "description": "A thread on a line range of one side."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "file"
+            },
+            "path": {
+              "type": "string",
+              "description": "The changed file's path (its new path for a rename), or any tree path."
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "description": "A thread on a file as a whole, with no line: GitHub's file-level comment."
+        }
+      ]
+    },
+    "CommentMessage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "id",
+        "body",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CommentThread": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "anchor": {
+          "$ref": "#/$defs/CommentAnchor"
+        },
+        "messages": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CommentMessage"
+          },
+          "description": "At least one; [0] opened the thread."
+        },
+        "resolved": {
+          "type": "boolean"
+        },
+        "resolvedAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "Relocation failed after a snapshot refresh: the lines left the diff, or the file left the review."
+        },
+        "staleFromLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Original startLine of a line thread, shown in export when stale."
+        }
+      },
+      "required": [
+        "id",
+        "anchor",
+        "messages",
+        "resolved",
+        "stale"
+      ],
+      "description": "A conversation anchored to a line range or a whole file. The thread owns the anchor; replies follow it."
+    },
+    "CommitInfo": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "short": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "short",
+        "message"
+      ]
+    },
+    "ComparisonBase": {
+      "type": "string",
+      "enum": [
+        "direct",
+        "merge-base"
+      ],
+      "description": "How a range's old side is derived: `old` itself, or merge-base(old, new) with the worktree taken as HEAD."
+    },
+    "ConfigUpdate": {
+      "type": "object",
+      "properties": {
+        "autoViewed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contextLines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "followRefs": {
+          "$ref": "#/$defs/FollowRefs"
+        },
+        "lineWrap": {
+          "type": "boolean"
+        }
+      },
+      "description": "Writable HTTP config fields; unknown keys, including CLI-only lspCommands and githubHosts, are stripped."
+    },
+    "EnterRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "working"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pr"
+            },
+            "pr": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "revspec"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "args"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "range-diff"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "args"
+          ]
+        }
+      ],
+      "description": "What the CLI and the picker enter a review with: the words, parsed and resolved by the server\ninto a `Review`. A slice of the active range is chosen with a `RangeView` instead."
+    },
+    "FileAnchor": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "file"
+        },
+        "path": {
+          "type": "string",
+          "description": "The changed file's path (its new path for a rename), or any tree path."
+        }
+      },
+      "required": [
+        "kind",
+        "path"
+      ],
+      "description": "A thread on a file as a whole, with no line: GitHub's file-level comment."
+    },
+    "FileQuery": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rev": {
+          "$ref": "#/$defs/Side"
+        }
+      },
+      "required": [
+        "path",
+        "rev"
+      ]
+    },
+    "FileResponse": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "contents": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "contents",
+        "binary"
+      ]
+    },
+    "FollowRefs": {
+      "type": "string",
+      "enum": [
+        "on",
+        "auto",
+        "off"
+      ],
+      "description": "How a review between refs reacts when one of them moves. `on`: recompute at once, as a worktree\nreview follows edits. `off`: announce the move and wait for Reload. `auto`: wait for Reload when an\nendpoint names a branch, whose pushes and rebases should not swap the review out under the\nreviewer; recompute at once otherwise (a detached HEAD, a tag, an expression)."
+    },
+    "GithubExportRequest": {
+      "type": "object",
+      "properties": {
+        "threadIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Body of `POST /api/github/export`. Without `threadIds`, every unresolved thread of the mode."
+    },
+    "GithubExportResponse": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "The pull request whose pending review the comments joined; the human submits the review there."
+        },
+        "posted": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Review comments added to the pending review."
+        },
+        "updated": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Comments already in the pending review at the same anchor whose body this call rewrote in place."
+        },
+        "review": {
+          "type": "string",
+          "enum": [
+            "created",
+            "existing"
+          ],
+          "description": "Whether this call opened the pending review or added to one that was already waiting."
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "reason"
+            ]
+          },
+          "description": "Threads left out, with why (stale, resolved, unknown id, an identical comment already in the review)."
+        }
+      },
+      "required": [
+        "url",
+        "posted",
+        "updated",
+        "review",
+        "skipped"
+      ]
+    },
+    "GithubMetadata": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Snapshot.version used for this lookup; the client discards results for a different snapshot version."
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "GitHub repository identified by the local origin URL."
+        },
+        "repositoryUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Its page, on whichever GitHub the run talks to."
+        },
+        "pullRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GithubPullRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Null when export is allowed; otherwise explains why it is blocked."
+        }
+      },
+      "required": [
+        "version",
+        "repository",
+        "repositoryUrl",
+        "pullRequest",
+        "reason"
+      ],
+      "description": "Optional enrichment for a snapshot, independent of its comparison."
+    },
+    "GithubPullRequest": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "OPEN",
+            "CLOSED",
+            "MERGED"
+          ]
+        },
+        "isDraft": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "repository",
+        "number",
+        "url",
+        "title",
+        "state",
+        "isDraft"
+      ]
+    },
+    "GraphEdge": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "description": "Lines in `from`'s file holding those references, ascending."
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "lines"
+      ],
+      "description": "`from` uses `to`: the language server lists places inside `from` among `to`'s references."
+    },
+    "GraphNode": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "LSP SymbolKind number; the client maps it to a label."
+        },
+        "container": {
+          "type": "string",
+          "description": "Enclosing class or function, when any."
+        },
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Line of the name, where navigation lands."
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "First line of the declaration's full range, before `line` when a decorator or doc comment leads it."
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Last line of the declaration's full range."
+        },
+        "col": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "id": {
+          "type": "string",
+          "description": "`path:line:col` of the symbol's name, or the path of a file-level consumer. Stable within a snapshot."
+        },
+        "status": {
+          "$ref": "#/$defs/GraphNodeStatus"
+        },
+        "moreConsumers": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Consumers left out beyond the per-symbol cap; changed symbols only."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "path",
+        "line",
+        "startLine",
+        "endLine",
+        "col",
+        "id",
+        "status"
+      ],
+      "description": "A symbol in the change graph: an interface-level symbol the diff touches, or an unchanged one\nusing it. A consumer used from a file's top level, outside any symbol, is that file: kind 1 (File),\nnamed by its path, at line 1."
+    },
+    "GraphNodeStatus": {
+      "type": "string",
+      "enum": [
+        "added",
+        "modified",
+        "consumer"
+      ],
+      "description": "A changed symbol carries its change; a `consumer` is unchanged code that uses one."
+    },
+    "GraphQuery": {
+      "type": "object",
+      "properties": {
+        "all": {
+          "type": "string",
+          "const": "1"
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "description": "`GET /api/lsp/graph`: `all` lifts the cap on changed symbols; `scope`, a folder without its\ntrailing slash, graphs only the changed files under it, whose dependents may live anywhere."
+    },
+    "GraphResponse": {
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GraphNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GraphEdge"
+          }
+        },
+        "cut": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GraphNode"
+          },
+          "description": "Changed symbols past the server's cap, by whole files, most telling first; drawn with `GraphQuery.all`."
+        },
+        "inconclusive": {
+          "type": "string",
+          "description": "Why the graph may lack nodes or edges: a server was busy or unavailable while answering."
+        }
+      },
+      "required": [
+        "nodes",
+        "edges",
+        "cut"
+      ],
+      "description": "`GET /api/lsp/graph`: the snapshot's changed symbols and the code using them, from the language servers."
+    },
+    "ImageQuery": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rev": {
+          "$ref": "#/$defs/Side"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "path",
+        "rev",
+        "key"
+      ],
+      "description": "`GET /api/image`: one side of a file as image bytes. The server answers 404 unless `key` is that side's\n`imageKey` in its current snapshot, the bytes are still the ones the key names, and they are a raster image."
+    },
+    "Interdiff": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/RangeEnds"
+        },
+        "to": {
+          "$ref": "#/$defs/RangeEnds"
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RangePair"
+          },
+          "description": "The two ranges' commits paired, in `git range-diff` order: the newer range's, dropped commits where they were."
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths the shown replay could not merge; they carry conflict markers on the old side."
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "pairs",
+        "conflicts"
+      ],
+      "description": "An interdiff view as the snapshot resolved it: the two ranges' commits and their pairing."
+    },
+    "Iteration": {
+      "type": "object",
+      "properties": {
+        "n": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "1-based, in recording order."
+        },
+        "oldSha": {
+          "type": "string"
+        },
+        "newSha": {
+          "type": "string"
+        },
+        "recordedAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Epoch milliseconds."
+        }
+      },
+      "required": [
+        "n",
+        "oldSha",
+        "newSha",
+        "recordedAt"
+      ],
+      "description": "One state of a reviewed range: its resolved endpoints when a snapshot of it was taken. A new\none is recorded whenever the endpoints differ from the last, so a push, rebase or amend\nyields the next iteration; the commits are pinned under `refs/diffle/iterations/`."
+    },
+    "LanguageId": {
+      "type": "string",
+      "enum": [
+        "astro",
+        "c",
+        "cpp",
+        "csharp",
+        "css",
+        "go",
+        "haskell",
+        "html",
+        "java",
+        "javascript",
+        "javascriptreact",
+        "json",
+        "jsonc",
+        "lua",
+        "nix",
+        "ocaml",
+        "php",
+        "python",
+        "ruby",
+        "rust",
+        "shellscript",
+        "swift",
+        "terraform",
+        "toml",
+        "typescript",
+        "typescriptreact",
+        "vue",
+        "yaml",
+        "zig"
+      ],
+      "description": "A language diffle can start a server for. The value is the LSP `languageId` the\nserver is told in `didOpen`, so it must be the spec's spelling, not ours."
+    },
+    "LastCommitsPreview": {
+      "type": "object",
+      "properties": {
+        "old": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "new": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "old",
+        "new"
+      ],
+      "description": "Endpoints of HEAD~oldOffset..HEAD~newOffset, resolved against the same HEAD. Null means the commit does not exist."
+    },
+    "LastCommitsQuery": {
+      "type": "object",
+      "properties": {
+        "oldOffset": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "newOffset": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "oldOffset",
+        "newOffset"
+      ]
+    },
+    "LineAnchor": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "line"
+        },
+        "path": {
+          "type": "string"
+        },
+        "side": {
+          "$ref": "#/$defs/Side",
+          "description": "Column the user selected in a diff; 'new' for file items."
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "quoted": {
+          "type": "string",
+          "description": "Exact text of [startLine, endLine] at creation."
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "side",
+        "startLine",
+        "endLine",
+        "quoted"
+      ],
+      "description": "A thread on a line range of one side."
+    },
+    "Live": {
+      "type": "string",
+      "enum": [
+        "worktree",
+        "refs",
+        "none"
+      ],
+      "description": "What a snapshot follows: the worktree, the refs the range was named by, or nothing (pinned hashes, a pull request, an interdiff)."
+    },
+    "LspFeature": {
+      "type": "string",
+      "enum": [
+        "definition",
+        "typeDefinition",
+        "hover",
+        "references",
+        "documentSymbol",
+        "workspaceSymbol",
+        "documentHighlight"
+      ],
+      "description": "A request the bridge sends a server only once it advertised the capability, in its\n`initialize` result or by registering it later, as an editor does. Document highlights\nare advisory: without them the answer is empty, never an error."
+    },
+    "LspHoverRequest": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "1-based."
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "0-based UTF-16 offset in the line."
+        },
+        "ownerOnly": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "col"
+      ],
+      "description": "`POST /api/lsp/hover`. `ownerOnly` asks the file's own server alone: a server joining the\nlanguage, such as Tailwind's, adds notes for markup that read as noise on a declaration."
+    },
+    "LspHoverResponse": {
+      "type": "object",
+      "properties": {
+        "contents": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Markdown; null when the server has nothing for the position."
+        },
+        "range": {
+          "type": "object",
+          "properties": {
+            "line": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "col": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "endLine": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "endCol": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "line",
+            "col",
+            "endLine",
+            "endCol"
+          ],
+          "description": "The span the contents describe, when the server says. Same units as LspPosition."
+        },
+        "inconclusive": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contents"
+      ],
+      "description": "What the language server says about a position, for the hover tooltip."
+    },
+    "LspLocation": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "1-based."
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "0-based UTF-16 offset in the line."
+        },
+        "text": {
+          "type": "string",
+          "description": "The target line's text, for result lists."
+        },
+        "external": {
+          "type": "boolean",
+          "const": true,
+          "description": "The file is not in the snapshot (stdlib, site-packages, an ignored venv) and `path` is absolute.\n`/api/file` serves it on the new side, read-only, and the servers that named it answer queries from it,\nfor as long as they keep naming it."
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "col",
+        "text"
+      ]
+    },
+    "LspLocationsResponse": {
+      "type": "object",
+      "properties": {
+        "locations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LspLocation"
+          }
+        },
+        "inconclusive": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "locations"
+      ],
+      "description": "Results the server could place: snapshot paths, or files it read from disk on the language server's word."
+    },
+    "LspLogCounts": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Changes whenever a line is added or repeated, so a reader showing the log knows to fetch again."
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Error and warning lines since the server started, kept or not."
+        },
+        "warnings": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "seq",
+        "errors",
+        "warnings"
+      ]
+    },
+    "LspLogEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Stable identity of the line within the run."
+        },
+        "time": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Milliseconds since the epoch, of its latest repeat."
+        },
+        "source": {
+          "$ref": "#/$defs/LspLogSource"
+        },
+        "level": {
+          "$ref": "#/$defs/LspLogLevel"
+        },
+        "message": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "How many times in a row the server said exactly this."
+        }
+      },
+      "required": [
+        "id",
+        "time",
+        "source",
+        "level",
+        "message",
+        "count"
+      ],
+      "description": "One line of a server's output channel. The bridge keeps a bounded number of recent ones."
+    },
+    "LspLogLevel": {
+      "type": "string",
+      "enum": [
+        "error",
+        "warning",
+        "info",
+        "log"
+      ]
+    },
+    "LspLogQuery": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "server"
+      ],
+      "description": "`GET /api/lsp/log?server=<command>`: the retained lines of one server, oldest first."
+    },
+    "LspLogResponse": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LspLogEntry"
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ]
+    },
+    "LspLogSource": {
+      "type": "string",
+      "enum": [
+        "message",
+        "log",
+        "stderr"
+      ],
+      "description": "Where a log line came from: `window/showMessage`, `window/logMessage`, or the process's stderr."
+    },
+    "LspMissing": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "$ref": "#/$defs/LanguageId"
+        },
+        "tried": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Programs looked for on PATH, so the UI can name what to install. Empty when config turned the language off."
+        },
+        "why": {
+          "type": "string",
+          "description": "A program that is on PATH but lacks what the server loads from beside it, such as a\n`vue-language-server` without its tsserver plugin: installing more is not the answer."
+        }
+      },
+      "required": [
+        "language",
+        "tried"
+      ],
+      "description": "A language in the diff with no server behind it."
+    },
+    "LspNotice": {
+      "type": "object",
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": [
+            "warning",
+            "error"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "message"
+      ]
+    },
+    "LspOccurrence": {
+      "type": "object",
+      "properties": {
+        "line": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "endLine": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "endCol": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "text",
+            "read",
+            "write"
+          ],
+          "description": "LSP DocumentHighlightKind: a plain textual match, a read, or a write."
+        }
+      },
+      "required": [
+        "line",
+        "col",
+        "endLine",
+        "endCol",
+        "kind"
+      ],
+      "description": "One place a symbol occurs in its own file, from `textDocument/documentHighlight`. Same units as LspPosition."
+    },
+    "LspOccurrencesResponse": {
+      "type": "object",
+      "properties": {
+        "occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LspOccurrence"
+          }
+        }
+      },
+      "required": [
+        "occurrences"
+      ],
+      "description": "Every occurrence of the symbol at a position in the same file; empty when the server has none or no opinion."
+    },
+    "LspPosition": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "1-based."
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "0-based UTF-16 offset in the line."
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "col"
+      ],
+      "description": "A point in a new-side file. LSP semantics: the column counts UTF-16 units, like a JS string index."
+    },
+    "LspProcessStatus": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Program name, for messages: the basename of the command's first word, e.g. `pyrefly`."
+        },
+        "command": {
+          "type": "string",
+          "description": "The command line it was started from."
+        },
+        "state": {
+          "$ref": "#/$defs/LspState",
+          "description": "`ready` means initialized; LSP has no universal workspace-ready signal."
+        },
+        "message": {
+          "type": "string"
+        },
+        "activity": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Active work reported through LSP work-done progress; absent when none is reported."
+        },
+        "notice": {
+          "$ref": "#/$defs/LspNotice",
+          "description": "What the server last said to the reader through `window/showMessage`, when it was a\nwarning or an error. Its log never stands here: that is `log`."
+        },
+        "log": {
+          "$ref": "#/$defs/LspLogCounts",
+          "description": "The server's output channel in brief; `GET /api/lsp/log` lists the lines."
+        }
+      },
+      "required": [
+        "name",
+        "command",
+        "state",
+        "log"
+      ]
+    },
+    "LspProjects": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "What it was pointed at, e.g. `TypeScript 5.9.3` or `Cargo workspaces`."
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository-relative, else `~`-abbreviated or absolute. Empty when nothing was found."
+        }
+      },
+      "required": [
+        "label",
+        "paths"
+      ],
+      "description": "Where diffle pointed a server, found from the diff's files: which project's code it reads."
+    },
+    "LspServerStatus": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Program name, for messages: the basename of the command's first word, e.g. `pyrefly`."
+        },
+        "command": {
+          "type": "string",
+          "description": "The command line it was started from."
+        },
+        "state": {
+          "$ref": "#/$defs/LspState",
+          "description": "`ready` means initialized; LSP has no universal workspace-ready signal."
+        },
+        "message": {
+          "type": "string"
+        },
+        "activity": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Active work reported through LSP work-done progress; absent when none is reported."
+        },
+        "notice": {
+          "$ref": "#/$defs/LspNotice",
+          "description": "What the server last said to the reader through `window/showMessage`, when it was a\nwarning or an error. Its log never stands here: that is `log`."
+        },
+        "log": {
+          "$ref": "#/$defs/LspLogCounts",
+          "description": "The server's output channel in brief; `GET /api/lsp/log` lists the lines."
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LanguageId"
+          },
+          "description": "Languages it owns: asked first, and alone for highlights, token kinds and outlines."
+        },
+        "joins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LanguageId"
+          },
+          "description": "Languages it answers for beside their owner, such as Tailwind's class hovers in markup."
+        },
+        "supports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LspFeature"
+          },
+          "description": "What its `initialize` result advertised; empty while starting."
+        },
+        "projects": {
+          "$ref": "#/$defs/LspProjects",
+          "description": "Absent for a server diffle points at no project."
+        }
+      },
+      "required": [
+        "name",
+        "command",
+        "state",
+        "log",
+        "languages",
+        "joins",
+        "supports"
+      ],
+      "description": "A process plus the languages the pool routes to it."
+    },
+    "LspState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "ready",
+        "unavailable"
+      ],
+      "description": "One language server process, as its bridge sees it."
+    },
+    "LspStatus": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "False with `--no-lsp`: no server will start for this run."
+        },
+        "servers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LspServerStatus"
+          },
+          "description": "One entry per started server. Empty until a snapshot names a language with a server on PATH."
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LspMissing"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "servers",
+        "missing"
+      ]
+    },
+    "LspSymbol": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "LSP SymbolKind number; the client maps it to a label."
+        },
+        "container": {
+          "type": "string",
+          "description": "Enclosing class or function, when any."
+        },
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Line of the name, where navigation lands."
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "First line of the declaration's full range, before `line` when a decorator or doc comment leads it."
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Last line of the declaration's full range."
+        },
+        "col": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "path",
+        "line",
+        "startLine",
+        "endLine",
+        "col"
+      ]
+    },
+    "LspSymbolsResponse": {
+      "type": "object",
+      "properties": {
+        "symbols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LspSymbol"
+          }
+        },
+        "inconclusive": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbols"
+      ],
+      "description": "`GET /api/lsp/symbols`: a file's outline with `path`, else the repository's symbols matching `q`."
+    },
+    "MessagePatch": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "body"
+      ]
+    },
+    "Moved": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "The snapshot a reload would supersede."
+        },
+        "oldSha": {
+          "type": "string",
+          "description": "Where the comparison `Snapshot.commits` spans resolves now."
+        },
+        "newSha": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "oldSha",
+        "newSha"
+      ],
+      "description": "The compared refs resolve elsewhere than when the shown snapshot was taken. A refs-live\ncomparison is not recomputed under the reviewer; it reloads on request."
+    },
+    "PairStatus": {
+      "type": "string",
+      "enum": [
+        "identical",
+        "changed",
+        "message",
+        "added",
+        "dropped"
+      ],
+      "description": "How a commit of the older iteration relates to one of the newer, as `git range-diff` pairs them."
+    },
+    "PatchQuery": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "PatchRequest": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "maxItems": 200,
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "description": "Body of `POST /api/patch`: the changed files whose patches to return, concatenated. Unknown paths are skipped."
+    },
+    "Permalink": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why there is no link: no forge origin, the worktree, a review that changed, an unpushed commit."
+        }
+      },
+      "required": [
+        "url",
+        "reason"
+      ],
+      "description": "A link to lines at the commit their side shows, judged from local refs alone (no token, no\nnetwork, no cache, so a push shows on the next request), or why there is none."
+    },
+    "PermalinkRequest": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Snapshot.version the lines were read from; another one is refused with a reason."
+        },
+        "path": {
+          "type": "string",
+          "description": "The changed file's path; an old-side link follows a rename to its old path."
+        },
+        "side": {
+          "$ref": "#/$defs/Side"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "version",
+        "path",
+        "side",
+        "startLine",
+        "endLine"
+      ],
+      "description": "Lines of one side of a snapshot to link to on the forge origin points at."
+    },
+    "PullRef": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "repository": {
+          "type": "string",
+          "description": "`owner/name` of the base repository."
+        },
+        "headRepository": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`owner/name` of the head repository; null when it was deleted."
+        }
+      },
+      "required": [
+        "url",
+        "number",
+        "repository",
+        "headRepository"
+      ],
+      "description": "The pull request a range was entered as: its identity, which keys its comments and names its export target."
+    },
+    "RangeCommit": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "short": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "date": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Author date, epoch milliseconds."
+        }
+      },
+      "required": [
+        "sha",
+        "short",
+        "message",
+        "author",
+        "email",
+        "date"
+      ],
+      "description": "One commit of the compared range."
+    },
+    "RangeCommits": {
+      "type": "object",
+      "properties": {
+        "list": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RangeCommit"
+          },
+          "description": "Oldest first; the newest MAX_RANGE_COMMITS when there are more."
+        },
+        "total": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "oldSha": {
+          "type": "string",
+          "description": "The spanned range's resolved endpoints: the snapshot's own when it shows the whole range."
+        },
+        "newSha": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "list",
+        "total",
+        "oldSha",
+        "newSha"
+      ],
+      "description": "The commits the review's range spans: old..new, with the worktree taken as HEAD; a lone commit lists itself.\nEvery slice of a range lists the range's."
+    },
+    "RangeEnds": {
+      "type": "object",
+      "properties": {
+        "oldSha": {
+          "type": "string"
+        },
+        "newSha": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "oldSha",
+        "newSha"
+      ],
+      "description": "A range's resolved endpoints, `oldSha..newSha`."
+    },
+    "RangePair": {
+      "type": "object",
+      "properties": {
+        "old": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RangeCommit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "new": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RangeCommit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/PairStatus"
+        }
+      },
+      "required": [
+        "old",
+        "new",
+        "status"
+      ],
+      "description": "One row of a range-diff: `identical` and `changed` pairs have both commits, a `message` pair\nthe same patch under a new message, an `added` commit no old side and a `dropped` one no new side."
+    },
+    "RangeRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "iteration"
+            },
+            "n": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "kind",
+            "n"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "named"
+            },
+            "old": {
+              "type": "string"
+            },
+            "new": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "old",
+            "new"
+          ]
+        }
+      ],
+      "description": "One side of an interdiff: a recorded iteration of the range, or a range the reviewer named, `old..new`."
+    },
+    "RangeView": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "whole"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "commit"
+            },
+            "sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sha"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "uncommitted"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "interdiff"
+            },
+            "from": {
+              "$ref": "#/$defs/RangeRef"
+            },
+            "to": {
+              "$ref": "#/$defs/RangeRef"
+            },
+            "pair": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "from"
+          ]
+        }
+      ],
+      "description": "Which slice of a range is on screen. The range's commits stay listed whatever is shown.\n- `whole`: the range itself.\n- `commit`: one listed commit against its first parent.\n- `uncommitted`: the uncommitted changes of a range that ends at the worktree.\n- `interdiff`: what `to` (the range as it is now when absent) changed since `from`: `from`'s\n  head replayed onto `to`'s base against `to`'s head, so a rebase in between does not show up\n  as the upstream's changes. With `pair`, one pair of the two ranges' commits by its new-side\n  hash: that commit against its old self replayed onto its parent, or against its parent when added."
+    },
+    "RefsResponse": {
+      "type": "object",
+      "properties": {
+        "defaultBranch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "remoteBranches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sha": {
+                "type": "string"
+              },
+              "short": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sha",
+              "short",
+              "subject"
+            ]
+          }
+        }
+      },
+      "required": [
+        "defaultBranch",
+        "current",
+        "branches",
+        "remoteBranches",
+        "tags",
+        "recent"
+      ]
+    },
+    "ReplyCreate": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "body"
+      ]
+    },
+    "ResolvedRequest": {
+      "type": "object",
+      "properties": {
+        "resolved": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "resolved"
+      ]
+    },
+    "Review": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "range"
+            },
+            "old": {
+              "type": "string"
+            },
+            "new": {
+              "type": "string"
+            },
+            "base": {
+              "$ref": "#/$defs/ComparisonBase"
+            },
+            "pr": {
+              "$ref": "#/$defs/PullRef"
+            },
+            "view": {
+              "$ref": "#/$defs/RangeView"
+            }
+          },
+          "required": [
+            "kind",
+            "old",
+            "new",
+            "base",
+            "view"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "commit"
+            },
+            "sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sha"
+          ]
+        }
+      ],
+      "description": "What is under review, as named: a range between two revisions (either may be \"worktree\"), with\nthe slice of it on screen, or one commit against its first parent. Nothing here is resolved:\nthe snapshot carries the hashes, what the review follows and where its comments live."
+    },
+    "ReviewedCommit": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "short": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "First parent; null for a root commit."
+        },
+        "child": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The commit whose first parent this is, toward HEAD; null at HEAD or off HEAD's first-parent line."
+        }
+      },
+      "required": [
+        "sha",
+        "short",
+        "message",
+        "parent",
+        "child"
+      ],
+      "description": "A single reviewed commit and its neighbours along HEAD's first-parent history, for stepping through it."
+    },
+    "SearchContent": {
+      "type": "string",
+      "enum": [
+        "diff",
+        "full"
+      ],
+      "description": "Whether search includes whole files or only new-side diff hunks and their context."
+    },
+    "SearchMatch": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "1-based line on the new side."
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "text"
+      ]
+    },
+    "SearchQuery": {
+      "type": "object",
+      "properties": {
+        "q": {
+          "default": "",
+          "type": "string"
+        },
+        "scope": {
+          "default": "diff",
+          "$ref": "#/$defs/SearchScope"
+        },
+        "content": {
+          "default": "diff",
+          "$ref": "#/$defs/SearchContent"
+        },
+        "path": {
+          "type": "string"
+        },
+        "word": {
+          "type": "string",
+          "enum": [
+            "0",
+            "1"
+          ]
+        },
+        "i": {
+          "type": "string",
+          "enum": [
+            "0",
+            "1"
+          ]
+        },
+        "re": {
+          "type": "string",
+          "enum": [
+            "0",
+            "1"
+          ]
+        }
+      }
+    },
+    "SearchResponse": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "matches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SearchMatch"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query",
+        "matches",
+        "truncated"
+      ]
+    },
+    "SearchScope": {
+      "type": "string",
+      "enum": [
+        "file",
+        "diff",
+        "repo"
+      ],
+      "description": "Where `/api/search` looks: one file (`path`), the diff's changed files (default), or the whole new-side tree."
+    },
+    "ServerMessage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "moved"
+            },
+            "moved": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Moved"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "moved"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "threads"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "viewed"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "config"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "lsp"
+            },
+            "payload": {
+              "$ref": "#/$defs/LspStatus"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        }
+      ]
+    },
+    "Side": {
+      "type": "string",
+      "enum": [
+        "old",
+        "new"
+      ]
+    },
+    "Snapshot": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "review": {
+          "$ref": "#/$defs/Review"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Monotonic; bumps on every refresh and mode switch."
+        },
+        "oldSha": {
+          "type": "string",
+          "description": "Resolved endpoints; either can be the worktree sentinel. An interdiff's old side is a replayed tree."
+        },
+        "newSha": {
+          "type": "string"
+        },
+        "headSha": {
+          "type": "string",
+          "description": "The checked-out commit; '' on an unborn branch. Symbol navigation needs newSha to be this or the worktree."
+        },
+        "follows": {
+          "$ref": "#/$defs/Live",
+          "description": "What the review follows: worktree edits recompute it, moved refs announce themselves, nothing for pinned sides."
+        },
+        "commentKey": {
+          "type": "string",
+          "description": "Where the review's threads and viewed marks live: fixed by what was entered, never by\ndiscovery, so they survive pushes. An interdiff keeps viewed marks under a key of its own,\nbut takes no new threads: its old side is a replayed tree the range never shows again."
+        },
+        "interdiff": {
+          "$ref": "#/$defs/Interdiff",
+          "description": "Set for an interdiff view: how it was resolved."
+        },
+        "context": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Context lines the patches were generated with."
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChangedFile"
+          }
+        },
+        "tree": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "All paths on the new side: the new commit's tree, or index ∪ untracked for the worktree. Sorted."
+        },
+        "commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewedCommit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The shown commit, with its neighbours: a lone commit, a focused one, or an added commit of an interdiff pair; otherwise null."
+        },
+        "commits": {
+          "$ref": "#/$defs/RangeCommits"
+        },
+        "iterations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Iteration"
+          },
+          "description": "The recorded iterations of the range `commits` spans, oldest first; empty for comparisons that are not followed."
+        }
+      },
+      "required": [
+        "root",
+        "review",
+        "version",
+        "oldSha",
+        "newSha",
+        "headSha",
+        "follows",
+        "commentKey",
+        "context",
+        "changed",
+        "tree",
+        "commit",
+        "commits",
+        "iterations"
+      ]
+    },
+    "SymbolsQuery": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "q": {
+          "type": "string"
+        }
+      }
+    },
+    "ThreadCreate": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "side": {
+          "$ref": "#/$defs/Side",
+          "description": "Default 'new'."
+        },
+        "startLine": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "endLine": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Default startLine."
+        },
+        "body": {
+          "type": "string"
+        },
+        "quoted": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "body"
+      ],
+      "description": "Create payload. Without `startLine` the thread is on the file as a whole; then `side`,\n`endLine` and `quoted` are refused rather than ignored, so a payload that meant a line\nnever lands on the file. `quoted` is optional: the server quotes the range from the snapshot."
+    },
+    "ThreadQuery": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/ThreadState",
+          "description": "Default 'open' for export, 'all' for list."
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "ThreadState": {
+      "type": "string",
+      "enum": [
+        "open",
+        "resolved",
+        "all"
+      ]
+    },
+    "UserConfig": {
+      "type": "object",
+      "properties": {
+        "autoViewed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs (picomatch syntax) for files that start viewed + collapsed. Empty by default."
+        },
+        "contextLines": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Unchanged lines shown around each change (git -U). Default 5."
+        },
+        "followRefs": {
+          "$ref": "#/$defs/FollowRefs",
+          "description": "When a review between refs recomputes as its refs move; see `FollowRefsSchema`. Default auto."
+        },
+        "lineWrap": {
+          "type": "boolean",
+          "description": "Wrap long lines in the viewer instead of scrolling them sideways. Default true."
+        },
+        "lspCommands": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/LanguageId"
+          },
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Language server command per language, replacing the built-in candidate for it; an empty\nstring disables the language. Read-only over HTTP; set in the config file, whose path `diffle config` prints."
+        },
+        "githubHosts": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "GitHub Enterprise hosts: the host in remote urls → the host serving the web UI and API, the\nsame one for most. github.com needs no entry. Read-only over HTTP; set by editing the\nconfig file."
+        }
+      },
+      "required": [
+        "autoViewed",
+        "contextLines",
+        "followRefs",
+        "lineWrap",
+        "lspCommands",
+        "githubHosts"
+      ]
+    },
+    "VersionResponse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "The server's semantic version, as `diffle --version` prints it."
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "description": "What `GET /api/version` answers before anything else is ready: the server's release, so a\nclient can tell whether it speaks this server's contract."
+    },
+    "ViewedBulkRequest": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ViewedEntry"
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ]
+    },
+    "ViewedEntry": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "blob": {
+          "type": "string"
+        },
+        "viewed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "blob",
+        "viewed"
+      ],
+      "description": "Explicit viewed/unviewed mark for a path at a specific new-side content."
+    },
+    "ViewedState": {
+      "type": "string",
+      "enum": [
+        "unviewed",
+        "viewed",
+        "restale"
+      ],
+      "description": "Derived per changed file: 'restale' means viewed at an older blob."
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "mdiff",
+  "version": "0.1.0",
+  "identifier": "app.mdiff.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --port 1420 --strictPort",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "mdiff",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 640,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' blob: data:; worker-src 'self' blob:; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "shortDescription": "A focused workspace for code review",
+    "category": "DeveloperTool",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../vendor/diffle/LICENSE": "licenses/diffle-LICENSE",
+      "../vendor/diffle/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "../vendor/diffle/MDIFF-PROVENANCE.md": "licenses/MDIFF-PROVENANCE.md",
+      "../NATIVE_THIRD_PARTY_NOTICES.md": "licenses/NATIVE_THIRD_PARTY_NOTICES.md",
+      "../LICENSE": "licenses/mdiff-LICENSE"
+    },
+    "license": "GPL-3.0-only"
+  }
+}

@@ -1,0 +1,31 @@
+output: [summary]
+no_auto_install: true
+templates:
+  run: run --as-is --quiet --no-progress
+pre-commit:
+  fail_on_changes: always
+  jobs:
+    - name: pixi-install
+      run: pixi install --quiet --no-progress
+    - name: format
+      run: npm run format -- --no-error-on-unmatched-pattern {staged_files}
+    - name: rustfmt
+      glob: "*.rs"
+      run: cargo fmt -- {staged_files}
+    - name: lint
+      run: npm run lint -- --no-error-on-unmatched-pattern {staged_files}
+    - name: typecheck
+      run: npm run typecheck
+    - name: clippy
+      glob: "{*.rs,Cargo.toml,Cargo.lock,protocol.generated.json}"
+      run: cargo clippy --locked --all-targets -- -D warnings
+    - name: quality-gate
+      run: npm run quality-gate
+    - name: version
+      run: npm run check-version
+    - name: licenses
+      glob: "{Cargo.lock,package-lock.json,about.toml,about.hbs,vite.config.ts,scripts/licenses*}"
+      run: pixi run licenses
+    - name: zizmor
+      glob: "*.{yml,yaml}"
+      run: pixi {run} zizmor --no-progress --min-severity high --fix --offline .

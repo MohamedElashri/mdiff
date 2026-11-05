@@ -1,0 +1,69 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node", "react", "react-hooks"],
+  "categories": { "correctness": "error" },
+  "jsPlugins": ["eslint-plugin-better-tailwindcss"],
+  "settings": {
+    "better-tailwindcss": {
+      "entryPoint": "./src/client/styles.css",
+      "detectComponentClasses": true
+    }
+  },
+  "rules": {
+    "better-tailwindcss/no-unknown-classes": "error",
+    "better-tailwindcss/no-conflicting-classes": "error",
+    "better-tailwindcss/no-concatenated-classes": "error",
+    "better-tailwindcss/no-duplicate-classes": "error",
+    "better-tailwindcss/no-deprecated-classes": "error",
+    // Vite rewrites `?worker` imports to a module oxlint cannot resolve, so it sees
+    // no default export where one exists.
+    "import/default": "off",
+    // The client writes `ref.current` during render on purpose: a "latest value" ref
+    // keeps window listeners and viewer callbacks off the dependency treadmill, and
+    // the per-path version refs in `ReviewPane` are how item ids are derived.
+    "react/refs": "off",
+    // Four effects reset local state when an external signal flips (edit mode opens,
+    // the symbol picker opens, a mode is requested, a highlight job restarts). Each
+    // also does non-state work in the same effect, so the rule's fixes do not apply.
+    "react/set-state-in-effect": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../**", "!../**/package.json"],
+                "message": "Import across directories through the `@/` alias (`src/*`); `./` stays for siblings."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["test/**"],
+      "plugins": ["vitest"],
+      "rules": {
+        // `vi.fn()` inference is enough here; spelling out every signature is noise.
+        "vitest/require-mock-type-parameters": "off",
+        // Vitest's `expect(value, message)` labels the assertion. The rule is Jest's,
+        // where the second argument does not exist.
+        "vitest/valid-expect": "off",
+        // These cases assert that a call rejects; the message is git's or the
+        // platform's, not a contract of ours.
+        "vitest/require-to-throw-message": "off",
+        // App code is reached through `@/`; `../` stays for the helpers beside the tests.
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [{ "regex": "^(\\.\\./)+src/", "message": "Import app code through the `@/` alias (`src/*`)." }]
+          }
+        ]
+      }
+    }
+  ]
+}

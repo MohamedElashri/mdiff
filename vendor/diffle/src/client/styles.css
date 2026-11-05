@@ -1,0 +1,56 @@
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+@import './styles/fonts.css' layer(base);
+@import './styles/theme.css' layer(base);
+@import './styles/base.css' layer(base);
+@import './styles/markdown.css' layer(components);
+@import './styles/viewers.css' layer(components);
+@import './appearance/appearance.css' layer(components);
+
+@theme inline {
+  --color-canvas: var(--bg);
+  --color-surface: var(--bg-2);
+  --color-hover: var(--bg-3);
+  --color-raised: var(--bg-raised);
+  --color-foreground: var(--fg);
+  --color-muted: var(--fg-2);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-danger: var(--danger);
+  --color-warn: var(--warn);
+  --color-add: var(--add);
+  --color-del: var(--del);
+  --color-kind-type: var(--kind-type);
+  --color-kind-callable: var(--kind-callable);
+  --color-kind-value: var(--kind-value);
+  --color-card: var(--bg-card);
+  --font-mono: var(--mono);
+  --font-sans: var(--sans);
+  --shadow-card: var(--review-card-shadow);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes tip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+@keyframes flash-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0.375rem);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}

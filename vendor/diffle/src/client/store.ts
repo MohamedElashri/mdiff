@@ -1,0 +1,2863 @@
+import { subscribeTheme, getTheme } from './theme.js';
+import type { CodeViewLineSelection, FileContents, FileDiffMetadata } from '@pierre/diffs';
+import { hydratePartialDiff, parsePatchFiles } from '@pierre/diffs';
+import type { FileTree } from '@pierre/trees';
+import { create } from 'zustand';
+import {
+  DEFAULT_USER_CONFIG,
+  languageOf,
+  reviewKey,
+  shownIterations,
+  type GithubMetadata,
+  type ChangedFile,
+  type CommentThread,
+  type FileResponse,
+  type LspFeature,
+  type LspLocation,
+  type LspOccurrence,
+  type LspPosition,
+  type LspStatus,
+  type LspSymbol,
+  type EnterRequest,
+  type RangeView,
+  type Moved,
+  type SearchMatch,
+  type SearchScope,
+  type SearchContent,
+  type Side,
+  type Snapshot,
+  type UserConfig,
+  type ViewedEntry,
+  type LspLogEntry,
+} from '@/shared/protocol.js';
+import { hoverOnly, joinedBy, lspBlocker } from '@/shared/lsp.js';
+import { api } from './api.js';
+import { anchorFromRange, sideOf } from './comments/anchor.js';
+import {
+  buildNav,
+  cursorFromSelection,
+  selectionFor,
+  step,
+  stepFile,
+  stepHunk,
+  type Cursor,
+  type LineRange,
+  type NavItem,
+} from './keyboard/nav.js';
+import { isToken, lspTarget, type TokenTarget } from './lsp/target.js';
+import { blocksSymbol } from './lsp/syntax.js';
+import type { ExportOutcome, ModePane } from './model.js';
+import {
+  composerKey,
+  canJumpBack,
+  canJumpForward,
+  currentPath,
+  filterSymbols,
+  isCollapsed,
+  isViewed,
+  nextFileAfter,
+  itemIdOf,
+  linesOf,
+  MODE_PANES,
+  OVERSIZED_LINES,
+  patchBatches,
+  pathFromItemId,
+  rangeStep,
+  reuseThreads,
+  selectionRange,
+  visibleThreads,
+  commentsOff,
+  iterationPick,
+  iterationStep,
+} from './model.js';
+import { applyTheme, readTheme, storeTheme, type ThemeChoice } from './theme.js';
+import type { ViewId } from './views/state.js';
+
+export type Loaded =
+  | { kind: 'diff'; fileDiff: FileDiffMetadata }
+  | { kind: 'file'; file: FileContents }
+  | { kind: 'binary' }
+  /** A diff too large to load unasked (see OVERSIZED_LINES); `loadPatch` fetches it. */
+  | { kind: 'oversized'; lines: number }
+  | { kind: 'error'; message: string }
+  /** Not fetched yet: the review pane's header-only placeholder. The store never records this kind. */
+  | { kind: 'loading' };
+
+/** The comment being composed: on a line selection, or on the file as a whole when `selection` is null. */
+export interface Draft {
+  path: string;
+  selection: CodeViewLineSelection | null;
+}
+
+export type DiffStyle = 'split' | 'unified';
+const DIFF_STYLE_KEY = 'diffle:diffStyle';
+/** Typing pause before a workspace symbol query goes to the server. */
+export const WORKSPACE_SYMBOL_DEBOUNCE_MS = 150;
+/** How long every toast stays visible: long enough to read a full sentence, since errors are the main thing shown. */
+export const TOAST_MS = 3500;
+/** How an image diff shows its two sides: next to each other, or stacked with a swipe, a fade or a pixel difference. */
+export const IMAGE_COMPARES = ['side-by-side', 'swipe', 'onion', 'difference'] as const;
+export type ImageCompare = (typeof IMAGE_COMPARES)[number];
+const IMAGE_COMPARE_KEY = 'diffle:imageCompare';
+function readImageCompare(): ImageCompare {
+  try {
+    const stored = localStorage.getItem(IMAGE_COMPARE_KEY);
+    return IMAGE_COMPARES.find((c) => c === stored) ?? 'side-by-side';
+  } catch {
+    return 'side-by-side';
+  }
+}
+function readDiffStyle(): DiffStyle {
+  try {
+    return localStorage.getItem(DIFF_STYLE_KEY) === 'unified' ? 'unified' : 'split';
+  } catch {
+    return 'split';
+  }
+}
+
+export interface SearchState {
+  open: boolean;
+  /** What the matches are: a text search, the references of `query`, or whole-word occurrences of it (* / #). */
+  kind: 'text' | 'references' | 'word';
+  /** Which way `n` walks the matches: -1 after `#`, as in vim. */
+  direction: 1 | -1;
+  /** Text-search options; `*` / `#` ignore them (whole word, case-sensitive, whole repository). */
+  ignoreCase: boolean;
+  regex: boolean;
+  /** Local search stays pinned to one file; global search covers changed files. */
+  scope: Exclude<SearchScope, 'repo'>;
+  /** Each search location remembers its own content mode. */
+  content: Record<Exclude<SearchScope, 'repo'>, SearchContent>;
+  /** The file owning the local search bar and its results, pinned when search opens. */
+  path: string | null;
+  /** Bumped by `g/` so the box takes focus again after `n` / `N` blurred it. */
+  focusNonce: number;
+  /** Unsubmitted text survives the file header being virtualized away. */
+  input: string;
+  /** A prefilled input stays selected until edited, so typing replaces it. */
+  selected: boolean;
+  editing: boolean;
+  query: string;
+  matches: Match[];
+  index: number;
+  loading: boolean;
+  truncated: boolean;
+}
+
+export interface PanelLayout {
+  /** In px once the user has dragged its resizer; null leaves the view's default in charge. */
+  width: number | null;
+  visible: boolean;
+}
+
+export interface LayoutState {
+  /** In px once the user has dragged the resizer; null leaves the stylesheet's rem default in charge. */
+  treeWidth: number | null;
+  treeVisible: boolean;
+  /** Each view's side panel: comments beside the diff read differently from the details beside the graph. */
+  panels: Partial<Record<ViewId, PanelLayout>>;
+}
+const LAYOUT_KEY = 'diffle:layout';
+function readLayout(): LayoutState {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    const saved = raw ? (JSON.parse(raw) as Partial<LayoutState>) : {};
+    return { treeWidth: saved.treeWidth ?? null, treeVisible: saved.treeVisible ?? true, panels: saved.panels ?? {} };
+  } catch {
+    return { treeWidth: null, treeVisible: true, panels: {} };
+  }
+}
+
+// Unsent comment text lives for the tab, so a reload or an accidental Esc does not lose it.
+const UNSENT_KEY = 'diffle:unsent';
+function readUnsent(): Record<string, string> {
+  try {
+    const raw = sessionStorage.getItem(UNSENT_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Small action popover anchored at a clicked symbol. */
+export interface SymbolMenuState {
+  target: TokenTarget;
+  /** Viewport coordinates of the click. */
+  x: number;
+  y: number;
+}
+
+/** Editor-style tooltip with what the language server knows about the hovered symbol. */
+export interface HoverState {
+  target: TokenTarget;
+  /** Markdown from the server. */
+  contents: string;
+  /** Viewport box of the hovered token; the tooltip hangs below it, or above near the bottom edge. */
+  anchor: { left: number; top: number; bottom: number };
+}
+
+/** Where the symbol under the cursor or pointer recurs in its file, painted by `lsp/occurrences.ts`. */
+export interface OccurrencesState {
+  target: TokenTarget;
+  items: LspOccurrence[];
+}
+
+/**
+ * A line a result list jumps to: a search hit, or a language-server location that may be external.
+ * `under` names the symbol a references list groups it under, past its file.
+ */
+export type Match = SearchMatch &
+  Pick<LspLocation, 'external'> &
+  Partial<Pick<LspLocation, 'col'>> & { under?: { name: string; kind: number } };
+
+/** Full-screen list of a symbol's references; Enter jumps to the highlighted one. */
+export interface ReferencesState {
+  open: boolean;
+  /**
+   * References of `symbol`, the lines where `symbol` uses others, or the candidate types a
+   * type-definition query returned for it.
+   */
+  kind: 'references' | 'uses' | 'types';
+  symbol: string;
+  items: Match[];
+  index: number;
+  /** Show the highlighted reference in context beside the list (Space); sticky across lists until Esc leaves it. */
+  peek: boolean;
+}
+
+export interface SymbolsState {
+  open: boolean;
+  scope: 'document' | 'workspace';
+  /** Document scope: the file whose symbols are listed. */
+  path: string | null;
+  query: string;
+  /** Document scope: every symbol; `items` is the filtered view. */
+  all: LspSymbol[];
+  items: LspSymbol[];
+  index: number;
+  loading: boolean;
+}
+
+export interface JumpPosition {
+  path: string;
+  side: Side;
+  line: number;
+  /** The position sits in the file view of `path`, not in the diff list. */
+  full?: boolean;
+  /** That file view shows a file outside the snapshot (see FileView.external). */
+  external?: boolean;
+}
+
+/**
+ * A place outside the diff list that the jump list can return to, such as the change graph. The
+ * view that made it restores it; the store keeps it opaque.
+ */
+export interface ViewPlace {
+  /** Names the place, within its view too: two places with one name are one jump list entry. */
+  view: string;
+  restore(): void;
+}
+
+export type JumpPlace = JumpPosition | ViewPlace;
+
+const isView = (place: JumpPlace): place is ViewPlace => 'restore' in place;
+
+/** The same line of the same view, or the same outside view: one jump list entry, not two. */
+function samePlace(a: JumpPlace, b: JumpPlace): boolean {
+  if (isView(a) || isView(b)) return isView(a) && isView(b) && a.view === b.view;
+  return a.path === b.path && a.line === b.line && a.side === b.side && !!a.full === !!b.full;
+}
+
+/**
+ * The dedicated whole-file view: one path's new side in place of the diff list. `item` is
+ * null while it loads. `from` is where the diff list was left, so leaving the view restores it.
+ */
+export interface FileView {
+  path: string;
+  /** A file outside the snapshot that the language server named (stdlib, site-packages): absolute path, read-only, no comments. */
+  external: boolean;
+  item: Loaded | null;
+  from: { position: JumpPosition | null; activePath: string | null };
+}
+
+export type GithubState =
+  | { status: 'idle' | 'loading'; data?: never }
+  | { status: 'ready'; data: GithubMetadata }
+  | { status: 'error'; error: string; data?: never };
+
+export interface ReviewState {
+  layout: LayoutState;
+  setLayout(patch: Partial<LayoutState>): void;
+  setPanel(view: ViewId, patch: Partial<PanelLayout>): void;
+  diffStyle: DiffStyle;
+  setDiffStyle(style: DiffStyle): void;
+  imageCompare: ImageCompare;
+  setImageCompare(compare: ImageCompare): void;
+  theme: ThemeChoice;
+  setTheme(theme: ThemeChoice): void;
+
+  // Keyboard navigation and transient UI state.
+  /** Anchor row while in visual (block) mode. */
+  visualAnchor: Cursor | null;
+  /** Text typed into comment editors but not yet saved, by `composerKey`; closing an editor keeps it. */
+  unsent: Record<string, string>;
+  /** Empty text forgets the entry. */
+  setUnsent(key: string, text: string): void;
+  /** Message being edited inline. */
+  editingId: string | null;
+  setEditingId(id: string | null): void;
+  /** Thread whose reply composer is open. Exclusive with `draft`. */
+  replyTo: string | null;
+  openReply(threadId: string): void;
+  /** Thread the user jumped to from the panel; its in-diff card is outlined until the next selection or jump. */
+  focusedThread: string | null;
+  focusThread(threadId: string | null): void;
+  closeReply(): void;
+  githubMenuOpen: boolean;
+  setGithubMenuOpen(open: boolean): void;
+  github: GithubState;
+  refreshGithub(): Promise<void>;
+  modeMenuOpen: boolean;
+  setModeMenuOpen(open: boolean): void;
+  modePane: ModePane | null;
+  /** Compare-menu entry (1–5) that Enter picks; opening the menu highlights the first. */
+  modeEntry: number;
+  /** Highlight entry `n`, wrapping past either end. */
+  highlightModeEntry(n: number): void;
+  pickModeEntry(n: number): void;
+  /** Collapse the configuration pane, keeping the menu open and the highlight. */
+  closeModePane(): void;
+  /** The revision in the compare menu's Commit… pane. */
+  modeCommit: string;
+  setModeCommit(revision: string): void;
+  helpOpen: boolean;
+  setHelpOpen(open: boolean): void;
+  treeModel: FileTree | null;
+  setTreeModel(model: FileTree | null): void;
+  toast: string | null;
+  flash(message: string): void;
+  /** Bumped when a keyboard chord copies all comments, so the panel's copy button acknowledges it too. */
+  copiedAll: number;
+  noteCopiedAll(): void;
+  /** Toast for a failed fire-and-forget action: `${what} failed: <message>`. */
+  report(what: string, e: unknown): void;
+  search: SearchState;
+  /** Open the text search box; `scope` replaces the remembered scope (`/` → file, `g/` → diff); `prefill` replaces the input. */
+  openSearch(scope?: SearchState['scope'], prefill?: string): void;
+  setSearchInput(value: string): void;
+  blurSearchInput(): void;
+  typeSearchInput(key: string): void;
+  closeSearch(): void;
+  runSearch(query: string): Promise<void>;
+  /** Flip a text-search option and rerun the current query. */
+  setSearchOptions(opts: Partial<Pick<SearchState, 'ignoreCase' | 'regex'>> & { content?: SearchContent }): void;
+  moveMatch(delta: 1 | -1): void;
+  /** `*` / `#`: whole-word search for the focused word, landing on the next occurrence in `delta`'s direction. */
+  searchWord(delta: 1 | -1): Promise<void>;
+  lsp: LspStatus;
+  setLspStatus(status: LspStatus): void;
+  /** Retained log lines by server command, for the servers whose log is on screen, with the status seq they were fetched at. */
+  lspLogs: Record<string, { seq: number; entries: LspLogEntry[] }>;
+  /** Shows or hides a server's log: fetched while shown, again whenever the status says it moved. */
+  watchLspLog(command: string, shown: boolean): Promise<void>;
+  symbolMenu: SymbolMenuState | null;
+  /** Opens the popover unless LSP is off or the grammar places the target in a keyword, a string, or a comment. */
+  openSymbolMenu(target: TokenTarget, x: number, y: number): Promise<void>;
+  closeSymbolMenu(): void;
+  hover: HoverState | null;
+  /**
+   * Ask the server about the hovered `target` and show the answer at `anchor`. Silent when the
+   * server is off, the token is not queryable, or the symbol menu is open; a later request or
+   * `closeHover` drops the answer of an earlier one.
+   */
+  requestHover(target: TokenTarget, anchor: HoverState['anchor']): Promise<void>;
+  /** Open the tooltip for the focused, else hovered, token (gh). Flashes when nothing applies. */
+  showHover(): Promise<void>;
+  closeHover(): void;
+  occurrences: OccurrencesState | null;
+  /**
+   * Ask the server where the symbol at `target` recurs and paint the answer. Advisory: a blocked
+   * position, a server without the method, or a failure paints nothing and says nothing. Resolves
+   * to the occurrences fetched (empty when none), or null when nothing was asked; a newer request
+   * or `clearOccurrences` keeps an earlier answer from painting.
+   */
+  requestOccurrences(target: TokenTarget): Promise<LspOccurrence[] | null>;
+  clearOccurrences(): void;
+  /**
+   * Jump to the definition of `target` (default: the clicked, else the hovered token), or list its references
+   * when `target` is the definition. Flashes when nothing applies.
+   */
+  goToDefinition(target?: TokenTarget | null): Promise<void>;
+  /** Jump to where the type of the symbol is defined (gy). */
+  goToTypeDefinition(target?: TokenTarget | null): Promise<void>;
+  /** Follow a `diffle:` link in rendered markdown (the hover text's "Go to X") to `path` at `line`, as gd lands. */
+  goToLink(path: string, line?: number): Promise<void>;
+  /** List the references of `target` in the references overlay. */
+  findReferences(target?: TokenTarget | null): Promise<void>;
+  references: ReferencesState;
+  /** Opens the references overlay on `list`, at `index`. */
+  showReferences(list: Pick<ReferencesState, 'kind' | 'symbol' | 'items'>, index?: number): void;
+  moveReference(delta: 1 | -1): void;
+  togglePeek(): void;
+  /**
+   * Jump to the highlighted reference, or to `line` of its file (a click in the peek); the list
+   * stays available to n / N afterwards.
+   */
+  pickReference(line?: number): void;
+  closeReferences(): void;
+  symbols: SymbolsState;
+  /** document: symbols of the active file; workspace: symbols matching the typed query. */
+  openSymbols(scope: 'document' | 'workspace'): Promise<void>;
+  querySymbols(query: string): Promise<void>;
+  moveSymbol(delta: 1 | -1): void;
+  pickSymbol(): void;
+  closeSymbols(): void;
+  /** Vim-style jump list: positions left behind by hunk/file/search/panel jumps, and views left for the diff. */
+  jumps: JumpPlace[];
+  jumpIndex: number;
+  jumpBack(): void;
+  jumpForward(): void;
+  /**
+   * Lets a view shown in the diff's place join the jump list: `here` names the place while the
+   * view is shown, else null; `leave` hides the view when a jump lands in the diff.
+   */
+  registerView(view: { here(): ViewPlace | null; leave(): void }): void;
+  /** Leaves the current place in the jump list before a registered view moves within itself. */
+  recordJump(): void;
+  moveCursor(delta: 1 | -1): void;
+  /** Move by many rows (Ctrl+d / Ctrl+u), keeping the cursor at eye level. */
+  moveCursorBy(rows: number): void;
+  /** Scroll so the cursor line sits near the top or bottom of the view (zt / zb) or on the gaze point (zz); the cursor itself stays put. */
+  scrollCursorTo(edge: 'top' | 'bottom' | 'eye'): void;
+  moveFile(delta: 1 | -1 | 'first' | 'last'): void;
+  /** `{n}gg` / `{n}G`: put the cursor on new-side line `line` of the current file, expanding context if needed. */
+  goToLine(line: number): Promise<void>;
+  moveHunk(delta: 1 | -1): void;
+  toggleVisual(): void;
+  /** Edit the newest message of the thread under the cursor. */
+  editCommentAtCursor(): void;
+  /** Delete the thread under the cursor. */
+  deleteCommentAtCursor(): Promise<void>;
+  /** Flip resolved on the thread under the cursor. */
+  toggleResolvedAtCursor(): Promise<void>;
+  /** `v`: flip viewed on the file under the cursor; marking it viewed advances to the next unviewed file. */
+  toggleViewedAtCursor(): Promise<void>;
+  /** `gv`: flip viewed on the file above the cursor's, leaving the cursor where it is. */
+  toggleViewedAbove(): Promise<void>;
+  /** Open the next (or previous) unviewed file in risk order (see review/order.ts). */
+  setCollapsedAtCursor(collapsed: boolean): void;
+  setAllCollapsed(collapsed: boolean): void;
+  escape(): void;
+  snapshot: Snapshot | null;
+  /** The compared refs left the snapshot behind; `reload` catches up. Null while they agree. */
+  moved: Moved | null;
+  setMoved(moved: Moved | null): void;
+  /** Recompute the snapshot where the refs point now, keeping the mode and the viewed marks. */
+  reload(): Promise<void>;
+  /** Forget the range's recorded iterations; an interdiff on show returns to the range. */
+  clearIterations(): Promise<void>;
+  /** Forget one recorded iteration; an interdiff on show that names it returns to the range. */
+  deleteIteration(n: number): Promise<void>;
+  error: string | null;
+  threads: CommentThread[];
+  /** Resolved threads stay hidden unless the user turns them on. */
+  showResolved: boolean;
+  setShowResolved(on: boolean): void;
+  viewed: ViewedEntry[];
+  config: UserConfig;
+  /** Open while the main pane shows one whole file instead of the diff list. */
+  fileView: FileView | null;
+  loaded: Record<string, Loaded>;
+  /**
+   * Per-path content generation. Part of the CodeView item id, so a reloaded
+   * diff gets a fresh renderer instead of being patched into a stale one.
+   */
+  gens: Record<string, number>;
+  contents: Record<string, { old?: string; new?: string }>;
+  collapsed: Record<string, boolean>;
+  selection: CodeViewLineSelection | null;
+  draft: Draft | null;
+  activePath: string | null;
+  /** Ask the viewer to expand collapsed context so `line` (new side) is rendered, then center it. */
+  reveal: { id: string; path: string; line: number; col?: number; nonce: number } | null;
+  /** Context lines the viewer has expanded, by item id, so the cursor can walk them. */
+  revealed: Record<string, LineRange[]>;
+  /** Replace item `id`'s expanded context with what its renderer now shows. */
+  setRevealed(id: string, ranges: LineRange[]): void;
+  /**
+   * Where the viewer scrolls next; a new object (nonce) lands it. 'eye' pins the line at the gaze
+   * point for jump navigation and 'top' / 'bottom' near the edges (zt / zb). 'keep' pins it `offset`
+   * pixels below the sticky header: the pane issues it to hold the viewport across a re-layout.
+   */
+  scrollTarget: {
+    id: string;
+    line?: number;
+    side?: Side;
+    /** New-side column (UTF-16) to scroll into view sideways once the line lands. */
+    col?: number;
+    align?: 'start' | 'center' | 'nearest' | 'eye' | 'top' | 'bottom' | 'keep';
+    offset?: number;
+    /** Leave the viewport alone while that part of this item is on screen: its search form whole, or its top edge. */
+    unlessVisible?: 'search' | 'top';
+    nonce: number;
+  } | null;
+
+  /** Fetches everything unconditionally: the first load, and the resync after the socket reconnects. */
+  boot(): Promise<void>;
+  /** End a desktop session and invalidate all pending review work. */
+  endReview(): void;
+  /** Refetch the snapshot, threads and viewed marks. A push names the `version` it announces; one the client holds or is fetching is ignored. */
+  refreshSnapshot(version?: number): Promise<void>;
+  refreshThreads(): Promise<void>;
+  refreshViewed(): Promise<void>;
+  refreshConfig(): Promise<void>;
+  /** Enter another review, as the CLI does. */
+  enter(req: EnterRequest): Promise<'applied' | 'superseded' | { error: string }>;
+  /** Show a slice of the current range. */
+  show(view: RangeView): Promise<'applied' | 'superseded' | { error: string }>;
+  /** Show one listed commit of the current range, or with null the range itself. */
+  focusCommit(commit: string | null): void;
+  /** Show what the current range's iteration `to` changed since its iteration `from`. */
+  compareIterations(from: number, to: number): void;
+  /** Show one pair of the current interdiff by its new-side commit, or with null the whole interdiff. */
+  showPair(commit: string | null): void;
+  /** `ii`: compare the latest iteration with the one before, or from an interdiff return to the range. */
+  toggleInterdiff(): void;
+  /** `ij` / `ik` / `iJ` / `iK`: move the span's lower or higher end one iteration older (-1) or newer (1). */
+  stepIteration(end: 'lower' | 'higher', direction: -1 | 1): void;
+  /** `i1`–`i9`: compare iteration `n` with the latest. */
+  pickIteration(n: number): void;
+  /** `r`: reload where the refs point now, when they moved. */
+  reloadIfMoved(): void;
+  /**
+   * Step to the older (-1) or newer (1) entry of a range's list, the range itself past the newest; in a
+   * single-commit view, to the parent or the child toward HEAD. A no-op at either end.
+   */
+  stepCommit(direction: -1 | 1): void;
+  /** Jumps to a line of a path: in its diff for a changed file, else in the file view of that file. */
+  openFile(path: string, line?: number, side?: Side): Promise<void>;
+  /** Full contents of one side, one request per side and path per transition, shared with hydration and the file view. */
+  loadFile(path: string, side: Side): Promise<FileResponse>;
+  /** Fetch the diff of a file that loaded as oversized. No-op for anything else. */
+  loadPatch(path: string): Promise<void>;
+  /**
+   * Show a path's whole new side in the file view, with the cursor on `line` or the top. No-op for
+   * deleted files. `external` opens a file the language server named outside the snapshot instead.
+   */
+  openFullFile(path: string, line?: number, external?: boolean): Promise<void>;
+  /** Back to the diff list, at the position the file view was entered from. */
+  closeFullFile(): void;
+  setSelection(sel: CodeViewLineSelection | null): void;
+  /** Compose a comment on the selected lines. */
+  openDraft(sel: CodeViewLineSelection): Promise<void>;
+  /** Compose a comment on `path` as a whole; the composer sits above the file's first line. */
+  openFileDraft(path: string): void;
+  closeDraft(): void;
+  /** The text the current draft would quote; feeds the "suggest change" button. Empty for a file draft. */
+  draftQuote(): Promise<string>;
+  submitDraft(body: string): Promise<void>;
+  submitReply(threadId: string, body: string): Promise<void>;
+  editMessage(threadId: string, messageId: string, body: string): Promise<void>;
+  deleteMessage(threadId: string, messageId: string): Promise<void>;
+  setResolved(threadId: string, resolved: boolean): Promise<void>;
+  deleteThread(id: string): Promise<void>;
+  clearThreads(): Promise<void>;
+  deleteStaleThreads(): Promise<void>;
+  /** Adds threads to the active PR's pending review; the human submits it on GitHub. A toast appears only when threads are skipped or the post fails. */
+  /** Post open threads (or the given ones) to the PR; resolves to what happened, or null when the post failed. */
+  exportToGithub(threadIds?: string[]): Promise<ExportOutcome | null>;
+  /** Mark a file viewed (collapsing it) or not viewed (expanding it). The cursor and viewport stay put. */
+  setViewed(path: string, viewed: boolean): Promise<void>;
+  /** Mark the named changed files viewed (collapsing them) or not viewed (expanding them); explicit marks override auto-viewed globs. */
+  setViewedMany(paths: readonly string[], viewed: boolean): Promise<void>;
+  /** Collapse or expand a file from its header or the tree. The cursor and viewport stay put; `zc` is `setCollapsedAtCursor`. */
+  toggleCollapsed(path: string): void;
+  /** A click on a file's header: the cursor moves onto that file, the viewport stays where it is. */
+  selectFile(path: string): void;
+  saveConfig(
+    config: Partial<Pick<UserConfig, 'autoViewed' | 'contextLines' | 'followRefs' | 'lineWrap'>>,
+  ): Promise<void>;
+  jumpTo(path: string, line?: number, side?: Side): void;
+  setActivePath(path: string | null): void;
+}
+
+export const useStore = create<ReviewState>((set, get) => {
+  /**
+   * One token per client transition (boot, refresh, mode switch). Results of a
+   * transition commit only while its token is still current, so a slow response
+   * can never overwrite state from a newer transition.
+   */
+  let generation = 0;
+  let sessionGeneration = 0;
+  let githubRequest = 0;
+  const current = (g: number) => g === generation;
+  /** Bumped by every symbol menu open and close, so a late syntax answer cannot open a menu the user already dismissed. */
+  let menuSeq = 0;
+  /** Hover requests, newest wins: moving across tokens must not show an earlier token's answer. */
+  let hoverSeq = 0;
+  /** Occurrence requests, newest wins, like hovers. */
+  let occurrenceSeq = 0;
+  /** Servers whose log is being fetched. */
+  const logFetches = new Set<string>();
+  /** The typing pause a workspace symbol query is waiting out; a newer query ends it early. */
+  let symbolWait: { timer: ReturnType<typeof setTimeout>; wake: () => void } | null = null;
+  const cancelSymbolWait = () => {
+    if (!symbolWait) return;
+    clearTimeout(symbolWait.timer);
+    symbolWait.wake();
+    symbolWait = null;
+  };
+  /** Aborts every full-file request of the current transition; replaced by `begin`. */
+  let aborter = new AbortController();
+  /**
+   * Full-file loads of the current transition, in flight or finished, keyed by side and path.
+   * Hydration, the file view, comment anchors and the viewer's context expansion all read
+   * through it, so concurrent consumers share one request. A rejected load is dropped so the
+   * next consumer retries; the map is cleared with its transition.
+   */
+  const loads = new Map<string, Promise<FileResponse>>();
+  const begin = () => {
+    aborter.abort();
+    aborter = new AbortController();
+    loads.clear();
+    return ++generation;
+  };
+  /**
+   * Counts boots and mode switches. Viewed marks are per mode, so a mark persisted in one mode
+   * must not land after another mode took over; a watcher refresh keeps the mode and the marks.
+   */
+  let modeGeneration = 0;
+  const beginMode = () => {
+    modeGeneration++;
+    return begin();
+  };
+  /**
+   * One sequence per resource whose requests may return out of order (search, threads, viewed,
+   * config): only the newest request started may commit, whether it succeeds or fails.
+   */
+  const sequence = () => {
+    let n = 0;
+    return { start: () => ++n, latest: (t: number) => t === n };
+  };
+  const searchSeq = sequence();
+  const threadsSeq = sequence();
+  const viewedSeq = sequence();
+  const configSeq = sequence();
+  /** Runs writes one after another: the server applies same-key mutations in the order the user made them. */
+  const serial = () => {
+    let tail: Promise<unknown> = Promise.resolve();
+    return <T>(fn: () => Promise<T>): Promise<T> => {
+      const next = tail.then(fn);
+      tail = next.catch(() => {});
+      return next;
+    };
+  };
+  const viewedWrites = serial();
+  const configWrites = serial();
+  /**
+   * Version of the snapshot a refresh is fetching right now, 0 when none. The server broadcasts
+   * a new version before the request that produced it returns, so both the push and the response
+   * would otherwise start a fetch; whichever arrives second sees the version already accounted for.
+   */
+  let fetching = 0;
+  /**
+   * True from a boot until the next snapshot commits. Versions restart with the server, so a
+   * push while a reconnect resyncs must not be judged against the previous lifetime's count.
+   */
+  let resyncing = false;
+  const accounted = (version: number) =>
+    version <= fetching || (!resyncing && version <= (get().snapshot?.version ?? 0));
+  /** Threads and viewed marks for a transition, numbered so a refresh started later in the same generation wins. */
+  const fetchLists = () => {
+    const tt = threadsSeq.start();
+    const tv = viewedSeq.start();
+    return Promise.all([api.threads(), api.viewed()]).then(([threads, viewed]) => ({ threads, viewed, tt, tv }));
+  };
+  type Lists = Awaited<ReturnType<typeof fetchLists>>;
+  /** Commits one transition's threads, viewed marks and snapshot, unless a newer transition began. */
+  const commitSnapshot = async (snap: Snapshot, g: number, lists: Lists) => {
+    if (!current(g)) return;
+    if (viewedSeq.latest(lists.tv)) set({ viewed: lists.viewed });
+    if (threadsSeq.latest(lists.tt)) acceptThreads(lists.threads);
+    await applySnapshot(snap, g);
+  };
+  /** A server-side change of the snapshot within the mode (reload, forgetting iterations): fetch and commit it. */
+  /** Enters what `request` answers with: a new review, or a slice of the current one. */
+  const switchTo = async (request: () => Promise<Snapshot>) => {
+    const g = beginMode();
+    set({ error: null });
+    let snap: Snapshot | undefined;
+    // Only a fetch this call started is its to release: the version may already be a push's in flight.
+    let owned = false;
+    try {
+      snap = await request();
+      // The pushed refresh normally owns this version already; only a client without a socket gets here.
+      if (!current(g)) return 'superseded' as const;
+      if (accounted(snap.version)) return 'applied' as const;
+      fetching = snap.version;
+      owned = true;
+      await commitSnapshot(snap, g, await fetchLists());
+      return current(g) ? ('applied' as const) : ('superseded' as const);
+    } catch (e) {
+      if (!current(g)) return 'superseded' as const;
+      const error = errorMessage(e);
+      set({ error });
+      void get().refreshGithub();
+      return { error };
+    } finally {
+      if (owned && snap && fetching === snap.version) fetching = 0;
+    }
+  };
+  const transition = async (request: () => Promise<Snapshot>, what: string) => {
+    const g = begin();
+    let snap: Snapshot | undefined;
+    // As in switchTo: the pushed refresh normally owns the version before the response lands.
+    let owned = false;
+    try {
+      snap = await request();
+      if (!current(g) || accounted(snap.version)) return;
+      fetching = snap.version;
+      owned = true;
+      await commitSnapshot(snap, g, await fetchLists());
+    } catch (e) {
+      if (current(g)) get().report(what, e);
+    } finally {
+      if (owned && snap && fetching === snap.version) fetching = 0;
+    }
+  };
+  /** One side of a file in the current transition; rejects with an AbortError once a newer transition begins. */
+  const fetchFile = (path: string, side: Side): Promise<FileResponse> => {
+    const key = `${generation}\0${side}\0${path}`;
+    let p = loads.get(key);
+    if (!p) {
+      p = api.file(path, side, aborter.signal);
+      loads.set(key, p);
+      p.catch(() => loads.delete(key));
+    }
+    return p;
+  };
+  const isAbort = (e: unknown) => (e as { name?: string } | null)?.name === 'AbortError';
+  /** `fetchFile` for consumers that outlive transitions: a load the transition aborted is retried in the new one. */
+  const loadFile = async (path: string, side: Side): Promise<FileResponse> => {
+    for (;;) {
+      try {
+        return await fetchFile(path, side);
+      } catch (e) {
+        if (!isAbort(e)) throw e;
+      }
+    }
+  };
+
+  const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  /** Failures of fire-and-forget actions surface as a toast instead of an unhandled rejection. */
+  const report = (what: string, e: unknown) => get().flash(`${what} failed: ${errorMessage(e)}`);
+
+  /** Contents of one side of a file, cached per transition: a late response never seeds the next mode's cache. */
+  const ensureContents = async (path: string, side: Side): Promise<string> => {
+    const have = get().contents[path]?.[side];
+    if (have != null) return have;
+    const g = generation;
+    const res = await loadFile(path, side);
+    if (current(g))
+      set((s) => ({ contents: { ...s.contents, [path]: { ...s.contents[path], [side]: res.contents } } }));
+    return res.contents;
+  };
+
+  /**
+   * New content generation for `paths`: the item ids change, so the selection
+   * and the draft move to the new ids and the cursor survives the reload.
+   */
+  const regen = (
+    s: ReviewState,
+    paths: string[],
+  ): Pick<ReviewState, 'gens' | 'selection' | 'draft' | 'scrollTarget' | 'reveal'> => {
+    const gens = { ...s.gens };
+    for (const p of paths) gens[p] = (gens[p] ?? 0) + 1;
+    const moved = <T extends { id: string }>(x: T): T => {
+      const path = pathFromItemId(x.id);
+      return paths.includes(path)
+        ? { ...x, id: itemIdOf({ snapshot: s.snapshot, gens, fileView: s.fileView }, path) }
+        : x;
+    };
+    return {
+      gens,
+      selection: s.selection && moved(s.selection),
+      // An unmoved draft keeps its identity: a new one is an open request and refocuses the composer.
+      draft:
+        s.draft && paths.includes(s.draft.path)
+          ? { ...s.draft, selection: s.draft.selection && moved(s.draft.selection) }
+          : s.draft,
+      // A new object re-runs the scroll effect, so a jump in flight lands on the fresh renderer.
+      scrollTarget: s.scrollTarget && moved(s.scrollTarget),
+      reveal: s.reveal && moved(s.reveal),
+    };
+  };
+
+  /**
+   * Loads the patches of `paths` in bounded batches, the file the reader is on first (see
+   * `patchBatches`), each batch committing as it lands so the first diff paints before the
+   * rest downloads. Binary files and oversized diffs commit at once without a request.
+   */
+  const loadPatches = async (snap: Snapshot, paths: string[], g: number) => {
+    const byPath = new Map(snap.changed.map((f) => [f.path, f]));
+    const wanted = paths.filter((p) => byPath.has(p));
+    if (wanted.length === 0) return;
+    const immediate: Record<string, Loaded> = {};
+    const textual: ChangedFile[] = [];
+    const prev = get().loaded;
+    for (const p of wanted) {
+      const f = byPath.get(p)!;
+      if (f.binary) immediate[p] = { kind: 'binary' };
+      // A diff already on screen is refreshed in place whatever its size; only an unloaded one waits to be asked for.
+      else if (linesOf(f) > OVERSIZED_LINES && prev[p]?.kind !== 'diff')
+        immediate[p] = { kind: 'oversized', lines: linesOf(f) };
+      else textual.push(f);
+    }
+    if (Object.keys(immediate).length > 0)
+      set((s) => ({ loaded: { ...s.loaded, ...immediate }, ...regen(s, Object.keys(immediate)) }));
+    const s = get();
+    const first = [s.fileView?.path, s.activePath, s.selection && pathFromItemId(s.selection.id)].filter(
+      (p): p is string => p != null,
+    );
+    const batches = patchBatches(snap, textual, first, (p) => isCollapsed(s, p));
+    await mapLimit(
+      batches,
+      2,
+      () => !current(g),
+      (batch) => loadBatch(snap, batch, g),
+    );
+  };
+
+  /** One patch request for `paths` (non-binary changed files), committed on arrival and queued for hydration. */
+  const loadBatch = async (snap: Snapshot, paths: string[], g: number) => {
+    const byPath = new Map(snap.changed.map((f) => [f.path, f]));
+    const loaded: Record<string, Loaded> = {};
+    const files = new Map<string, FileDiffMetadata>();
+    try {
+      const patch = paths.length === 1 ? await api.patch(paths[0]!) : await api.patches(paths);
+      // Unique cache key per load: the renderer otherwise treats two diffs with
+      // undefined keys as the same and reuses stale highlighted lines.
+      const parsed = parsePatchFiles(patch, `s${snap.version}c${snap.context}t${Date.now()}`);
+      for (const p of parsed) for (const f of p.files) files.set(f.name, f);
+      for (const p of paths) {
+        const f = files.get(p);
+        loaded[p] = f ? { kind: 'diff', fileDiff: f } : { kind: 'error', message: 'patch missing for file' };
+      }
+    } catch (e) {
+      for (const p of paths) loaded[p] = { kind: 'error', message: String(e) };
+    }
+    if (!current(g)) return;
+    // First paint: the parsed patches, straight away.
+    set((s) => ({ loaded: { ...s.loaded, ...loaded }, ...regen(s, Object.keys(loaded)) }));
+    // A submodule's patch is the commit-id change itself; there is no file to hydrate from.
+    hydrate(
+      paths.filter((p) => !byPath.get(p)!.submodule),
+      files,
+      loaded,
+      g,
+    );
+  };
+
+  /**
+   * Background: swap partial (modified-file) diffs for ones hydrated with full
+   * contents so highlighting sees the whole file; a hunk alone may start inside
+   * a string or comment. Added and deleted files already carry their whole
+   * contents in the patch. Hydrated files that finish within one frame commit
+   * together; the rendered diff is never mutated, a hydrated clone replaces it.
+   *
+   * Every batch feeds one queue drained by HYDRATION_WORKERS workers, so the
+   * concurrency is bounded across batches and earlier batches hydrate first.
+   */
+  interface HydrationJob {
+    path: string;
+    file: FileDiffMetadata;
+    /** The entry the hydration replaces; a reload since then means it is of stale content. */
+    replaces: Loaded;
+    g: number;
+  }
+  const HYDRATION_WORKERS = 4;
+  const hydrationQueue: HydrationJob[] = [];
+  let hydrationWorkers = 0;
+  const hydrate = (
+    paths: string[],
+    files: Map<string, FileDiffMetadata>,
+    committed: Record<string, Loaded>,
+    g: number,
+  ) => {
+    for (const p of paths) {
+      const f = files.get(p);
+      // Pure renames and mode changes have no hunks to hydrate, and hydratePartialDiff rejects a pure
+      // rename's old file, so queueing them wastes two fetches and swallows an error.
+      if (f?.isPartial && f.hunks.length > 0 && (f.type === 'change' || f.type === 'rename-changed')) {
+        hydrationQueue.push({ path: p, file: f, replaces: committed[p]!, g });
+      }
+    }
+    while (hydrationWorkers < HYDRATION_WORKERS && hydrationWorkers < hydrationQueue.length) {
+      hydrationWorkers++;
+      void hydrationWorker();
+    }
+  };
+  const hydrationWorker = async () => {
+    try {
+      for (;;) {
+        const job = hydrationQueue.shift();
+        if (!job) return;
+        // A newer transition or a reload of the file drops the job: `begin` aborted the requests in flight.
+        if (!current(job.g) || get().loaded[job.path] !== job.replaces) continue;
+        await hydrateOne(job);
+      }
+    } finally {
+      hydrationWorkers--;
+    }
+  };
+  /** Hydrations in flight by path, so a jump can wait for the one it needs. */
+  const hydrating = new Map<string, Promise<void>>();
+  const hydrateOne = (job: HydrationJob): Promise<void> => {
+    const run = fetchHydrated(job).finally(() => {
+      if (hydrating.get(job.path) === run) hydrating.delete(job.path);
+    });
+    hydrating.set(job.path, run);
+    return run;
+  };
+  const fetchHydrated = async ({ path, file: f, replaces, g }: HydrationJob) => {
+    const stale = () => !current(g) || get().loaded[path] !== replaces;
+    try {
+      const oldPath = f.prevName ?? f.name;
+      const [o, n] = await Promise.all([fetchFile(oldPath, 'old'), fetchFile(f.name, 'new')]);
+      // Dropped if a newer transition ran or this file was reloaded meanwhile.
+      if (stale()) return;
+      const fileDiff = hydratePartialDiff('clone', f, {
+        oldFile: { name: oldPath, contents: o.contents },
+        newFile: { name: f.name, contents: n.contents },
+      });
+      queueHydrated({ path, fileDiff, old: o.contents, new: n.contents, replaces, g });
+    } catch {
+      /* keep the partial diff; highlighting degrades but the diff still renders */
+    }
+  };
+
+  /**
+   * Hydrated diffs waiting for one store commit. Every commit rebuilds the item list and the nav
+   * model over all files, so results that land within a frame are applied as one transaction.
+   */
+  interface Hydrated {
+    path: string;
+    fileDiff: FileDiffMetadata;
+    old: string;
+    new: string;
+    /** The entry this replaces; a reload since then means the hydration is of stale content. */
+    replaces: Loaded;
+    g: number;
+  }
+  let hydrated: Hydrated[] = [];
+  let hydratedFlush: (() => void) | null = null;
+  const queueHydrated = (h: Hydrated) => {
+    hydrated.push(h);
+    if (hydratedFlush) return;
+    hydratedFlush = flushHydrated;
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flushHydrated);
+    else setTimeout(flushHydrated, 0);
+  };
+  const flushHydrated = () => {
+    hydratedFlush = null;
+    const batch = hydrated;
+    hydrated = [];
+    // The identity checks run again at commit time: a transition or reload may have run since the queueing.
+    const live = batch.filter((h) => current(h.g) && get().loaded[h.path] === h.replaces);
+    if (live.length === 0) return;
+    set((s) => {
+      const loaded = { ...s.loaded };
+      const contents = { ...s.contents };
+      for (const h of live) {
+        loaded[h.path] = { kind: 'diff', fileDiff: h.fileDiff };
+        contents[h.path] = { ...contents[h.path], old: h.old, new: h.new };
+      }
+      return {
+        loaded,
+        contents,
+        ...regen(
+          s,
+          live.map((h) => h.path),
+        ),
+      };
+    });
+  };
+
+  /** Hydrate `path` ahead of the queue and commit it at once. Resolves to whether its diff is hydrated. */
+  const hydrateNow = async (path: string): Promise<boolean> => {
+    // A reload can queue the file again behind its stale job; only the live one hydrates what is shown.
+    const queued = hydrationQueue.findIndex(
+      (j) => j.path === path && current(j.g) && get().loaded[path] === j.replaces,
+    );
+    if (queued !== -1) await hydrateOne(hydrationQueue.splice(queued, 1)[0]!);
+    else await hydrating.get(path);
+    // The frame's flush would land after the jump; the queued one then finds nothing left.
+    if (hydratedFlush) flushHydrated();
+    const entry = get().loaded[path];
+    return entry?.kind === 'diff' && !entry.fileDiff.isPartial;
+  };
+
+  const applySnapshot = async (next: Snapshot, g: number) => {
+    const prev = get().snapshot;
+    const modeChanged = prev == null || reviewKey(prev.review) !== reviewKey(next.review);
+    const contextChanged = prev != null && prev.context !== next.context;
+    // `ChangedFile` names only the new blob. The old side moving (amend, rebase, a fetched base)
+    // keeps blob, status and counts and still changes every patch, so it invalidates like context does.
+    const oldMoved = prev != null && (prev.oldSha === 'worktree' || prev.oldSha !== next.oldSha);
+    const sidesMoved = oldMoved || (prev != null && prev.newSha !== next.newSha);
+    const prevChanged = new Map(prev?.changed.map((f) => [f.path, f]) ?? []);
+    const nextChanged = new Map(next.changed.map((f) => [f.path, f]));
+
+    const loaded: Record<string, Loaded> = modeChanged ? {} : { ...get().loaded };
+    // Cached sides of any path are stale once either side moved.
+    const contents = modeChanged || sidesMoved ? {} : { ...get().contents };
+    const reload: string[] = [];
+    for (const f of next.changed) {
+      const p = prevChanged.get(f.path);
+      if (modeChanged || contextChanged || oldMoved || !p || !sameChange(p, f) || loaded[f.path] == null) {
+        // The stale diff stays on screen until its replacement lands: dropping it would remove the
+        // card and reflow everything below it under the reader's eyes. A fresh wrapper object makes
+        // a hydration of the old content still in flight miss its identity check and stand down.
+        const stale = loaded[f.path];
+        if (stale) loaded[f.path] = { ...stale };
+        delete contents[f.path];
+        reload.push(f.path);
+      }
+    }
+    // Previously changed files that are now unchanged.
+    for (const path of prevChanged.keys()) {
+      if (!nextChanged.has(path)) {
+        delete loaded[path];
+        delete contents[path];
+      }
+    }
+    // The file view closes with its mode or its file; it refetches when the file's change moved
+    // (its new side differs), when it entered or left the changed set (its cached contents were
+    // dropped), or when a side moved: an unchanged file's content follows the commit it is read from.
+    // An external file is not in the tree and follows no side.
+    const prevView = get().fileView;
+    let fileView =
+      modeChanged || prevView == null || (!prevView.external && !next.tree.includes(prevView.path)) ? null : prevView;
+    const viewMoved =
+      prevView != null &&
+      !prevView.external &&
+      (sidesMoved ||
+        prevChanged.has(prevView.path) !== nextChanged.has(prevView.path) ||
+        reload.includes(prevView.path));
+    // Its item, like a stale diff, stays up until the refetch commits.
+    if (fileView && viewMoved) delete contents[fileView.path];
+    // A fold or unfold answers one version of a file. Once its blob moves, the default rules again:
+    // a file marked viewed and then edited ('restale') must reopen for re-review.
+    const collapsed: Record<string, boolean> = {};
+    if (!modeChanged) {
+      for (const [path, folded] of Object.entries(get().collapsed)) {
+        if (prevChanged.get(path)?.blob === nextChanged.get(path)?.blob) collapsed[path] = folded;
+      }
+    }
+    // A watcher refresh must not take the comment being typed with it; only a new mode or a vanished file does.
+    const draft = get().draft;
+    const keepDraft = draft != null && !modeChanged && (nextChanged.has(draft.path) || fileView?.path === draft.path);
+    resyncing = false;
+    set((s) => ({
+      snapshot: next,
+      loaded,
+      // Painted positions name the previous text; the next focus or hover asks afresh.
+      occurrences: null,
+
+      contents,
+      fileView,
+      collapsed,
+      error: null,
+      draft: keepDraft ? draft : null,
+      // A newer snapshot resolved the refs afresh; a notice about this one, or one still being fetched, stands.
+      moved: s.moved && s.moved.version < next.version ? null : s.moved,
+    }));
+    void get().refreshGithub();
+    if (modeChanged) {
+      // Positions, matches and revealed ranges all name lines of the previous mode.
+      set((s) => ({
+        selection: null,
+        visualAnchor: null,
+        replyTo: null,
+        editingId: null,
+        jumps: [],
+        jumpIndex: 0,
+        revealed: {},
+        reveal: null,
+        scrollTarget: null,
+        search: { ...s.search, open: false, kind: 'text', direction: 1, matches: [], index: -1 },
+      }));
+    }
+    await Promise.all([
+      loadPatches(next, reload, g),
+      ...(fileView && (viewMoved || !fileView.item) ? [loadFileView(fileView.path, fileView.external, g, true)] : []),
+    ]);
+  };
+
+  /**
+   * Open the file view on `path` and fetch its new side. Discarded if a transition ran since `g`
+   * or the view moved on. The selection is dropped first: it named an item of the other view.
+   * `refresh` refetches the view already open on `path`, keeping its item and cursor until the
+   * response commits.
+   */
+  const loadFileView = async (path: string, external: boolean, g: number, refresh = false) => {
+    // Moving between files inside the view keeps the original way back to the diff.
+    const from = get().fileView?.from ?? { position: currentPosition(), activePath: get().activePath };
+    if (!refresh)
+      set({
+        fileView: { path, external, item: null, from },
+        selection: null,
+        visualAnchor: null,
+        draft: null,
+        focusedThread: null,
+      });
+    let item: Loaded;
+    let contents: string | undefined;
+    try {
+      const res = await fetchFile(path, 'new');
+      contents = res.contents;
+      item = res.binary
+        ? { kind: 'binary' }
+        : { kind: 'file', file: { name: path, contents: res.contents, cacheKey: `${path}@full@${Date.now()}` } };
+    } catch (e) {
+      item = { kind: 'error', message: String(e) };
+    }
+    if (!current(g) || get().fileView?.path !== path) return;
+    set((s) => ({
+      fileView: { path, external, item, from: s.fileView?.from ?? from },
+      ...regen(s, [path]),
+      contents: contents == null ? s.contents : { ...s.contents, [path]: { ...s.contents[path], new: contents } },
+    }));
+  };
+
+  /** The navigation model, rebuilt only when one of its inputs changed: every cursor step asks for it. */
+  let navCache: { inputs: unknown[]; items: NavItem[] } | null = null;
+  const nav = (): NavItem[] => {
+    const s = get();
+    if (!s.snapshot) return [];
+    const inputs = [s.snapshot, s.loaded, s.gens, s.revealed, s.collapsed, s.viewed, s.config, s.diffStyle, s.fileView];
+    if (navCache && navCache.inputs.every((v, i) => v === inputs[i])) return navCache.items;
+    const items = buildNav(s.snapshot, s.loaded, s.gens, (p) => isCollapsed(s, p), s.revealed, s.diffStyle, s.fileView);
+    navCache = { inputs, items };
+    return items;
+  };
+
+  const currentPosition = (): JumpPosition | null => {
+    const sel = get().selection;
+    if (!sel) return null;
+    const path = pathFromItemId(sel.id);
+    const view = get().fileView;
+    if (view?.path !== path) return { path, side: sideOf(sel), line: sel.range.end };
+    return { path, side: sideOf(sel), line: sel.range.end, full: true, ...(view.external ? { external: true } : {}) };
+  };
+
+  /** The view shown in the diff's place that takes part in the jump list (see `registerView`). */
+  let outside: { here(): ViewPlace | null; leave(): void } | null = null;
+  /** Where the reader is: a view shown over the diff, else the diff's cursor. */
+  const currentPlace = (): JumpPlace | null => outside?.here() ?? currentPosition();
+
+  /** Remember where we are before a jump (vim jumplist semantics). */
+  const recordJump = () => {
+    if (silent) return;
+    const pos = currentPlace();
+    if (!pos) return;
+    const { jumps, jumpIndex } = get();
+    const kept = jumps.slice(0, jumpIndex);
+    const last = kept[kept.length - 1];
+    if (last && samePlace(last, pos)) kept.pop();
+    const next = [...kept, pos].slice(-100);
+    set({ jumps: next, jumpIndex: next.length });
+  };
+
+  /** Goes to a jump list entry without recording a jump: a view restores itself, a position closes it. */
+  const goToPlace = (place: JumpPlace) => {
+    if (isView(place)) return place.restore();
+    outside?.leave();
+    void goToPositionSilently(place);
+  };
+
+  /** Expand a collapsed file so a jump into it has something to land on. */
+  const ensureExpanded = (path: string) => {
+    if (!isCollapsed(get(), path)) return;
+    set((s) => ({ collapsed: { ...s.collapsed, [path]: false } }));
+  };
+
+  /** Move to a jumplist entry without recording another jump. */
+  let silent = false;
+  /** Run `fn` with the jumplist closed: positions it passes through are not the reader's. */
+  const quietly = <T>(fn: () => T): T => {
+    silent = true;
+    const done = () => {
+      silent = false;
+    };
+    let out: T;
+    try {
+      out = fn();
+    } catch (e) {
+      done();
+      throw e;
+    }
+    if (out instanceof Promise) return out.finally(done) as T;
+    done();
+    return out;
+  };
+  const goToPositionSilently = async (pos: JumpPosition) => {
+    // Switching views first, outside the silent window: the load records no jump of its own.
+    if (pos.full && get().fileView?.path !== pos.path) {
+      const g = generation;
+      await loadFileView(pos.path, pos.external ?? false, g);
+      if (!current(g) || get().fileView?.path !== pos.path) return;
+    } else if (!pos.full && get().fileView) {
+      set({ fileView: null, selection: null, visualAnchor: null, draft: null, focusedThread: null });
+    }
+    silent = true;
+    try {
+      goToPosition(pos);
+    } finally {
+      silent = false;
+    }
+  };
+
+  const goToPosition = (pos: JumpPosition) => {
+    if (!pos.full) ensureExpanded(pos.path);
+    const items = nav();
+    const itemIndex = items.findIndex((i) => i.path === pos.path);
+    if (itemIndex === -1) return;
+    const item = items[itemIndex]!;
+    const side = pos.side === 'old' ? 'deletions' : 'additions';
+    const rowIndex = item.rows.findIndex((r) => r.line === pos.line && r.side === side);
+    if (rowIndex !== -1) {
+      placeCursor({ itemIndex, rowIndex }, false, 'eye');
+      return;
+    }
+    set((s) => ({
+      selection: { id: item.id, range: { start: pos.line, side, end: pos.line, endSide: side } },
+      activePath: pos.path,
+      scrollTarget: {
+        id: item.id,
+        line: pos.line,
+        side: pos.side,
+        align: 'eye',
+        nonce: (s.scrollTarget?.nonce ?? 0) + 1,
+      },
+    }));
+  };
+
+  /**
+   * After a file collapses (viewed / zc): keep its header at the top of the view
+   * and move the cursor to the next file `accept` admits, so the eye has an anchor
+   * instead of content silently vanishing. An open, loaded file takes the cursor on
+   * its first hunk; a collapsed or unloaded one on its header.
+   */
+  const afterCollapse = (path: string, accept: (file: ChangedFile) => boolean) => {
+    const snapshot = get().snapshot;
+    const items = nav();
+    const item = items.find((i) => i.path === path);
+    if (!snapshot || !item) return;
+    const target = nextFileAfter(snapshot, path, accept);
+    const nextIndex = target ? items.findIndex((i) => i.path === target.path) : -1;
+    const next = items[nextIndex];
+    let sel: CodeViewLineSelection | null = null;
+    if (next && !next.collapsed && next.rows.length > 0) {
+      const hunk = next.rows.findIndex((r) => r.hunkStart);
+      sel = selectionFor(items, { itemIndex: nextIndex, rowIndex: hunk === -1 ? 0 : hunk });
+    }
+    set((s) => ({
+      selection: sel,
+      visualAnchor: null,
+      draft: null,
+      activePath: next ? next.path : path,
+      scrollTarget: { id: item.id, align: 'start', nonce: (s.scrollTarget?.nonce ?? 0) + 1 },
+    }));
+  };
+
+  /** After `v`, review continues at the next file still to be viewed, collapsed or not. */
+  const notViewed = (f: ChangedFile) => !isViewed(get(), f);
+  /** After zc, review continues at the next open file. */
+  const notCollapsed = (f: ChangedFile) => !isCollapsed(get(), f.path);
+
+  /** Place the cursor: update selection, active path, and scroll into view. */
+  /** A scroll request that pins the cursor line at `edge`; the caller checks that a selection exists. */
+  const cursorTarget = (s: ReviewState, edge: 'top' | 'bottom' | 'eye') => {
+    const sel = s.selection!;
+    return { id: sel.id, line: sel.range.end, side: sideOf(sel), align: edge, nonce: (s.scrollTarget?.nonce ?? 0) + 1 };
+  };
+
+  const placeCursor = (cur: Cursor | null, keepAnchor = false, align: 'nearest' | 'eye' = 'nearest', col?: number) => {
+    if (!cur) return;
+    if (align === 'eye') recordJump();
+    const items = nav();
+    const anchor = keepAnchor ? get().visualAnchor : null;
+    const sel = selectionFor(items, cur, anchor);
+    const item = items[cur.itemIndex];
+    if (!sel || !item) return;
+    const row = item.rows[cur.rowIndex]!;
+    set((s) => ({
+      selection: sel,
+      activePath: item.path,
+      visualAnchor: keepAnchor ? s.visualAnchor : null,
+      focusedThread: null,
+      scrollTarget: {
+        id: item.id,
+        line: row.line,
+        side: row.side === 'deletions' ? 'old' : 'new',
+        col,
+        align,
+        nonce: (s.scrollTarget?.nonce ?? 0) + 1,
+      },
+    }));
+  };
+
+  /**
+   * Open `path` and put the cursor on its new-side `line` at eye level, expanding collapsed context if needed.
+   * A `col` from a language server scrolls sideways to it.
+   */
+  const jumpToLine = async (path: string, line: number, external = false, col?: number) => {
+    // One jumplist entry per jump, taken at the origin. Opening the file parks the cursor on its
+    // first hunk on the way; recording that would make Ctrl+o land somewhere the reader never was.
+    recordJump();
+    await quietly(() => (external ? get().openFullFile(path, undefined, true) : get().openFile(path)));
+    ensureExpanded(path);
+    const items = nav();
+    const itemIndex = items.findIndex((i) => i.path === path);
+    if (itemIndex === -1) return;
+    const item = items[itemIndex]!;
+    const rowIndex = item.rows.findIndex((r) => r.side === 'additions' && r.line === line);
+    if (rowIndex !== -1) {
+      quietly(() => placeCursor({ itemIndex, rowIndex }, false, 'eye', col));
+      return;
+    }
+    // The line sits in collapsed context: have the viewer expand it, then center it.
+    if (partial(path) && !(await hydrateToReveal(path, line))) return;
+    const id = itemIdOf(get(), path);
+    set((s) => ({
+      selection: { id, range: { start: line, side: 'additions', end: line, endSide: 'additions' } },
+      activePath: path,
+      visualAnchor: null,
+      reveal: { id, path, line, col, nonce: (s.reveal?.nonce ?? 0) + 1 },
+    }));
+  };
+
+  /** Whether `path` shows a patch-only diff, whose collapsed context the viewer cannot expand. */
+  const partial = (path: string): boolean => {
+    const entry = get().loaded[path];
+    return !get().fileView && entry?.kind === 'diff' && entry.fileDiff.isPartial;
+  };
+
+  /**
+   * Hydrate a `partial` diff ahead of the queue so its folded new-side `line` can be revealed; failing that,
+   * show the line in the whole file instead. False when nothing is left to reveal: the jump went to the
+   * file view, or a transition overtook it.
+   */
+  const hydrateToReveal = async (path: string, line: number): Promise<boolean> => {
+    const g = generation;
+    const hydrated = await hydrateNow(path);
+    if (!current(g)) return false;
+    if (hydrated) return true;
+    await quietly(() => get().openFullFile(path, line));
+    return false;
+  };
+
+  /**
+   * Why `feature` cannot run right now, or null when it can. With a path, the answer is
+   * about the servers for that file's language; without one, about any of them.
+   */
+  const blocker = (path?: string, feature?: LspFeature): string | null =>
+    lspBlocker(get().lsp, get().snapshot, { path, feature });
+
+  /**
+   * Why the server cannot be asked about `target`, or null. It reads the new side only: a snapshot file, or a
+   * file outside the repository that a result named.
+   */
+  const targetBlocker = (target: Pick<TokenTarget, 'path' | 'side'>, feature?: LspFeature): string | null =>
+    blocker(target.path, feature) ?? (target.side === 'old' ? 'Symbol navigation works on the new side only' : null);
+
+  /** The LSP position for a hovered token, or null after flashing why not. */
+  const lspPosition = (target: TokenTarget | null | undefined, feature: LspFeature): LspPosition | null => {
+    const reason = !target ? (blocker(undefined, feature) ?? 'Hover a symbol first') : targetBlocker(target, feature);
+    if (reason) {
+      get().flash(reason);
+      return null;
+    }
+    return { path: target!.path, line: target!.line, col: target!.col };
+  };
+
+  /**
+   * Whether a search response may commit: its snapshot is still current and no newer search
+   * started or closed the bar. A dropped response still owns the spinner unless a newer one does.
+   */
+  const searchOwned = (g: number, t: number): boolean => {
+    if (current(g) && searchSeq.latest(t)) return true;
+    if (searchSeq.latest(t)) set((s) => ({ search: { ...s.search, loading: false } }));
+    return false;
+  };
+
+  /** gd / gy: ask the language server where `target` (or its type) lives and jump to the first answer. */
+  const jumpToLspLocation = async (target: TokenTarget | null | undefined, kind: 'definition' | 'type definition') => {
+    get().closeSymbolMenu();
+    const pos = lspPosition(target, kind === 'definition' ? 'definition' : 'typeDefinition');
+    if (!pos) return;
+    // The answer names lines of the snapshot the question was asked about.
+    const g = generation;
+    try {
+      const res = await (kind === 'definition' ? api.lspDefinition(pos) : api.lspTypeDefinition(pos));
+      if (!current(g)) return;
+      const loc = res.locations[0];
+      if (!loc) return get().flash(res.inconclusive ?? `No ${kind} found for ${target!.text}`);
+      // Already on the definition: jumping would go nowhere, so list its uses instead, as editors do.
+      if (kind === 'definition' && res.locations.every((l) => isToken(l, target!))) {
+        return await get().findReferences(target);
+      }
+      // A function's "type" comes back as every class in its signature (pyrefly lists parameter
+      // types before the return type). Picking the first would jump somewhere unasked; let the reader choose.
+      if (kind === 'type definition' && res.locations.length > 1) {
+        return get().showReferences({ kind: 'types', symbol: target!.text, items: res.locations });
+      }
+      await jumpToLine(loc.path, loc.line, loc.external, loc.col);
+    } catch (e) {
+      if (current(g)) report(kind === 'definition' ? 'Go to definition' : 'Go to type definition', e);
+    }
+  };
+
+  const currentCursor = () => cursorFromSelection(nav(), get().selection);
+
+  /** Line/file motions treat the active header as a cursor stop, including after it expands. */
+  const currentNavCursor = (): Cursor | null => {
+    const selected = currentCursor();
+    if (selected) return selected;
+    const items = nav();
+    const itemIndex = items.findIndex((item) => item.path === get().activePath);
+    return itemIndex === -1 ? null : { itemIndex, rowIndex: -1 };
+  };
+
+  /** Place a line cursor, or focus a collapsed file's header without inventing a hidden line selection. */
+  const placeNavCursor = (cur: Cursor | null, keepAnchor = false, align: 'nearest' | 'eye' = 'nearest') => {
+    if (!cur) return;
+    if (cur.rowIndex !== -1) return placeCursor(cur, keepAnchor, align);
+    const item = nav()[cur.itemIndex];
+    if (!item) return;
+    set((s) => ({
+      selection: null,
+      activePath: item.path,
+      visualAnchor: null,
+      focusedThread: null,
+      scrollTarget: {
+        id: item.id,
+        align,
+        nonce: (s.scrollTarget?.nonce ?? 0) + 1,
+      },
+    }));
+  };
+
+  const threadAtCursor = (): CommentThread | undefined => {
+    const s = get();
+    const sel = s.selection;
+    if (!sel) return undefined;
+    const path = pathFromItemId(sel.id);
+    const side = sideOf(sel);
+    const line = sel.range.end;
+    return visibleThreads(s).find(
+      (t) =>
+        t.anchor.kind === 'line' &&
+        t.anchor.path === path &&
+        t.anchor.side === side &&
+        line >= t.anchor.startLine &&
+        line <= t.anchor.endLine,
+    );
+  };
+
+  /** The authoritative list replaces the store's; threads that did not change keep their objects. */
+  const acceptThreads = (next: CommentThread[]) => set({ threads: reuseThreads(get().threads, next) });
+
+  /** A thread mutation, then the authoritative list; a failure becomes a toast. */
+  const mutateThreads = async (what: string, call: () => Promise<unknown>) => {
+    try {
+      await call();
+    } catch (e) {
+      return report(what, e);
+    }
+    await get().refreshThreads();
+  };
+
+  /**
+   * Persists an optimistic viewed change; on failure the server's marks replace the guess.
+   * The response commits only in the mode it was made for and only if no newer viewed
+   * request (mutation or refresh) has started since.
+   */
+  const persistViewed = async (what: string, call: () => Promise<ViewedEntry[]>) => {
+    const m = modeGeneration;
+    const session = sessionGeneration;
+    let t = 0;
+    try {
+      const viewed = await viewedWrites(() => {
+        if (session !== sessionGeneration) return Promise.resolve(get().viewed);
+        t = viewedSeq.start();
+        return call();
+      });
+      if (modeGeneration === m && viewedSeq.latest(t)) set({ viewed });
+    } catch (e) {
+      if (modeGeneration !== m) return;
+      report(what, e);
+      void get().refreshViewed();
+    }
+  };
+
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  return {
+    layout: readLayout(),
+    setLayout(patch) {
+      const layout = { ...get().layout, ...patch };
+      try {
+        localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+      } catch {
+        /* ignore */
+      }
+      set({ layout });
+    },
+    setPanel(view, patch) {
+      const { panels } = get().layout;
+      const panel = { width: null, visible: true, ...panels[view], ...patch };
+      get().setLayout({ panels: { ...panels, [view]: panel } });
+    },
+    theme: readTheme(),
+    setTheme(theme) {
+      storeTheme(theme);
+      applyTheme(theme);
+      set({ theme });
+    },
+    visualAnchor: null,
+    unsent: readUnsent(),
+    setUnsent(key, text) {
+      const { [key]: _, ...rest } = get().unsent;
+      const unsent = text ? { ...rest, [key]: text } : rest;
+      try {
+        sessionStorage.setItem(UNSENT_KEY, JSON.stringify(unsent));
+      } catch {
+        /* ignore */
+      }
+      set({ unsent });
+    },
+    editingId: null,
+    setEditingId(id) {
+      set({ editingId: id });
+    },
+    replyTo: null,
+    focusedThread: null,
+    focusThread(threadId) {
+      set({ focusedThread: threadId });
+    },
+    openReply(threadId) {
+      const t = get().threads.find((x) => x.id === threadId);
+      if (!t) return;
+      set({ replyTo: threadId, draft: null, activePath: t.anchor.path });
+    },
+    closeReply() {
+      if (get().replyTo) set({ replyTo: null });
+    },
+    githubMenuOpen: false,
+    github: { status: 'idle' },
+    setGithubMenuOpen(open) {
+      set({ githubMenuOpen: open, ...(open ? { modeMenuOpen: false } : {}) });
+      if (open) void get().refreshGithub();
+    },
+    async refreshGithub() {
+      const snap = get().snapshot;
+      if (!snap) return;
+      const g = generation;
+      const request = ++githubRequest;
+      const current = () => g === generation && get().snapshot === snap && githubRequest === request;
+      set({ github: { status: 'loading' } });
+      try {
+        const data = await api.github();
+        if (current()) set({ github: data.version === snap.version ? { status: 'ready', data } : { status: 'idle' } });
+      } catch (e) {
+        if (current()) set({ github: { status: 'error', error: errorMessage(e) } });
+      }
+    },
+    modeMenuOpen: false,
+    modePane: null,
+    modeEntry: 1,
+    setModeMenuOpen(open) {
+      set({ modeMenuOpen: open, modePane: null, modeEntry: 1, ...(open ? { githubMenuOpen: false } : {}) });
+    },
+    highlightModeEntry(n) {
+      const count = MODE_PANES.length;
+      const entry = ((((n - 1) % count) + count) % count) + 1;
+      if (entry !== get().modeEntry) set({ modeEntry: entry });
+    },
+    pickModeEntry(n) {
+      if (n === 1) {
+        set({ modeMenuOpen: false, modePane: null, modeEntry: 1 });
+        void get().enter({ kind: 'working' });
+      } else if (n >= 2 && n <= MODE_PANES.length) {
+        set({ modeMenuOpen: true, modePane: MODE_PANES[n - 1]!, modeEntry: n });
+      }
+    },
+    closeModePane() {
+      if (get().modePane) set({ modePane: null });
+    },
+    modeCommit: 'HEAD',
+    setModeCommit(revision) {
+      set({ modeCommit: revision });
+    },
+    helpOpen: false,
+    setHelpOpen(open) {
+      set({ helpOpen: open });
+    },
+    treeModel: null,
+    setTreeModel(model) {
+      set({ treeModel: model });
+    },
+    toast: null,
+    report,
+    flash(message) {
+      set({ toast: message });
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => set({ toast: null }), TOAST_MS);
+    },
+    copiedAll: 0,
+    noteCopiedAll() {
+      set({ copiedAll: get().copiedAll + 1 });
+    },
+    search: {
+      open: false,
+      kind: 'text',
+      direction: 1,
+      ignoreCase: true,
+      regex: false,
+      scope: 'diff',
+      content: { file: 'diff', diff: 'diff' },
+      path: null,
+      focusNonce: 0,
+      input: '',
+      selected: false,
+      editing: false,
+      query: '',
+      matches: [],
+      index: -1,
+      loading: false,
+      truncated: false,
+    },
+    openSearch(scope, prefill) {
+      searchSeq.start();
+      set((s) => {
+        const nextScope = scope ?? s.search.scope;
+        const path = nextScope === 'file' ? currentPath(s) : null;
+        const sameSearch = s.search.kind === 'text' && s.search.scope === nextScope && s.search.path === path;
+        return {
+          search: {
+            ...s.search,
+            open: true,
+            kind: 'text',
+            direction: 1,
+            scope: nextScope,
+            matches: sameSearch ? s.search.matches : [],
+            index: sameSearch ? s.search.index : -1,
+            truncated: sameSearch && s.search.truncated,
+            loading: false,
+            input: prefill ?? (s.search.open && s.search.kind === 'text' ? s.search.input : s.search.query),
+            selected: prefill !== undefined,
+            editing: true,
+            path,
+            focusNonce: s.search.focusNonce + 1,
+          },
+          ...(path
+            ? {
+                scrollTarget: {
+                  id: itemIdOf(s, path),
+                  align: 'start' as const,
+                  unlessVisible: 'search' as const,
+                  nonce: (s.scrollTarget?.nonce ?? 0) + 1,
+                },
+              }
+            : {}),
+        };
+      });
+    },
+    setSearchInput(input) {
+      set((s) => ({ search: { ...s.search, input, selected: false, editing: true } }));
+    },
+    blurSearchInput() {
+      set((s) => ({ search: { ...s.search, editing: false } }));
+    },
+    typeSearchInput(key) {
+      set((s) => ({
+        search: {
+          ...s.search,
+          input: s.search.selected
+            ? key === 'Backspace'
+              ? ''
+              : key
+            : key === 'Backspace'
+              ? Array.from(s.search.input).slice(0, -1).join('')
+              : s.search.input + key,
+          selected: false,
+          editing: true,
+          focusNonce: s.search.focusNonce + 1,
+        },
+        ...(s.search.scope === 'file' && s.search.path
+          ? {
+              scrollTarget: {
+                id: itemIdOf(s, s.search.path),
+                align: 'start' as const,
+                unlessVisible: 'search' as const,
+                nonce: (s.scrollTarget?.nonce ?? 0) + 1,
+              },
+            }
+          : {}),
+      }));
+    },
+    setSearchOptions(opts) {
+      const { content, ...options } = opts;
+      set((s) => ({
+        search: {
+          ...s.search,
+          ...options,
+          content: content ? { ...s.search.content, [s.search.scope]: content } : s.search.content,
+        },
+      }));
+      const { query, kind } = get().search;
+      if (kind === 'text' && query) void get().runSearch(query);
+    },
+    closeSearch() {
+      // Escape cancels a search in flight: its matches would move the cursor for a bar no longer shown.
+      searchSeq.start();
+      set((s) => ({
+        search: {
+          ...s.search,
+          open: false,
+          editing: false,
+          kind: 'text',
+          direction: 1,
+          matches: [],
+          index: -1,
+          loading: false,
+        },
+      }));
+    },
+    async runSearch(query) {
+      const g = generation;
+      const t = searchSeq.start();
+      // Keep edits and option changes tied to the header owning the search; `/` again re-pins.
+      const path = get().search.scope === 'file' ? get().search.path : null;
+      set((s) => ({
+        search: { ...s.search, kind: 'text', direction: 1, query, input: query, editing: false, path, loading: true },
+      }));
+      try {
+        const { ignoreCase, regex, scope, content } = get().search;
+        if (scope === 'file' && !path) {
+          set((s) => ({ search: { ...s.search, matches: [], index: -1, loading: false } }));
+          return get().flash('No file to search in');
+        }
+        const res = await api.search(query, {
+          ignoreCase,
+          regex,
+          scope,
+          content: content[scope],
+          ...(path ? { path } : {}),
+        });
+        if (!searchOwned(g, t)) return;
+        set((s) => ({
+          search: { ...s.search, matches: res.matches, truncated: res.truncated, index: -1, loading: false },
+        }));
+        if (res.matches.length) get().moveMatch(1);
+        else
+          get().flash(
+            scope === 'file'
+              ? `No matches for “${query}” in ${path}`
+              : `No matches for “${query}” in ${content[scope] === 'diff' ? 'the diff + context' : 'changed files'}`,
+          );
+      } catch (e) {
+        if (!searchOwned(g, t)) return;
+        set((s) => ({ search: { ...s.search, loading: false } }));
+        report('Search', e);
+      }
+    },
+    moveMatch(delta) {
+      const { search } = get();
+      const n = search.matches.length;
+      if (!n) return;
+      const d = delta * search.direction;
+      const index = ((search.index < 0 ? (d === 1 ? -1 : 0) : search.index) + d + n) % n;
+      const m = search.matches[index]!;
+      set({ search: { ...search, index } });
+      void jumpToLine(m.path, m.line, m.external, m.col);
+    },
+    async searchWord(delta) {
+      const word = lspTarget.get()?.text;
+      if (!word) return get().flash('Focus a word first (w / b, or hover one)');
+      const g = generation;
+      const t = searchSeq.start();
+      set((s) => ({
+        search: {
+          ...s.search,
+          open: true,
+          kind: 'word',
+          direction: delta,
+          query: word,
+          matches: [],
+          index: -1,
+          loading: true,
+          truncated: false,
+        },
+      }));
+      try {
+        const res = await api.search(word, { word: true, scope: 'repo', content: 'full' });
+        if (!searchOwned(g, t)) return;
+        const matches = res.matches;
+        // Start from the occurrence just past the cursor in the requested direction, wrapping like vim.
+        const order = new Map(get().snapshot?.tree.map((p, i) => [p, i]) ?? []);
+        const at = currentPosition();
+        const rank = (path: string) => order.get(path) ?? Infinity;
+        // Positive when the match lies after the cursor in reading order.
+        const compare = (m: SearchMatch) => (at ? rank(m.path) - rank(at.path) || m.line - at.line : delta);
+        let index =
+          delta === 1 ? matches.findIndex((m) => compare(m) > 0) : matches.findLastIndex((m) => compare(m) < 0);
+        if (index === -1 && matches.length) index = delta === 1 ? 0 : matches.length - 1;
+        set((s) => ({ search: { ...s.search, matches, truncated: res.truncated, index, loading: false } }));
+        const m = matches[index];
+        if (m) void jumpToLine(m.path, m.line);
+        else get().flash(`No other occurrence of “${word}”`);
+      } catch (e) {
+        if (!searchOwned(g, t)) return;
+        set((s) => ({ search: { ...s.search, loading: false } }));
+        report('Search', e);
+      }
+    },
+    lsp: { enabled: false, servers: [], missing: [] },
+    setLspStatus(status) {
+      set({ lsp: status });
+      for (const s of status.servers) {
+        const held = get().lspLogs[s.command];
+        if (held && held.seq !== s.log.seq) void get().watchLspLog(s.command, true);
+      }
+    },
+    lspLogs: {},
+    async watchLspLog(command, shown) {
+      if (!shown) {
+        set((s) => {
+          const { [command]: _, ...rest } = s.lspLogs;
+          return { lspLogs: rest };
+        });
+        return;
+      }
+      // One fetch at a time per server: the one in flight re-asks if the log moved meanwhile.
+      if (logFetches.has(command)) return;
+      const seqOf = () => get().lsp.servers.find((s) => s.command === command)?.log.seq ?? 0;
+      const seq = seqOf();
+      // Registered before the fetch, so a hide meanwhile wins.
+      set((s) => ({ lspLogs: { ...s.lspLogs, [command]: s.lspLogs[command] ?? { seq, entries: [] } } }));
+      logFetches.add(command);
+      try {
+        const { entries } = await api.lspLog(command);
+        set((s) => (s.lspLogs[command] ? { lspLogs: { ...s.lspLogs, [command]: { seq, entries } } } : {}));
+      } catch (e) {
+        report('Language server log', e);
+        return;
+      } finally {
+        logFetches.delete(command);
+      }
+      if (get().lspLogs[command] && seqOf() !== seq) void get().watchLspLog(command, true);
+    },
+    symbolMenu: null,
+    async openSymbolMenu(target, x, y) {
+      // A file whose servers offer hover alone (a schema server) has no symbols to act on.
+      if (hoverOnly(get().lsp, target.path)) {
+        get().closeSymbolMenu();
+        return;
+      }
+      // With language servers off every action would only flash why: no menu to offer.
+      if (!get().lsp.enabled) return;
+      get().closeHover();
+      const t = ++menuSeq;
+      const generationAtClick = generation;
+      const blocked = await blocksSymbol(target.path, target.side, target.line, target.col, () =>
+        ensureContents(target.path, target.side),
+      );
+      if (!current(generationAtClick) || t !== menuSeq) return;
+      // Keywords, strings and comments are the grammar's call; the menu's actions flash any server-side reason.
+      if (blocked) {
+        set({ symbolMenu: null });
+        return;
+      }
+      set({ symbolMenu: { target, x, y } });
+    },
+    closeSymbolMenu() {
+      menuSeq++;
+      if (get().symbolMenu) set({ symbolMenu: null });
+    },
+    hover: null,
+    async requestHover(target, anchor) {
+      const t = ++hoverSeq;
+      if (get().symbolMenu || targetBlocker(target, 'hover')) return;
+      const g = generation;
+      try {
+        // A word in a string or a comment names no symbol to the owner, so the syntax gate spares the
+        // round trip. A server joining the language answers there, though: Tailwind's classes live in strings.
+        const language = languageOf(target.path);
+        const blocked =
+          language != null && joinedBy(get().lsp, language)
+            ? false
+            : await blocksSymbol(target.path, target.side, target.line, target.col, () =>
+                ensureContents(target.path, target.side),
+              );
+        if (!current(g) || t !== hoverSeq || get().symbolMenu) return;
+        if (blocked) {
+          set({ hover: null });
+          return;
+        }
+        const res = await api.lspHover({ path: target.path, line: target.line, col: target.col });
+        if (!current(g) || t !== hoverSeq || get().symbolMenu) return;
+        set({ hover: res.contents ? { target, contents: res.contents, anchor } : null });
+      } catch {
+        /* a hover is advisory: a failed one shows nothing */
+      }
+    },
+    async showHover() {
+      const target = get().symbolMenu?.target ?? lspTarget.get();
+      if (!lspPosition(target, 'hover')) return;
+      get().closeSymbolMenu();
+      const r = lspTarget.element()?.getBoundingClientRect();
+      const anchor = r ? { left: r.left, top: r.top, bottom: r.bottom } : { left: 0, top: 0, bottom: 0 };
+      // The tooltip closes on any keydown, and its listener may run after the keymap's within the same
+      // dispatch; requesting after the dispatch keeps that close from dropping this answer as stale.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const t = hoverSeq + 1;
+      await get().requestHover(target!, anchor);
+      if (t === hoverSeq && !get().hover) get().flash(`No hover information for ${target!.text}`);
+    },
+    closeHover() {
+      hoverSeq++;
+      if (get().hover) set({ hover: null });
+    },
+    occurrences: null,
+    async requestOccurrences(target) {
+      const t = ++occurrenceSeq;
+      if (targetBlocker(target)) return null;
+      const g = generation;
+      try {
+        // A word in a comment or a string names no symbol; the syntax gate says so without a round trip.
+        const blocked = await blocksSymbol(target.path, target.side, target.line, target.col, () =>
+          ensureContents(target.path, target.side),
+        );
+        if (!current(g)) return null;
+        const items = blocked
+          ? []
+          : (await api.lspOccurrences({ path: target.path, line: target.line, col: target.col })).occurrences;
+        if (!current(g)) return null;
+        if (t === occurrenceSeq) set({ occurrences: items.length ? { target, items } : null });
+        return items;
+      } catch {
+        /* advisory: a failed request paints nothing */
+        return null;
+      }
+    },
+    clearOccurrences() {
+      occurrenceSeq++;
+      if (get().occurrences) set({ occurrences: null });
+    },
+    async goToDefinition(target = get().symbolMenu?.target ?? lspTarget.get()) {
+      await jumpToLspLocation(target, 'definition');
+    },
+    async goToTypeDefinition(target = get().symbolMenu?.target ?? lspTarget.get()) {
+      await jumpToLspLocation(target, 'type definition');
+    },
+    async goToLink(path, line) {
+      get().closeHover();
+      get().closeSymbolMenu();
+      if (line == null) await get().openFile(path);
+      else await jumpToLine(path, line);
+    },
+    async findReferences(target = get().symbolMenu?.target ?? lspTarget.get()) {
+      get().closeSymbolMenu();
+      const pos = lspPosition(target, 'references');
+      if (!pos) return;
+      const g = generation;
+      try {
+        const res = await api.lspReferences(pos);
+        if (!current(g)) return;
+        const items = res.locations;
+        if (items.length === 0) return get().flash(res.inconclusive ?? `No references to ${target!.text}`);
+        // Start on the reference after the origin, so Enter moves forward through the list.
+        const origin = items.findIndex((m) => m.path === pos.path && m.line === pos.line);
+        const index = origin === -1 ? 0 : (origin + 1) % items.length;
+        get().showReferences({ kind: 'references', symbol: target!.text, items }, index);
+      } catch (e) {
+        if (current(g)) report('Find references', e);
+      }
+    },
+    references: { open: false, kind: 'references', symbol: '', items: [], index: -1, peek: false },
+    showReferences(list, index = 0) {
+      set((s) => ({ references: { ...s.references, ...list, open: true, index } }));
+    },
+    moveReference(delta) {
+      const r = get().references;
+      const n = r.items.length;
+      if (!n) return;
+      set({ references: { ...r, index: (Math.max(r.index, 0) + delta + n) % n } });
+    },
+    togglePeek() {
+      set((s) => ({ references: { ...s.references, peek: !s.references.peek } }));
+    },
+    pickReference(line) {
+      const r = get().references;
+      const m = r.items[r.index];
+      get().closeReferences();
+      if (!m) return;
+      // Hand the list to the search bar so n / N continue from the picked reference. A type pick is one-off.
+      if (r.kind === 'references') {
+        set((s) => ({
+          search: {
+            ...s.search,
+            open: true,
+            kind: 'references',
+            direction: 1,
+            query: r.symbol,
+            matches: r.items,
+            index: r.index,
+            loading: false,
+            truncated: false,
+          },
+        }));
+      }
+      // A picked line other than the reference's own has no column to aim at. A view over the diff,
+      // the graph listing a symbol's links, gives way once the jump list has recorded it.
+      void jumpToLine(m.path, line ?? m.line, m.external, line == null || line === m.line ? m.col : undefined).then(
+        () => outside?.leave(),
+      );
+    },
+    closeReferences() {
+      set((s) => ({ references: { ...s.references, open: false } }));
+    },
+    symbols: { open: false, scope: 'document', path: null, query: '', all: [], items: [], index: -1, loading: false },
+    async openSymbols(scope) {
+      const path = scope === 'document' ? get().activePath : null;
+      if (scope === 'document' && !path) return get().flash('Move to a file first');
+      const reason = path
+        ? targetBlocker({ path, side: 'new' }, 'documentSymbol')
+        : blocker(undefined, 'workspaceSymbol');
+      if (reason) return get().flash(reason);
+      set({
+        symbols: {
+          open: true,
+          scope,
+          path: scope === 'document' ? path : null,
+          query: '',
+          all: [],
+          items: [],
+          index: -1,
+          loading: scope === 'document',
+        },
+      });
+      if (scope !== 'document') return;
+      const g = generation;
+      try {
+        const { symbols: all, inconclusive } = await api.lspSymbols({ path: path! });
+        const s = get().symbols;
+        if (!s.open || s.scope !== 'document' || s.path !== path) return;
+        // Symbol lines belong to the snapshot they were listed from.
+        if (!current(g)) return set({ symbols: { ...s, loading: false } });
+        set({ symbols: { ...s, all, items: filterSymbols(all, s.query), index: all.length ? 0 : -1, loading: false } });
+        if (!all.length && inconclusive) get().flash(inconclusive);
+      } catch (e) {
+        get().closeSymbols();
+        report('Document symbols', e);
+      }
+    },
+    async querySymbols(query) {
+      const s = get().symbols;
+      if (!s.open) return;
+      if (s.scope === 'document') {
+        const items = filterSymbols(s.all, query);
+        return set({ symbols: { ...s, query, items, index: items.length ? 0 : -1 } });
+      }
+      set({ symbols: { ...s, query, loading: query.trim().length > 0 } });
+      cancelSymbolWait();
+      if (!query.trim()) return set((st) => ({ symbols: { ...st.symbols, items: [], index: -1 } }));
+      // One server round trip per pause in typing, not per keystroke: each query
+      // resolves every hit's path through the snapshot.
+      await new Promise<void>((wake) => {
+        const timer = setTimeout(() => {
+          symbolWait = null;
+          wake();
+        }, WORKSPACE_SYMBOL_DEBOUNCE_MS);
+        symbolWait = { timer, wake };
+      });
+      if (get().symbols.query !== query || !get().symbols.open) return;
+      const g = generation;
+      try {
+        const { symbols: items, inconclusive } = await api.lspSymbols({ q: query });
+        const now = get().symbols;
+        // A newer query owns the list; a newer snapshot may have moved every symbol.
+        if (!now.open || now.query !== query) return;
+        if (!current(g)) return set({ symbols: { ...now, loading: false } });
+        set({ symbols: { ...now, items, index: items.length ? 0 : -1, loading: false } });
+        if (!items.length && inconclusive) get().flash(inconclusive);
+      } catch (e) {
+        set((st) => ({ symbols: { ...st.symbols, loading: false } }));
+        report('Workspace symbols', e);
+      }
+    },
+    moveSymbol(delta) {
+      const s = get().symbols;
+      const n = s.items.length;
+      if (!n) return;
+      set({ symbols: { ...s, index: (Math.max(s.index, 0) + delta + n) % n } });
+    },
+    pickSymbol() {
+      const s = get().symbols;
+      const sym = s.items[s.index];
+      get().closeSymbols();
+      if (sym) void jumpToLine(sym.path, sym.line, false, sym.col);
+    },
+    closeSymbols() {
+      set((s) => ({ symbols: { ...s.symbols, open: false, items: [], all: [], index: -1, loading: false } }));
+    },
+    moveCursor(delta) {
+      const items = nav();
+      placeNavCursor(step(items, currentNavCursor(), delta), get().visualAnchor != null);
+    },
+    jumps: [],
+    jumpIndex: 0,
+    jumpBack() {
+      if (!canJumpBack(get())) return;
+      // From the file view, Ctrl+o always means back to the diff, where it was left.
+      if (get().fileView) return get().closeFullFile();
+      const { jumps, jumpIndex } = get();
+      let list = jumps;
+      let index = jumpIndex;
+      if (index === list.length) {
+        // Leaving the newest position: save it so Ctrl+i can return.
+        const pos = currentPlace();
+        if (pos) list = [...list, pos];
+      }
+      index -= 1;
+      set({ jumps: list, jumpIndex: index });
+      const target = list[index];
+      if (target) goToPlace(target);
+    },
+    jumpForward() {
+      if (!canJumpForward(get())) return;
+      const { jumps, jumpIndex } = get();
+      const index = jumpIndex + 1;
+      set({ jumpIndex: index });
+      const target = jumps[index];
+      if (target) goToPlace(target);
+    },
+    registerView(view) {
+      outside = view;
+    },
+    recordJump,
+    scrollCursorTo(edge) {
+      if (!get().selection) return get().flash('No line under the cursor');
+      set((s) => ({ scrollTarget: cursorTarget(s, edge) }));
+    },
+    moveCursorBy(rows) {
+      const items = nav();
+      const dir: 1 | -1 = rows < 0 ? -1 : 1;
+      let cur = currentNavCursor();
+      for (let i = 0; i < Math.abs(rows); i++) {
+        const next = step(items, cur, dir);
+        if (!next || (cur && next.itemIndex === cur.itemIndex && next.rowIndex === cur.rowIndex)) break;
+        cur = next;
+      }
+      placeNavCursor(cur, get().visualAnchor != null, 'eye');
+    },
+    async goToLine(line) {
+      const s = get();
+      const path = currentPath(s);
+      if (!path) return s.flash('No file to jump in');
+      await jumpToLine(path, line);
+    },
+    moveFile(delta) {
+      const items = nav();
+      if (!items.length) return;
+      // A binary or unloaded file has no rows, so no selection: the active file stands in for the cursor there.
+      const at = items.findIndex((i) => i.path === get().activePath);
+      const from = currentNavCursor() ?? (at === -1 ? null : { itemIndex: at, rowIndex: 0 });
+      const cur =
+        delta === 'first'
+          ? stepFile(items, null, 1)
+          : delta === 'last'
+            ? stepFile(items, null, -1)
+            : stepFile(items, from, delta);
+      if (!cur) return;
+      const item = items[cur.itemIndex]!;
+      recordJump();
+      if (item.collapsed || item.rows.length === 0) {
+        set((s) => ({
+          selection: null,
+          activePath: item.path,
+          scrollTarget: { id: item.id, nonce: (s.scrollTarget?.nonce ?? 0) + 1 },
+        }));
+        return;
+      }
+      placeCursor(cur);
+      set((s) => ({ scrollTarget: { id: item.id, align: 'start', nonce: (s.scrollTarget?.nonce ?? 0) + 1 } }));
+    },
+    moveHunk(delta) {
+      // From the active file's header (no line selected), ] enters that file and [ leaves it backwards.
+      placeCursor(stepHunk(nav(), currentNavCursor(), delta), false, 'eye');
+    },
+    toggleVisual() {
+      const cur = currentCursor();
+      if (get().visualAnchor) {
+        set({ visualAnchor: null });
+        if (cur) placeCursor(cur);
+        return;
+      }
+      if (!cur) {
+        const first = step(nav(), null, 1);
+        if (first) placeCursor(first);
+        set({ visualAnchor: currentCursor() });
+        return;
+      }
+      set({ visualAnchor: cur });
+    },
+    editCommentAtCursor() {
+      const t = threadAtCursor();
+      const last = t?.messages[t.messages.length - 1];
+      if (last) get().setEditingId(last.id);
+    },
+    async deleteCommentAtCursor() {
+      const t = threadAtCursor();
+      if (t) await get().deleteThread(t.id);
+    },
+    async toggleResolvedAtCursor() {
+      const t = threadAtCursor();
+      if (!t) return get().flash('No thread under the cursor');
+      await get().setResolved(t.id, !t.resolved);
+      get().flash(t.resolved ? 'Thread reopened' : 'Thread resolved');
+    },
+    async toggleViewedAtCursor() {
+      const path = get().activePath;
+      const f = path ? get().snapshot?.changed.find((x) => x.path === path) : undefined;
+      if (!path || !f) return;
+      const viewed = !isViewed(get(), f);
+      // setViewed flips the mark before its first await, so the cursor moves on without
+      // waiting for the server; `notViewed` already sees the file as viewed.
+      const persisted = get().setViewed(path, viewed);
+      if (viewed) afterCollapse(path, notViewed);
+      await persisted;
+    },
+    async toggleViewedAbove() {
+      const items = nav();
+      const at = items.findIndex((i) => i.path === get().activePath);
+      const above = at > 0 ? items[at - 1]!.path : undefined;
+      const f = above ? get().snapshot?.changed.find((x) => x.path === above) : undefined;
+      if (!f) return get().flash('No file above');
+      const persisted = get().setViewed(f.path, !isViewed(get(), f));
+      // The file above folds or unfolds; pin the cursor at eye level, where `]` left it, so the text read stays put.
+      const item = items[at]!;
+      set((s) => ({
+        scrollTarget: s.selection ? cursorTarget(s, 'eye') : { id: item.id, nonce: (s.scrollTarget?.nonce ?? 0) + 1 },
+      }));
+      await persisted;
+    },
+    setCollapsedAtCursor(collapsed) {
+      const path = get().activePath;
+      if (!path) return;
+      set((s) => ({ collapsed: { ...s.collapsed, [path]: collapsed } }));
+      if (collapsed) afterCollapse(path, notCollapsed);
+      else void get().loadPatch(path);
+    },
+    setAllCollapsed(collapsed) {
+      const paths = get().snapshot?.changed.map((f) => f.path) ?? [];
+      const next: Record<string, boolean> = {};
+      for (const p of paths) next[p] = collapsed;
+      set({ collapsed: next });
+    },
+    /** Closes the topmost transient thing, innermost first; with nothing open, drops the selection. */
+    escape() {
+      const s = get();
+      if (s.helpOpen) set({ helpOpen: false });
+      else if (s.modePane) s.closeModePane();
+      else if (s.modeMenuOpen) set({ modeMenuOpen: false });
+      else if (s.githubMenuOpen) set({ githubMenuOpen: false });
+      else if (s.hover) s.closeHover();
+      else if (s.symbolMenu) s.closeSymbolMenu();
+      // A peek is a step into the list: Esc leaves it first.
+      else if (s.references.open && s.references.peek) s.togglePeek();
+      else if (s.references.open) s.closeReferences();
+      else if (s.symbols.open) s.closeSymbols();
+      else if (s.search.open) s.closeSearch();
+      else if (s.editingId) s.setEditingId(null);
+      else if (s.replyTo) s.closeReply();
+      else if (s.draft) s.closeDraft();
+      else if (s.visualAnchor) set({ visualAnchor: null });
+      else set({ selection: null });
+    },
+    diffStyle: readDiffStyle(),
+    setDiffStyle(style) {
+      try {
+        localStorage.setItem(DIFF_STYLE_KEY, style);
+      } catch {
+        /* ignore */
+      }
+      // The cursor survives the re-layout; the pane holds the viewport in place.
+      set({ diffStyle: style, draft: null, visualAnchor: null });
+    },
+    imageCompare: readImageCompare(),
+    setImageCompare(compare) {
+      try {
+        localStorage.setItem(IMAGE_COMPARE_KEY, compare);
+      } catch {
+        /* ignore */
+      }
+      set({ imageCompare: compare });
+    },
+    snapshot: null,
+    error: null,
+    threads: [],
+    showResolved: false,
+    setShowResolved(on) {
+      set({ showResolved: on });
+    },
+    viewed: [],
+    config: DEFAULT_USER_CONFIG,
+    fileView: null,
+    loaded: {},
+    gens: {},
+    contents: {},
+    collapsed: {},
+    selection: null,
+    draft: null,
+    activePath: null,
+    scrollTarget: null,
+    reveal: null,
+    revealed: {},
+    setRevealed(id, ranges) {
+      set((s) => {
+        // Every render reports, so an unchanged report must not rebuild the cursor model.
+        const prev = s.revealed[id] ?? [];
+        if (prev.length === ranges.length && prev.every(([a, b], i) => a === ranges[i]![0] && b === ranges[i]![1]))
+          return s;
+        const path = pathFromItemId(id);
+        // Ranges from an older generation of the same file describe a renderer that no longer exists.
+        const kept = Object.fromEntries(Object.entries(s.revealed).filter(([k]) => pathFromItemId(k) !== path));
+        return { revealed: { ...kept, [id]: ranges } };
+      });
+    },
+
+    endReview() {
+      sessionGeneration++;
+      beginMode();
+      cancelSymbolWait();
+      menuSeq++;
+      hoverSeq++;
+      occurrenceSeq++;
+      searchSeq.start();
+      threadsSeq.start();
+      viewedSeq.start();
+      configSeq.start();
+      const { layout, theme, config } = get();
+      set({ ...useStore.getInitialState(), layout, theme, config });
+    },
+    async boot() {
+      const session = sessionGeneration;
+      const g = beginMode();
+      // A resync may talk to a restarted server whose versions began again at 1.
+      resyncing = true;
+      fetching = 0;
+      try {
+        // The language server is optional; its status failing must not take the review down.
+        const lspStatus = api.lspStatus().catch((): LspStatus => ({ enabled: false, servers: [], missing: [] }));
+        const tc = configSeq.start();
+        const [snap, lists, config, lsp, moved] = await Promise.all([
+          api.snapshot(),
+          fetchLists(),
+          api.config(),
+          lspStatus,
+          api.moved(),
+        ]);
+        // Mode-independent, and nothing else fetches them: a pushed refresh that overtook this
+        // boot must not leave them at their defaults for the session.
+        if (session !== sessionGeneration) return;
+        set({ lsp });
+        if (configSeq.latest(tc)) set({ config });
+        await commitSnapshot(snap, g, lists);
+        // A notice the server raised about an older snapshot than the one fetched is settled.
+        if (current(g) && (moved == null || moved.version >= snap.version)) set({ moved });
+      } catch (e) {
+        if (current(g)) set({ error: errorMessage(e) });
+      }
+    },
+
+    async refreshSnapshot(version) {
+      if (version != null) {
+        if (accounted(version)) return;
+        fetching = version;
+      }
+      const g = begin();
+      try {
+        const [snap, lists] = await Promise.all([api.snapshot(), fetchLists()]);
+        await commitSnapshot(snap, g, lists);
+      } catch (e) {
+        if (current(g)) set({ error: errorMessage(e) });
+      } finally {
+        if (fetching === version) fetching = 0;
+      }
+    },
+
+    // Pushed refreshes carry the token of the transition they were issued in, so a
+    // fetch that raced a mode switch cannot show the previous mode's data; the sequence
+    // keeps two refreshes of one transition from committing in the wrong order.
+    async refreshThreads() {
+      const g = generation;
+      const t = threadsSeq.start();
+      try {
+        const threads = await api.threads();
+        if (current(g) && threadsSeq.latest(t)) acceptThreads(threads);
+      } catch (e) {
+        if (current(g) && threadsSeq.latest(t)) report('Loading threads', e);
+      }
+    },
+
+    async refreshViewed() {
+      const g = generation;
+      const t = viewedSeq.start();
+      try {
+        const viewed = await api.viewed();
+        if (current(g) && viewedSeq.latest(t)) set({ viewed });
+      } catch (e) {
+        if (current(g) && viewedSeq.latest(t)) report('Loading viewed marks', e);
+      }
+    },
+
+    async refreshConfig() {
+      const t = configSeq.start();
+      try {
+        const config = await api.config();
+        if (configSeq.latest(t)) set({ config });
+      } catch (e) {
+        if (configSeq.latest(t)) report('Loading config', e);
+      }
+    },
+
+    enter: (req) => switchTo(() => api.enter(req)),
+
+    show: (view) => switchTo(() => api.show(view)),
+
+    moved: null,
+    setMoved(moved) {
+      set({ moved });
+    },
+
+    reload: () => transition(api.reload, 'Reloading'),
+
+    clearIterations: () => transition(api.clearIterations, 'Forgetting iterations'),
+
+    deleteIteration: (n) => transition(() => api.deleteIteration(n), `Forgetting iteration #${n}`),
+
+    focusCommit(commit) {
+      void get().show(
+        commit === null
+          ? { kind: 'whole' }
+          : commit === 'worktree'
+            ? { kind: 'uncommitted' }
+            : { kind: 'commit', sha: commit },
+      );
+    },
+
+    compareIterations(from, to) {
+      void get().show({ kind: 'interdiff', from: { kind: 'iteration', n: from }, to: { kind: 'iteration', n: to } });
+    },
+
+    showPair(commit) {
+      const review = get().snapshot?.review;
+      if (review?.kind !== 'range' || review.view.kind !== 'interdiff') return;
+      void get().show({ ...review.view, pair: commit ?? undefined });
+    },
+
+    toggleInterdiff() {
+      const snap = get().snapshot;
+      if (!snap) return;
+      if (snap.review.kind === 'range' && snap.review.view.kind === 'interdiff') return get().focusCommit(null);
+      const [previous, latest] = snap.iterations.slice(-2);
+      if (!previous || !latest) return get().flash('Only one iteration so far: reload once the branch moved');
+      get().compareIterations(previous.n, latest.n);
+    },
+
+    stepIteration(end, direction) {
+      const snap = get().snapshot;
+      if (!snap) return;
+      const next = iterationStep(snap.iterations, shownIterations(snap.review), end, direction);
+      if (next) get().compareIterations(next.from, next.to);
+    },
+
+    pickIteration(n) {
+      const snap = get().snapshot;
+      const latest = snap?.iterations.at(-1);
+      if (!snap || !latest) return;
+      if (!snap.iterations.some((it) => it.n === n)) return get().flash(`No iteration #${n}`);
+      const next = iterationPick(shownIterations(snap.review), latest.n, n, false);
+      if (next) get().compareIterations(next.from, next.to);
+    },
+
+    reloadIfMoved() {
+      if (get().moved) void get().reload();
+      else get().flash('Nothing moved since this snapshot');
+    },
+
+    stepCommit(direction) {
+      const snap = get().snapshot;
+      if (!snap) return;
+      if (snap.review.kind === 'range') {
+        const target = rangeStep(snap, direction);
+        if (target === undefined) return;
+        if (snap.review.view.kind === 'interdiff') get().showPair(target);
+        else get().focusCommit(target);
+        return;
+      }
+      const target = direction < 0 ? snap.commit?.parent : snap.commit?.child;
+      if (target) void get().enter({ kind: 'revspec', args: [`${target}^!`] });
+    },
+
+    loadFile,
+
+    async openFile(path, line, side) {
+      const snap = get().snapshot;
+      if (!snap) return;
+      const changed = snap.changed.some((f) => f.path === path);
+      // The file view stays for a new-side line of the file it shows; old-side lines exist only in the diff.
+      if (!changed || (get().fileView?.path === path && side !== 'old')) {
+        await get().openFullFile(path, line);
+        return;
+      }
+      if (get().fileView) {
+        recordJump();
+        set({ fileView: null, selection: null, visualAnchor: null, draft: null, focusedThread: null });
+      }
+      get().jumpTo(path, line, side);
+      set({ activePath: path });
+    },
+
+    async loadPatch(path) {
+      const snap = get().snapshot;
+      if (!snap || get().loaded[path]?.kind !== 'oversized') return;
+      await loadBatch(snap, [path], generation);
+    },
+
+    async openFullFile(path, line, external = false) {
+      const snap = get().snapshot;
+      if (!snap) return;
+      // An external file is never in the tree; a jump inside its open view must not read that as vanished.
+      const view = get().fileView;
+      const isExternal = external || (view?.path === path && view.external);
+      if (!isExternal && !snap.tree.includes(path)) {
+        get().flash(`${path} no longer exists on this side`);
+        return;
+      }
+      const g = generation;
+      if (view?.path !== path) {
+        recordJump();
+        await loadFileView(path, isExternal, g);
+        if (!current(g) || get().fileView?.path !== path) return;
+      }
+      const item = get().fileView?.item;
+      if (item?.kind === 'error') get().flash(`Cannot open ${path}: ${item.message}`);
+      get().jumpTo(path, line);
+      set({ activePath: path });
+    },
+
+    closeFullFile() {
+      const view = get().fileView;
+      if (!view) return;
+      recordJump();
+      const { position, activePath } = view.from;
+      // Point the jumplist at the position we return to, so Ctrl+i re-enters the view.
+      const jumps = get().jumps;
+      const at = position ? jumps.findLastIndex((j) => !isView(j) && samePlace(j, position)) : -1;
+      set({
+        fileView: null,
+        selection: null,
+        visualAnchor: null,
+        draft: null,
+        focusedThread: null,
+        activePath,
+        ...(at >= 0 ? { jumpIndex: at } : {}),
+      });
+      // Restore the cursor the view was entered from; without one, at least the file that was in view.
+      if (position) void goToPositionSilently(position);
+      else if (activePath)
+        set((s) => ({
+          scrollTarget: { id: itemIdOf(s, activePath), align: 'start', nonce: (s.scrollTarget?.nonce ?? 0) + 1 },
+        }));
+    },
+
+    setSelection(sel) {
+      set({ selection: sel, visualAnchor: null, focusedThread: null });
+      // A line draft goes with its selection; a file draft has none to lose.
+      if (sel == null && get().draft?.selection) set({ draft: null });
+    },
+
+    async openDraft(sel) {
+      const off = get().snapshot && commentsOff(get().snapshot!.review);
+      if (off) return get().flash(off);
+      if (get().fileView?.external) return get().flash('Comments go on repository files only');
+      const path = pathFromItemId(sel.id);
+      set({ draft: { path, selection: sel }, selection: sel, activePath: path, replyTo: null });
+    },
+
+    openFileDraft(path) {
+      const off = get().snapshot && commentsOff(get().snapshot!.review);
+      if (off) return get().flash(off);
+      if (get().fileView?.external) return get().flash('Comments go on repository files only');
+      // The cursor stays where the reader is when that is inside this file, so `]` and `e` carry on from
+      // there; a cursor in another file gives way to this file's header as the motion stop.
+      const sel = get().selection;
+      const kept = sel && pathFromItemId(sel.id) === path ? sel : null;
+      // The composer sits above the first line, so it is off screen once the reader has scrolled into the file.
+      set((s) => ({
+        draft: { path, selection: null },
+        selection: kept,
+        visualAnchor: null,
+        activePath: path,
+        replyTo: null,
+        scrollTarget: {
+          id: itemIdOf(s, path),
+          align: 'start',
+          unlessVisible: 'top',
+          nonce: (s.scrollTarget?.nonce ?? 0) + 1,
+        },
+      }));
+      ensureExpanded(path);
+    },
+
+    // The cursor stays on the lines the draft was for, as after posting it.
+    closeDraft() {
+      set({ draft: null });
+    },
+
+    async draftQuote() {
+      const d = get().draft;
+      if (!d?.selection) return '';
+      const range = selectionRange(get(), d.path, d.selection);
+      const contents = await ensureContents(d.path, range.side);
+      return anchorFromRange(d.path, range, contents).quoted;
+    },
+
+    // The composer stays open with its text when a post fails; the toast says why.
+    async submitDraft(body) {
+      const d = get().draft;
+      if (!d || !body.trim()) return;
+      const key = composerKey(get(), { kind: 'draft' });
+      if (!d.selection) {
+        try {
+          await api.addThread({ path: d.path, body });
+        } catch (e) {
+          return report('Posting the comment', e);
+        }
+        if (key) get().setUnsent(key, '');
+        set({ draft: null });
+        await get().refreshThreads();
+        return;
+      }
+      try {
+        const range = selectionRange(get(), d.path, d.selection);
+        const contents = await ensureContents(d.path, range.side);
+        const { path, side, startLine, endLine, quoted } = anchorFromRange(d.path, range, contents);
+        await api.addThread({ path, side, startLine, endLine, quoted, body });
+      } catch (e) {
+        return report('Posting the comment', e);
+      }
+      if (key) get().setUnsent(key, '');
+      // Keep the cursor on the commented line so `e` / `dd` apply to it.
+      const s = d.selection.range;
+      set({
+        draft: null,
+        visualAnchor: null,
+        selection: {
+          id: d.selection.id,
+          range: { start: s.end, side: s.endSide ?? s.side, end: s.end, endSide: s.endSide ?? s.side },
+        },
+      });
+      await get().refreshThreads();
+    },
+
+    async submitReply(threadId, body) {
+      if (!body.trim()) return;
+      const key = composerKey(get(), { kind: 'reply', threadId });
+      try {
+        await api.reply(threadId, { body });
+      } catch (e) {
+        return report('Posting the reply', e);
+      }
+      if (key) get().setUnsent(key, '');
+      if (get().replyTo === threadId) set({ replyTo: null });
+      await get().refreshThreads();
+    },
+
+    async editMessage(threadId, messageId, body) {
+      const key = composerKey(get(), { kind: 'edit', messageId });
+      try {
+        await api.editMessage(threadId, messageId, body);
+      } catch (e) {
+        return report('Editing the message', e);
+      }
+      if (key) get().setUnsent(key, '');
+      await get().refreshThreads();
+    },
+    deleteMessage: (threadId, messageId) =>
+      mutateThreads('Deleting the message', () => api.deleteMessage(threadId, messageId)),
+    setResolved: (threadId, resolved) =>
+      mutateThreads(resolved ? 'Resolving' : 'Reopening', () => api.setResolved(threadId, resolved)),
+    deleteThread: (id) => mutateThreads('Deleting the thread', () => api.deleteThread(id)),
+    clearThreads: () => mutateThreads('Deleting all threads', () => api.clearThreads()),
+    deleteStaleThreads: () => mutateThreads('Deleting stale threads', () => api.deleteStaleThreads()),
+
+    async exportToGithub(threadIds) {
+      const snap = get().snapshot;
+      if (!snap) return null;
+      let res;
+      try {
+        res = await api.exportToGithub({ threadIds });
+      } catch (e) {
+        report('Adding to the GitHub review', e);
+        return null;
+      }
+      // Success is shown by the button's own state; only skipped threads need a toast, and
+      // an unchanged duplicate is the expected answer to re-exporting, not a warning.
+      const worrying = res.skipped.filter((s) => s.reason !== 'already in the review');
+      if (worrying.length) {
+        const total = res.posted + res.updated + res.skipped.length;
+        get().flash(`Skipped ${worrying.length} of ${total} (${worrying.map((s) => s.reason).join(', ')})`);
+      }
+      return res.posted > 0 ? 'added' : res.updated > 0 ? 'updated' : 'unchanged';
+    },
+
+    async setViewed(path, viewed) {
+      const f = get().snapshot?.changed.find((x) => x.path === path);
+      if (!f) return;
+      // Optimistic: flip locally, then persist. Older marks for the path stay so
+      // `restale` can still be derived until the server answers.
+      set((s) => ({
+        viewed: [...s.viewed.filter((v) => !(v.path === path && v.blob === f.blob)), { path, blob: f.blob, viewed }],
+        collapsed: { ...s.collapsed, [path]: viewed },
+      }));
+      await persistViewed('Marking viewed', () => api.setViewed(path, f.blob, viewed));
+    },
+
+    async setViewedMany(paths, viewed) {
+      const wanted = new Set(paths);
+      const entries = (get().snapshot?.changed ?? [])
+        .filter((f) => wanted.has(f.path))
+        .map((f) => ({ path: f.path, blob: f.blob, viewed }));
+      if (!entries.length) return;
+      // The server drops these paths' history, so the optimistic state does too.
+      set((s) => ({
+        viewed: [...s.viewed.filter((v) => !wanted.has(v.path)), ...entries],
+        collapsed: { ...s.collapsed, ...Object.fromEntries(entries.map((e) => [e.path, viewed])) },
+      }));
+      await persistViewed(viewed ? 'Marking viewed' : 'Marking not viewed', () => api.setViewedBulk(entries));
+    },
+    toggleCollapsed(path) {
+      const cur = isCollapsed(get(), path);
+      set((s) => ({ collapsed: { ...s.collapsed, [path]: !cur } }));
+      if (cur) void get().loadPatch(path);
+    },
+    selectFile(path) {
+      set({ selection: null, visualAnchor: null, activePath: path });
+    },
+
+    async saveConfig(config) {
+      const session = sessionGeneration;
+      // Saves run in order, and only the newest config request (save or load) may commit.
+      let t = 0;
+      try {
+        const saved = await configWrites(() => {
+          if (session !== sessionGeneration) return Promise.resolve(get().config);
+          t = configSeq.start();
+          return api.saveConfig(config);
+        });
+        if (configSeq.latest(t)) set({ config: saved });
+      } catch (e) {
+        if (configSeq.latest(t)) report('Saving settings', e);
+      }
+    },
+
+    jumpTo(path, line, side) {
+      recordJump();
+      if (line != null) ensureExpanded(path);
+      const id = itemIdOf(get(), path);
+      if (line == null) {
+        // Opening a file: the cursor lands on its first hunk so ] / [ / n / N continue from there.
+        const items = nav();
+        const itemIndex = items.findIndex((i) => i.id === id);
+        const item = items[itemIndex];
+        if (item && !item.collapsed && item.rows.length) {
+          const rowIndex = Math.max(
+            0,
+            item.rows.findIndex((r) => r.hunkStart),
+          );
+          set({ selection: selectionFor(items, { itemIndex, rowIndex }), visualAnchor: null });
+        }
+      }
+      if (line != null && side !== 'old') {
+        // A new-side line folded into collapsed context has no row to scroll to: expand around it first.
+        // Deleted lines always sit inside a hunk, so the old side never needs this.
+        const item = nav().find((i) => i.id === id);
+        const folded =
+          item != null &&
+          get().loaded[path]?.kind === 'diff' &&
+          !item.rows.some((r) => r.side === 'additions' && r.line === line);
+        if (folded) {
+          const reveal = () =>
+            set((s) => ({
+              activePath: path,
+              reveal: { id: itemIdOf(s, path), path, line, nonce: (s.reveal?.nonce ?? 0) + 1 },
+            }));
+          if (!partial(path)) reveal();
+          else {
+            set({ activePath: path });
+            void hydrateToReveal(path, line).then((ready) => ready && reveal());
+          }
+          return;
+        }
+      }
+      set((s) => ({
+        scrollTarget: { id, line, side, align: line ? 'eye' : 'start', nonce: (s.scrollTarget?.nonce ?? 0) + 1 },
+        activePath: path,
+      }));
+    },
+
+    setActivePath(path) {
+      set({ activePath: path });
+    },
+  };
+});
+
+function sameChange(a: ChangedFile, b: ChangedFile): boolean {
+  return (
+    a.blob === b.blob &&
+    a.status === b.status &&
+    a.oldPath === b.oldPath &&
+    a.additions === b.additions &&
+    a.deletions === b.deletions
+  );
+}
+
+// Dev-only hook: read store state from the console. Not part of the production surface.
+declare global {
+  interface Window {
+    __diffle?: () => ReviewState;
+  }
+}
+if (import.meta.env.DEV && typeof window !== 'undefined') window.__diffle = () => useStore.getState();
+
+/** Run `fn` over `items` with at most `limit` in flight; `stopped()` is consulted before each dequeue. */
+async function mapLimit<T>(
+  items: T[],
+  limit: number,
+  stopped: () => boolean,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let i = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length && !stopped()) await fn(items[i++]!);
+  });
+  await Promise.all(workers);
+}
+
+subscribeTheme(() => useStore.setState({ theme: getTheme() }));

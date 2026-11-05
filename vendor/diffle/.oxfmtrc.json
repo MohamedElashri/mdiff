@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  // The repo was written with single quotes and lines up to ~120 columns; both keep the
+  // one-time reformat to real changes instead of restyling every file.
+  "singleQuote": true,
+  "printWidth": 120,
+  "sortTailwindcss": {
+    "stylesheet": "./src/client/styles.css",
+    "functions": ["twMerge"]
+  },
+  // The workflows are hand-maintained, with pinned action SHAs and comments; the
+  // formatter only wants to reflow their quotes, so it stays out of them.
+  // Snapshots and generated files are test output, byte for byte; reformatting one would fail its test.
+  // Lockfiles belong to their package managers, which rewrite them in their own layout; the
+  // notices file is generated, and its cargo-about template is Markdown the formatter would reflow.
+  "ignorePatterns": [
+    "**/*.yml",
+    "**/*.yaml",
+    "**/__snapshots__/**",
+    "**/*.snap",
+    "**/*.generated.json",
+    "**/*.lock",
+    "**/package-lock.json",
+    "THIRD_PARTY_NOTICES.md",
+    "about.hbs"
+  ]
+}

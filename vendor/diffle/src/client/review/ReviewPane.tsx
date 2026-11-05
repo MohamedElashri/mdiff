@@ -1,0 +1,1383 @@
+import { useAppearance } from '@/client/appearance/preferences.js';
+import { Button } from '@/client/ui/Button.js';
+import type {
+  CodeViewDiffItem,
+  CodeViewItem,
+  CodeViewLineSelection,
+  DiffLineAnnotation,
+  DiffTokenEventBaseProps,
+  FileDiffLoadedFiles,
+  FileDiffMetadata,
+  FileContents,
+  LineAnnotation,
+  OnDiffLineClickProps,
+  OnLineClickProps,
+  PostRenderPhase,
+  TokenEventBase,
+} from '@pierre/diffs';
+import { CodeView, type CodeViewAnnotationArgs, type CodeViewHandle, useWorkerPool } from '@pierre/diffs/react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
+  FileText,
+  MessageSquare,
+  MessageSquarePlus,
+  RefreshCw,
+} from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { twMerge } from 'tailwind-merge';
+import { comparisonLabel, languageOf, type ChangedFile, type CommentThread, type Side } from '@/shared/protocol.js';
+import { hoverOnly, serversFor } from '@/shared/lsp.js';
+import { useCopied } from '@/client/clipboard.js';
+import { FilePath } from '@/client/FilePath.js';
+import { CopyIcon } from '@/client/ui/CopyIcon.js';
+import { lineBounds, sideOf } from '@/client/comments/anchor.js';
+import { renderedContext } from '@/client/keyboard/nav.js';
+import { SearchBar } from '@/client/keyboard/SearchBar.js';
+import { HoverTooltip, hoverControl } from '@/client/lsp/HoverTooltip.js';
+import { ReferencesList } from '@/client/lsp/ReferencesList.js';
+import { SymbolMenu } from '@/client/lsp/SymbolMenu.js';
+import { SymbolPicker } from '@/client/lsp/SymbolPicker.js';
+import { lspTarget, type TokenTarget } from '@/client/lsp/target.js';
+import {
+  draftRange,
+  imageSides,
+  type ImageSides,
+  isCollapsed,
+  itemDeps,
+  itemId,
+  itemVersion,
+  orderedPaths,
+  pathFromItemId,
+  rangeLabel,
+  viewedState,
+  visibleThreads,
+  type ItemVersion,
+  commentsOff,
+} from '@/client/model.js';
+import { remPx } from '@/client/scale.js';
+import { HIGHLIGHTER } from '@/client/theme.js';
+import { useStore, type Draft, type Loaded, type ReviewState } from '@/client/store.js';
+import { gridColumns, useViews } from '@/client/views/state.js';
+import { installInlineWheel, revealInline } from './inline.js';
+import { rowOf, topRow } from './rows.js';
+import { overflow, reviewGeometry } from './geometry.js';
+import { installOccurrenceHighlights, occurrenceControl } from '@/client/lsp/occurrences.js';
+import { focusToken, onSelectionChanged, setViewer, wordsIn } from '@/client/lsp/wordNav.js';
+import { charAtPoint, tokenRange } from '@/client/lsp/tokenText.js';
+import { installSearchHighlights } from '@/client/search/highlight.js';
+import { installCommentHighlights } from './commentHighlights.js';
+import { installWhitespaceMarks, WHITESPACE_CSS } from './whitespace.js';
+import { CommentCard } from './CommentCard.js';
+import { CommentComposer } from './CommentComposer.js';
+import { PlaceholderBanner, type PlaceholderKind } from './PlaceholderBanner.js';
+import { hostOf } from './host.js';
+import { ImageDiff } from './ImageDiff.js';
+
+export type Annot =
+  | { kind: 'placeholder'; placeholder: PlaceholderKind; message: string }
+  | { kind: 'image'; path: string; sides: ImageSides }
+  | { kind: 'thread'; thread: CommentThread }
+  | { kind: 'draft' };
+
+/** Where jump navigation parks the target line, as a fraction of the viewport height. */
+const EYE_FRACTION = 0.5;
+
+/**
+ * Full contents for both sides of a patch-based diff, fetched when the user
+ * expands context. The viewer asks only for modified and renamed files (added
+ * and deleted diffs already carry their whole contents), so the new side must
+ * exist; a missing old side is the pure-rename case the loader contract allows.
+ */
+async function loadDiffFiles(fileDiff: FileDiffMetadata): Promise<FileDiffLoadedFiles> {
+  const newPath = fileDiff.name;
+  const oldPath = fileDiff.prevName ?? newPath;
+  const { loadFile } = useStore.getState();
+  const [oldRes, newRes] = await Promise.all([
+    loadFile(oldPath, 'old').catch(() => null),
+    loadFile(newPath, 'new').catch(() => null),
+  ]);
+  if (!newRes) throw new Error(`cannot load ${newPath}`);
+  const newFile = { name: newPath, contents: newRes.contents, cacheKey: `${newPath}@new@${Date.now()}` };
+  if (!oldRes) return { oldFile: null, newFile };
+  return { oldFile: { name: oldPath, contents: oldRes.contents, cacheKey: `${oldPath}@old@${Date.now()}` }, newFile };
+}
+
+/** Tell the cursor model which context lines item `id`'s renderer shows, so j / k walk them. */
+function reportRevealed(id: string, fileDiff: FileDiffMetadata, renderer: { isLineRenderable(line: number): boolean }) {
+  useStore.getState().setRevealed(
+    id,
+    renderedContext(fileDiff, (line) => renderer.isLineRenderable(line)),
+  );
+}
+
+/** Injected into the diff viewer's shadow DOM: make the file header a distinct band. */
+const HEADER_CSS = `
+[data-diffs-header] {
+  --diffs-header-font-family: var(--mono);
+  font-size: 0.75rem;
+  background: var(--bg-2);
+  cursor: pointer;
+  /* The card's border carries the sides and top; the header only needs to separate itself from the code. */
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+/* The file under the reader's eyes: the tree's selected-row tint, so both panes point at it the same way. */
+:host([data-active]) [data-diffs-header] {
+  background: light-dark(color-mix(in lab, var(--accent) 12%, var(--bg)), color-mix(in lab, var(--accent) 15%, var(--bg)));
+}
+[data-diffs-header][data-sticky] { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+.lsp-hover { text-decoration: underline; cursor: pointer; }
+::highlight(diffle-word-focus) {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+}
+/* Where the focused or hovered symbol recurs (see lsp/occurrences.ts): reads in the focus tint, fainter; writes warmer. */
+::highlight(diffle-occurrence), ::highlight(diffle-occurrence-read) {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+
+}
+::highlight(diffle-occurrence-write) {
+  background: color-mix(in srgb, var(--search-current) 50%, transparent);
+}
+
+/* Word-level changes: the library's default tint sits too close to the line tint to pick out. */
+:host {
+  /* Pin the code canvas to our ground. Our palette is the same GitHub high-contrast theme, so this only
+     guarantees the match for the dark panes, which share --bg where the theme would tint them. */
+  --diffs-dark-bg: var(--bg);
+  --diffs-light-bg: var(--bg);
+  /* Dark keeps context rows on the same ground as the panes; light keeps the library's faint grey tint. */
+  --diffs-bg-context-override: light-dark(color-mix(in lab, var(--diffs-bg) 98.5%, var(--diffs-mixer)), var(--bg));
+  --diffs-bg-addition-emphasis-override: light-dark(rgb(from var(--diffs-addition-base) r g b / 0.32), rgb(from var(--diffs-addition-base) r g b / 0.4));
+  --diffs-bg-deletion-emphasis-override: light-dark(rgb(from var(--diffs-deletion-base) r g b / 0.32), rgb(from var(--diffs-deletion-base) r g b / 0.4));
+}
+/* A comment anchored inside a hunk would otherwise cut the tinted block in two and read as two hunks. */
+[data-line-type='change-addition'] + [data-line-annotation],
+[data-line-type='change-addition'] + [data-gutter-buffer='annotation'] { --diffs-annotation-bg: var(--diffs-bg-addition); }
+[data-line-type='change-deletion'] + [data-line-annotation],
+[data-line-type='change-deletion'] + [data-gutter-buffer='annotation'] { --diffs-annotation-bg: var(--diffs-bg-deletion); }
+/* Same for the gutter bar: the library only paints it on number cells, so a comment left a gap in it. Mirrors its 'bars' rules. */
+[data-indicators='bars'] :is([data-line-type='change-addition'], [data-line-type='change-deletion']) + [data-gutter-buffer='annotation']::after {
+  content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; user-select: none; contain: strict;
+}
+[data-indicators='bars'] [data-line-type='change-addition'] + [data-gutter-buffer='annotation']::after { background-color: var(--diffs-addition-base); }
+[data-indicators='bars'] [data-line-type='change-deletion'] + [data-gutter-buffer='annotation']::after {
+  background-image: linear-gradient(0deg, var(--diffs-bg-deletion) 50%, var(--diffs-deletion-base) 50%);
+  background-repeat: repeat;
+  background-size: 2px 2px;
+  background-size: calc(1lh / round(1lh / 2px)) calc(1lh / round(1lh / 2px));
+}
+/* Collapsed-context bars run edge to edge: inset rounded pills next to a full-width file header read as misaligned. */
+[data-separator='line-info'] [data-separator-wrapper] { padding-inline: 0 !important; margin-inline: 0 !important; }
+[data-separator='line-info'] :is([data-separator-wrapper], [data-separator-content], [data-expand-up], [data-expand-down], [data-expand-both]) { border-radius: 0 !important; }
+/* Lines a saved or draft comment refers to (see commentHighlights.ts): the selection tint, fainter, so the
+   cursor's own selection still stands out on top of it. Feeds the library's line-background chain like its own rule. */
+[data-comment-line]:not([data-selected-line]):is([data-line], [data-column-number]) {
+  --diffs-computed-selected-line-bg: light-dark(
+    color-mix(in lab, var(--diffs-computed-diff-line-bg) 90%, var(--diffs-selection-base)),
+    color-mix(in lab, var(--diffs-computed-diff-line-bg) 84%, var(--diffs-selection-base))
+  );
+}
+::highlight(diffle-search) { background: var(--search-match); }
+::highlight(diffle-search-current) { background: var(--search-current); color: var(--search-current-fg); }
+/* With wrapping off, each code column scrolls sideways under a bar at its foot. The library paints the thumb
+   only while the pointer is over the diff, in a context tint our dark palette makes invisible, so a line that
+   ran off-screen gave no sign of it. Paint it whenever the column overflows: auto drops the bar from columns
+   that fit, and the library's stable gutter keeps row heights the same either way. */
+:host { --diffs-overflow-override: auto; }
+[data-code]::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--fg-2) 55%, transparent); }
+:is([data-diff], [data-file]):hover [data-code]::-webkit-scrollbar-thumb { background-color: var(--fg-2); }
+@supports (-moz-appearance: none) {
+  [data-code] { scrollbar-color: color-mix(in srgb, var(--fg-2) 55%, transparent) transparent; }
+}
+/* A placeholder replaces the body (binary, empty, moved, oversized, failed): the banner alone fills the width.
+   The viewer still lays out a gutter, an empty row and, in split view, an old-side column; drop them all.
+   The banner marks its host (see PlaceholderBanner). */
+:host([data-placeholder]) :is(pre, [data-code]) { grid-template-columns: minmax(0, 1fr); padding-block: 0; }
+:host([data-placeholder]) :is([data-gutter], [data-deletions], [data-line], [data-column-number]) { display: none; }
+:host([data-placeholder]) [data-content] { grid-column: 1; }
+`;
+
+/**
+ * Word under the pointer → LSP target; null on punctuation or space. Diff tokens carry a side; file items
+ * are new-side only. A context line is the same text on both sides, so its old-side column resolves to the
+ * new-side line.
+ */
+function targetOf(
+  props: TokenEventBase | DiffTokenEventBaseProps,
+  itemId: string,
+  event: MouseEvent,
+): TokenTarget | null {
+  const path = pathFromItemId(itemId);
+  // No server for this language means no hover, no menu: a target would only produce blockers.
+  if (!served(path)) return null;
+  // A highlighter token can span several names (`a.b.c`, or a whole unhighlighted line); the pointer picks one.
+  const word = wordAtPoint(props.tokenElement, event, hoverOnly(useStore.getState().lsp, path));
+  if (!word) return null;
+  let side: Side = 'side' in props && props.side === 'deletions' ? 'old' : 'new';
+  let line = props.lineNumber;
+  if (side === 'old') {
+    const row = props.tokenElement.closest<HTMLElement>('[data-line]');
+    const alt = row?.dataset.lineType?.startsWith('context') ? Number(row.dataset.altLine) : NaN;
+    if (Number.isFinite(alt)) {
+      side = 'new';
+      line = alt;
+    }
+  }
+  return { path, side, line, col: props.lineCharStart + word.start, text: word.text };
+}
+
+/** Whether some running language server claims this file's language. */
+function served(path: string): boolean {
+  const language = languageOf(path);
+  const { lsp } = useStore.getState();
+  return language != null && lsp.enabled && serversFor(lsp, language).length > 0;
+}
+
+/** The identifier under the pointer inside a token span: its text and its offset within the token, or null on punctuation or space. */
+function wordAtPoint(el: HTMLElement, event: MouseEvent, config = false): { start: number; text: string } | null {
+  const text = el.textContent ?? '';
+  const at = charAtPoint(el, event.clientX, event.clientY);
+  // Schema hovers describe keys and values, including quotes, hyphens, and numeric literals.
+  if (config) return at >= 0 && /\S/.test(text[at]!) ? { start: at, text } : null;
+  return wordsIn(text).find((word) => at >= word.start && at < word.start + word.text.length) ?? null;
+}
+
+/** Underline the hovered symbol while a modifier is held, like an editor's ctrl-hover. */
+function markHover(el: HTMLElement, on: boolean): void {
+  el.classList.toggle('lsp-hover', on);
+}
+
+const codeViewOptions = {
+  preferredHighlighter: HIGHLIGHTER,
+  loadDiffFiles,
+  stickyHeaders: true,
+  enableLineSelection: true,
+  // Token hit-testing (data-char spans); also set on the worker pool in main.tsx, whose options win when the pool renders.
+  useTokenTransformer: true,
+  lineHoverHighlight: 'number',
+} as const;
+
+const LOADING: Loaded = { kind: 'loading' };
+
+type WorkerPool = NonNullable<ReturnType<typeof useWorkerPool>>;
+type PendingHighlight = { key: string; diff: FileDiffMetadata; pool: WorkerPool };
+type HighlightLookahead = { runningKey: string | null; lastKey: string | null; pending: PendingHighlight | null };
+
+function drainHighlightLookahead(state: HighlightLookahead): void {
+  if (state.runningKey || !state.pending) return;
+  const pending = state.pending;
+  state.pending = null;
+  if (state.lastKey === pending.key) return;
+  state.runningKey = pending.key;
+  void Promise.resolve()
+    .then(() => pending.pool.primeDiffHighlightCache(pending.diff))
+    .catch(() => {})
+    .finally(() => {
+      state.runningKey = null;
+      // Remember failures too: a rejected prime should not be retried on every scroll event.
+      state.lastKey = pending.key;
+      drainHighlightLookahead(state);
+    });
+}
+
+export function ReviewPane() {
+  const appearance = useAppearance();
+  const rem = remPx();
+  const geometry = useMemo(
+    () => reviewGeometry(rem, appearance.codeSize, appearance.codeWeight, appearance.ligatures),
+    [rem, appearance],
+  );
+  const snapshot = useStore((s) => s.snapshot);
+  const error = useStore((s) => s.error);
+  const loaded = useStore((s) => s.loaded);
+  const gens = useStore((s) => s.gens);
+  const fileView = useStore((s) => s.fileView);
+  const threads = useStore((s) => s.threads);
+  const showResolved = useStore((s) => s.showResolved);
+  const replyTo = useStore((s) => s.replyTo);
+  const editingId = useStore((s) => s.editingId);
+  const draft = useStore((s) => s.draft);
+  const collapsed = useStore((s) => s.collapsed);
+  const viewed = useStore((s) => s.viewed);
+  const config = useStore((s) => s.config);
+  const selection = useStore((s) => s.selection);
+  const setSelection = useStore((s) => s.setSelection);
+  const openDraft = useStore((s) => s.openDraft);
+  const goToDefinition = useStore((s) => s.goToDefinition);
+  const openSymbolMenu = useStore((s) => s.openSymbolMenu);
+  const scrollTarget = useStore((s) => s.scrollTarget);
+  const reveal = useStore((s) => s.reveal);
+  const setActivePath = useStore((s) => s.setActivePath);
+  const viewerRef = useRef<CodeViewHandle<Annot, undefined> | null>(null);
+  const workerPool = useWorkerPool();
+  const lookahead = useRef<HighlightLookahead>({
+    runningKey: null,
+    lastKey: null,
+    pending: null,
+  });
+  const theme = useStore((s) => s.theme);
+  const diffStyle = useStore((s) => s.diffStyle);
+  const lineWrap = useStore((s) => s.config.lineWrap);
+
+  // CodeView re-renders an item only when its version changes, so each path's version is derived
+  // here from what the item paints (its threads, draft, composers, collapsed state); no manual bump.
+  const versions = useRef(new Map<string, ItemVersion>());
+  const items = useMemo<CodeViewItem<Annot>[]>(() => {
+    if (!snapshot) return [];
+    const byPath = new Map(snapshot.changed.map((f) => [f.path, f]));
+    const state = { collapsed, viewed, config, snapshot };
+    const threadsByPath = new Map<string, CommentThread[]>();
+    for (const t of visibleThreads({ threads, showResolved })) {
+      const list = threadsByPath.get(t.anchor.path);
+      if (list) list.push(t);
+      else threadsByPath.set(t.anchor.path, [t]);
+    }
+    const versionOf = (path: string, mine: CommentThread[], isCollapsed: boolean) => {
+      const v = itemVersion(
+        versions.current.get(path),
+        itemDeps({ draft, replyTo, editingId }, path, mine, isCollapsed),
+      );
+      versions.current.set(path, v);
+      return v.version;
+    };
+    if (fileView) {
+      const { path, item } = fileView;
+      const mine = threadsByPath.get(path) ?? [];
+      const one =
+        item && toItem(path, item, undefined, mine, draft, versionOf(path, mine, false), gens[path] ?? 0, false);
+      return one ? [one] : [];
+    }
+    const out: CodeViewItem<Annot>[] = [];
+    for (const path of orderedPaths(snapshot)) {
+      // A file whose patch has not arrived is a header-only placeholder, so the pane and the nav model
+      // hold the same items and a jump onto it has somewhere to land.
+      const l = loaded[path] ?? LOADING;
+      const mine = threadsByPath.get(path) ?? [];
+      const folded = isCollapsed(state, path);
+      const item = toItem(
+        path,
+        l,
+        byPath.get(path),
+        mine,
+        draft,
+        versionOf(path, mine, folded),
+        gens[path] ?? 0,
+        folded,
+      );
+      if (item) out.push(item);
+    }
+    return out;
+  }, [snapshot, loaded, gens, fileView, threads, showResolved, replyTo, editingId, draft, collapsed, viewed, config]);
+
+  // The scroller is state, not a ref: CodeView mounts after the empty / error branches and remounts per
+  // theme, and the effects that listen to it must re-run for each element, not only when the snapshot appears.
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const attachScroller = useCallback((el: HTMLDivElement | null) => {
+    containerRef.current = el;
+    setScroller(el);
+  }, []);
+
+  // Swapping the file view for the diff list (or back) makes the viewer drop its selection and
+  // report null before the controlled selection is re-applied. That null is not the user's; skip it.
+  const swapping = useRef(false);
+  const prevView = useRef(fileView);
+  if ((prevView.current == null) !== (fileView == null) || prevView.current?.path !== fileView?.path) {
+    prevView.current = fileView;
+    swapping.current = true;
+  }
+  useEffect(() => {
+    swapping.current = false;
+  }, [items]);
+
+  // Word navigation (w / b) reads tokens from the rendered DOM through the viewer handle.
+  useEffect(() => {
+    setViewer(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null);
+    return () => setViewer(() => null);
+  }, []);
+  // Search-match highlights read the same rendered DOM; the scroller drives re-paints as rows virtualize.
+  useEffect(() => {
+    if (!scroller) return;
+    return installSearchHighlights(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null, scroller);
+  }, [scroller]);
+  // So do the tints on the lines saved and draft comments refer to.
+  useEffect(() => {
+    if (!scroller) return;
+    return installCommentHighlights(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null, scroller);
+  }, [scroller]);
+  // And the visible spaces and tabs.
+  useEffect(() => {
+    if (!scroller) return;
+    return installWhitespaceMarks(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null, scroller);
+  }, [scroller]);
+  // And the occurrences of the focused or hovered symbol.
+  useEffect(() => {
+    if (!scroller) return;
+    return installOccurrenceHighlights(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null, scroller);
+  }, [scroller]);
+  // Sideways wheel gestures move both columns of a split diff together; see installInlineWheel.
+  useEffect(() => {
+    if (!scroller) return;
+    return installInlineWheel(scroller);
+  }, [scroller]);
+  useEffect(() => {
+    onSelectionChanged(selection);
+  }, [selection]);
+  // The tree's selected row mirrors the file under the reader's eyes, so wheel scrolling must move it too.
+  // Not while a line or hunk is focused: the cursor names the file then, wherever the reader has scrolled
+  // to, and letting the gaze point override it made the tree flip back and forth (issue #10). Without a
+  // cursor, the active file wins while it is on screen (J onto a collapsed header pins it at the top with
+  // a stack of other headers below, and the reader is looking at it, not at whichever header happens to
+  // sit at the gaze point); otherwise the bottom-most file that has reached the gaze point, which is
+  // where every jump lands its line.
+  // Set while a jump is landing: the scroll events it produces are not the reader's, and the store
+  // has already named the active file.
+  const jumping = useRef(false);
+  useEffect(() => {
+    if (!scroller) return;
+    let raf = 0;
+    let lastScrollTop = scroller.scrollTop;
+    let direction: 'up' | 'down' = 'down';
+    const indexById = new Map(items.map((item, index) => [item.id, index]));
+    const state = lookahead.current;
+    const update = () => {
+      raf = 0;
+      const rendered = viewerRef.current?.getInstance()?.getRenderedItems() ?? [];
+      if (workerPool && rendered.length > 0) {
+        let edge = direction === 'down' ? -1 : items.length;
+        for (const row of rendered) {
+          const index = indexById.get(row.id);
+          if (index !== undefined) edge = direction === 'down' ? Math.max(edge, index) : Math.min(edge, index);
+        }
+        const nextIndex = edge + (direction === 'down' ? 1 : -1);
+        const candidate = items[nextIndex];
+        if (candidate?.type === 'diff' && candidate.fileDiff.cacheKey) {
+          const key = `${theme}:${candidate.fileDiff.cacheKey}`;
+          if (state.runningKey !== key && state.lastKey !== key)
+            state.pending = { key, diff: candidate.fileDiff, pool: workerPool };
+          else if (state.pending?.key !== key) state.pending = null;
+          drainHighlightLookahead(state);
+        } else state.pending = null;
+      }
+      if (jumping.current || useStore.getState().selection) return;
+      const box = scroller.getBoundingClientRect();
+      const header = geometry.itemMetrics.diffHeaderHeight;
+      const eye = box.top + box.height * EYE_FRACTION;
+      const inView = rendered
+        .map((r) => ({ id: r.id, rect: r.element.getBoundingClientRect() }))
+        .filter((r) => r.rect.bottom > box.top + header + 1 && r.rect.top < box.bottom && r.rect.height > 0);
+      if (inView.length === 0) return;
+      const s = useStore.getState();
+      const pick =
+        inView.find((r) => pathFromItemId(r.id) === s.activePath) ??
+        inView.filter((r) => r.rect.top <= eye).sort((a, b) => b.rect.top - a.rect.top)[0] ??
+        inView[0]!;
+      const path = pathFromItemId(pick.id);
+      if (path !== s.activePath) s.setActivePath(path);
+    };
+    // Highlight one diff beyond the rendered window without mounting more DOM. Keep one request in flight
+    // and replace the pending target on scroll so speculative work cannot flood the worker queue.
+    const onScroll = () => {
+      const scrollTop = scroller.scrollTop;
+      if (scrollTop !== lastScrollTop) direction = scrollTop > lastScrollTop ? 'down' : 'up';
+      lastScrollTop = scrollTop;
+      if (!raf) raf = requestAnimationFrame(update);
+    };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+      if (raf) cancelAnimationFrame(raf);
+      state.pending = null;
+    };
+  }, [scroller, geometry, items, workerPool, theme]);
+
+  // A display toggle re-lays the rows out (split / unified, wrap, the pane resizing as the tree or the
+  // side panel hides, or as a view with another panel shows) or remounts the viewer (theme). Neither is
+  // navigation, so the viewport holds: the row under the pane's top edge is measured here, before React
+  // renders the change, and the request to land it at the same pixel goes out in the same update, so the
+  // jump effect below places it before anything paints. No row on screen means nothing to hold. A drag
+  // moves the panes' edge every frame and is left alone.
+  useEffect(() => {
+    const hold = () => {
+      const scroller = containerRef.current;
+      const items = viewerRef.current?.getInstance()?.getRenderedItems();
+      if (!scroller || !items) return;
+      const box = scroller.getBoundingClientRect();
+      const held = topRow(
+        items.map((r) => ({ id: r.id, root: r.element.shadowRoot ?? r.element })),
+        box.top + geometry.itemMetrics.diffHeaderHeight,
+        box.bottom,
+      );
+      if (held)
+        useStore.setState((s) => ({
+          scrollTarget: { ...held, align: 'keep', nonce: (s.scrollTarget?.nonce ?? 0) + 1 },
+        }));
+    };
+    const columnsNow = () => gridColumns(useStore.getState().layout, useViews.getState().active);
+    let columns = columnsNow();
+    const resized = () => {
+      const next = columnsNow();
+      const moved = next !== columns && document.body.dataset.resizing == null;
+      columns = next;
+      return moved;
+    };
+    const offViews = useViews.subscribe(() => {
+      if (resized()) hold();
+    });
+    const offStore = useStore.subscribe((s, prev) => {
+      if (
+        resized() ||
+        s.theme !== prev.theme ||
+        s.diffStyle !== prev.diffStyle ||
+        s.config.lineWrap !== prev.config.lineWrap
+      )
+        hold();
+    });
+    return () => {
+      offViews();
+      offStore();
+    };
+  }, [geometry]);
+
+  // Reveal a line hidden in collapsed context: bring the item into the virtual window,
+  // ask its instance to expand around the line, then center it.
+  useEffect(() => {
+    if (!reveal || !viewerRef.current) return;
+    const handle = viewerRef.current;
+    handle.scrollTo({ type: 'item', id: reveal.id, align: 'start', behavior: 'instant' });
+    let tries = 0;
+    let cancelled = false;
+    const attempt = () => {
+      if (cancelled) return;
+      const rendered = handle
+        .getInstance()
+        ?.getRenderedItems()
+        .find((r) => r.id === reveal.id);
+      if (rendered?.type === 'diff') {
+        const inst = rendered.instance;
+        inst.revealLine(reveal.line);
+        // A reveal is spent once taken, so a later regeneration of the file does not replay it,
+        // and one the viewer could not expand has no row to center.
+        if (!inst.isLineRenderable(reveal.line)) {
+          useStore.setState({ reveal: null });
+          return;
+        }
+        // The cursor lands before the expansion renders and reports itself.
+        reportRevealed(reveal.id, rendered.item.fileDiff, inst);
+        // Let the expansion render, then center the line.
+        setTimeout(() => {
+          if (cancelled) return;
+          useStore.setState((s) => ({
+            scrollTarget: {
+              id: reveal.id,
+              line: reveal.line,
+              side: 'new',
+              col: reveal.col,
+              align: 'eye',
+              nonce: (s.scrollTarget?.nonce ?? 0) + 1,
+            },
+            reveal: null,
+          }));
+        }, 30);
+        return;
+      }
+      if (tries++ < 40) setTimeout(attempt, 50);
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+    };
+  }, [reveal]);
+  // The scroll request for a target: eye/top/bottom/keep pin the line at a fixed height ('start' plus an
+  // offset below the sticky header); the landing in the effect below measures the row and makes it exact.
+  const scrollPlan = useCallback(
+    (scrollTarget: NonNullable<ReviewState['scrollTarget']>) => {
+      const requested = scrollTarget.align ?? 'center';
+      const eye = requested === 'eye' || requested === 'top' || requested === 'bottom' || requested === 'keep';
+      const height = containerRef.current?.clientHeight ?? 800;
+      const rendered = viewerRef.current
+        ?.getInstance()
+        ?.getRenderedItems()
+        .find((r) => r.id === scrollTarget.id);
+      const header =
+        rendered?.element.shadowRoot?.querySelector('[data-diffs-header]')?.getBoundingClientRect().height ??
+        geometry.itemMetrics.diffHeaderHeight;
+      const edge = geometry.edge;
+      const offset =
+        requested === 'eye'
+          ? height * EYE_FRACTION - header
+          : requested === 'top'
+            ? edge
+            : requested === 'bottom'
+              ? Math.max(edge, height - header - edge - geometry.itemMetrics.lineHeight)
+              : requested === 'keep'
+                ? (scrollTarget.offset ?? 0)
+                : 0;
+      const align = eye ? 'start' : requested;
+      const target = scrollTarget.line
+        ? {
+            type: 'line' as const,
+            id: scrollTarget.id,
+            lineNumber: scrollTarget.line,
+            side: scrollTarget.side === 'old' ? ('deletions' as const) : ('additions' as const),
+            align,
+            offset,
+            // Jumps are instant so the target lands exactly where expected; no mid-animation drift.
+            behavior: eye ? ('instant' as const) : undefined,
+          }
+        : { type: 'item' as const, id: scrollTarget.id, align: 'start' as const, behavior: 'instant' as const };
+      return { eye, offset, header, target };
+    },
+    [geometry],
+  );
+  const renderedRow = (scrollTarget: NonNullable<ReviewState['scrollTarget']>) => {
+    const rendered = viewerRef.current
+      ?.getInstance()
+      ?.getRenderedItems()
+      .find((r) => r.id === scrollTarget.id);
+    const root = rendered?.element.shadowRoot ?? rendered?.element;
+    return root && scrollTarget.line ? rowOf(root, scrollTarget.line, scrollTarget.side ?? 'new') : null;
+  };
+  // A view swap (Ctrl+o back from the whole file, F into it) or a theme remount hands the viewer new
+  // items whose rows have no layout yet, so the jump can only land after paint and the first frame
+  // would show the old scroll position. Hide the pane for exactly those frames; the effect below
+  // shows it once the row is placed. Ordinary jumps never pass through here. Refs are updated in
+  // the effect, not during render, since React may render a store update more than once.
+  const prevTheme = useRef(theme);
+  const lastTarget = useRef(scrollTarget);
+  useLayoutEffect(() => {
+    const remounted = swapping.current || prevTheme.current !== theme;
+    const fresh = scrollTarget !== lastTarget.current;
+    prevTheme.current = theme;
+    lastTarget.current = scrollTarget;
+    const pane = containerRef.current;
+    if (!pane) return;
+    pane.style.visibility = remounted && fresh && scrollTarget?.line && !renderedRow(scrollTarget) ? 'hidden' : '';
+  }, [scrollTarget, theme]);
+  // A jump lands in one paint. The viewer is asked to scroll, then to render synchronously: that frame
+  // draws the target rows, measures them (wrapped lines included), re-resolves the destination and moves
+  // the scroller, all before the browser paints. The row is then measured against the gaze point and the
+  // request re-issued with the residue folded into its offset, still synchronously, so the reader sees a
+  // single move. Only content that resizes after paint (a comment card mounting, a late image) can shift
+  // the row afterwards; the deferred checks catch that without a visible hunt.
+  useEffect(() => {
+    if (!scrollTarget || !viewerRef.current) return;
+    if (scrollTarget.unlessVisible && containerRef.current) {
+      const item = viewerRef.current
+        .getInstance()
+        ?.getRenderedItems()
+        .find((r) => r.id === scrollTarget.id);
+      const view = containerRef.current.getBoundingClientRect();
+      if (scrollTarget.unlessVisible === 'search') {
+        const rect = item?.element.querySelector('[data-content-search]')?.closest('form')?.getBoundingClientRect();
+        if (rect && rect.height > 0 && rect.top >= view.top && rect.bottom <= view.bottom) return;
+      } else {
+        // With the file's top on screen, what sits above its first line lays out there and can focus itself into view.
+        const top = item?.element.getBoundingClientRect().top;
+        if (top != null && top >= view.top && top < view.bottom) return;
+      }
+    }
+    const { eye, offset, header, target } = scrollPlan(scrollTarget);
+    const pinned = eye && scrollTarget.line != null;
+    jumping.current = true;
+    let settled: ReturnType<typeof setTimeout> | undefined;
+    // The scroll events of a landing arrive after it, on their own frame; give them one before the
+    // tree follows wheel scrolling again.
+    const release = () => {
+      settled = setTimeout(() => {
+        jumping.current = false;
+      }, 150);
+    };
+    // Lifts the hide from the layout effect above once the row is placed or the jump is given up.
+    const show = () => {
+      if (containerRef.current) containerRef.current.style.visibility = '';
+    };
+    // How far the landed element sits below its mark, NaN while it is not rendered: the row below the
+    // gaze point for a line jump; for an item jump (J / K), the file card one pixel above the pane's
+    // top edge, so its header sticks and CSS, not a sub-pixel scroll residue, pins it to the edge.
+    const drift = () => {
+      const scroller = containerRef.current;
+      if (!scroller) return NaN;
+      const base = scroller.getBoundingClientRect().top;
+      if (target.type === 'item') {
+        const card = viewerRef.current
+          ?.getInstance()
+          ?.getRenderedItems()
+          .find((r) => r.id === scrollTarget.id)?.element;
+        return card ? card.getBoundingClientRect().top - (base - 1) : NaN;
+      }
+      const top = renderedRow(scrollTarget)?.getBoundingClientRect().top ?? NaN;
+      return top - (base + offset + header);
+    };
+    // Jumps that hold their mark to the pixel: line jumps at the gaze point and item jumps at the top.
+    const exact = pinned || target.type === 'item';
+    // How far a 'nearest' row pokes out of the pane: past its bottom edge, or under the sticky header.
+    // The viewer decides "already visible" from its own bookkeeping, and when that is off the cursor
+    // walks out of view and stays there (issue #8); the rendered row is the truth, so measure it.
+    const protrusion = () => {
+      const scroller = containerRef.current;
+      const row = renderedRow(scrollTarget);
+      if (!scroller || !row) return NaN;
+      const item = viewerRef.current
+        ?.getInstance()
+        ?.getRenderedItems()
+        .find((r) => r.id === scrollTarget.id);
+      const measuredHeader = item?.element.shadowRoot
+        ?.querySelector('[data-diffs-header]')
+        ?.getBoundingClientRect().height;
+      return overflow(scroller.getBoundingClientRect(), row.getBoundingClientRect(), measuredHeader ?? header);
+    };
+    // Half a device pixel is as close as the scroller can get. A looser bound lets consecutive
+    // jumps rest a pixel or more apart, which reads as the header jiggling.
+    const reached = (d: number) => Math.abs(d) * devicePixelRatio <= 0.5;
+    // The offset as last issued: each correction folds its residue into the one before.
+    let issued = target.offset ?? 0;
+    // Moves the landed element onto its mark, rendering synchronously after each correction.
+    const settle = () => {
+      const viewer = viewerRef.current;
+      const instance = viewer?.getInstance();
+      if (!viewer || !instance) return;
+      for (let i = 0; i < 4; i++) {
+        const d = drift();
+        if (Number.isNaN(d)) {
+          viewer.scrollTo({ ...target, offset: issued });
+          instance.render(true);
+          continue;
+        }
+        if (reached(d)) break;
+        issued -= d;
+        viewer.scrollTo({ ...target, offset: issued });
+        instance.render(true);
+        // Past the document's end the viewer clamps and reports the mark as reached, even when a
+        // re-layout left the scroller short of that clamp. If the reissue moved nothing, the scroller
+        // closes the residue itself, before paint; what lies past the document's end stays out of reach.
+        if (drift() !== d || !containerRef.current) continue;
+        containerRef.current.scrollTop += d;
+        instance.render(true);
+        if (drift() === d) break;
+      }
+    };
+    // One synchronous landing; false when the item is not in the viewer yet.
+    const land = (): boolean => {
+      if (!landRow()) return false;
+      // Sideways scrolling leaves row heights alone, so the column follows the settled row in the same frame.
+      const { col } = scrollTarget;
+      const row = col != null ? renderedRow(scrollTarget) : null;
+      const range = row && col != null ? tokenRange(row, col, col + 1) : null;
+      if (range) revealInline(range);
+      return true;
+    };
+    const landRow = (): boolean => {
+      const viewer = viewerRef.current;
+      const instance = viewer?.getInstance();
+      if (!viewer || !instance || !viewer.getItem(scrollTarget.id)) return false;
+      viewer.scrollTo(target);
+      instance.render(true);
+      if (!exact) {
+        const d = target.type === 'line' ? protrusion() : NaN;
+        if (!Number.isNaN(d) && Math.abs(d) > 1 && containerRef.current) {
+          containerRef.current.scrollTop += d;
+          instance.render(true);
+        }
+        return true;
+      }
+      settle();
+      return true;
+    };
+    let cancelled = false;
+    // Content that resizes after the landing (an image, a comment card, a row the viewer only
+    // estimated) shifts the element, and the viewer re-anchors to its estimate, not to the mark.
+    // Resize observers run after layout and before paint, so settling there keeps the shift unseen.
+    // The hold ends after a second, on reader input, or with the next jump.
+    let unpin: (() => void) | undefined;
+    const pin = () => {
+      const scroller = containerRef.current;
+      const content = viewerRef.current?.getInstance()?.getRenderedItems()[0]?.element.parentElement;
+      if (!scroller || !content) return;
+      const observer = new ResizeObserver(settle);
+      observer.observe(content);
+      const input = ['wheel', 'pointerdown', 'touchstart'] as const;
+      const timer = setTimeout(() => unpin?.(), 1000);
+      unpin = () => {
+        unpin = undefined;
+        observer.disconnect();
+        clearTimeout(timer);
+        for (const type of input) scroller.removeEventListener(type, onInput);
+      };
+      const onInput = () => unpin?.();
+      for (const type of input) scroller.addEventListener(type, onInput, { passive: true });
+    };
+    // Items may still be loading; retry briefly.
+    let tries = 0;
+    const attempt = () => {
+      if (cancelled) return;
+      if (!land()) {
+        if (tries++ < 20) setTimeout(attempt, 100);
+        else {
+          show();
+          release();
+        }
+        return;
+      }
+      show();
+      release();
+      if (exact) pin();
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+      unpin?.();
+      if (settled) clearTimeout(settled);
+    };
+  }, [scrollTarget, geometry, scrollPlan]);
+
+  const onSelectedLinesChange = useCallback(
+    (sel: CodeViewLineSelection | null) => {
+      if (sel == null && swapping.current) return;
+      setSelection(sel);
+      if (sel) setActivePath(pathFromItemId(sel.id));
+    },
+    [setSelection, setActivePath],
+  );
+
+  /** Stops following the pointer inside the hovered token; the viewer's leave for that token calls it. */
+  const untrackToken = useRef<() => void>(() => {});
+  const options = useMemo(
+    () => ({
+      ...codeViewOptions,
+      theme: { light: appearance.light, dark: appearance.dark },
+      unsafeCSS: HEADER_CSS + WHITESPACE_CSS + geometry.css,
+      layout: geometry.layout,
+      itemMetrics: geometry.itemMetrics,
+      hunkSeparators: 'line-info' as const,
+      themeType: theme,
+      diffStyle,
+      overflow: lineWrap ? ('wrap' as const) : ('scroll' as const),
+      // A separator click expands context inside the viewer; the render after it is the only sign.
+      onPostRender: (
+        _node: HTMLElement,
+        _instance: unknown,
+        phase: PostRenderPhase,
+        ctx:
+          | { type: 'file' }
+          | { type: 'diff'; item: CodeViewDiffItem<Annot>; instance: { isLineRenderable(line: number): boolean } },
+      ) => {
+        if (phase !== 'unmount' && ctx.type === 'diff') reportRevealed(ctx.item.id, ctx.item.fileDiff, ctx.instance);
+      },
+      onLineSelectionEnd: () => {
+        const sel = viewerRef.current?.getSelectedLines();
+        if (sel) void openDraft(sel);
+      },
+      onTokenEnter: (
+        props: TokenEventBase | DiffTokenEventBaseProps,
+        event: PointerEvent,
+        ctx: { item: { id: string } },
+      ) => {
+        // The viewer reports one enter per token, but a token can hold several words (`a.b.c`): the pointer
+        // moving from one to another inside it targets the new word as if it had crossed tokens. The leave
+        // of the previous token already ran, so nothing is targeted when the pointer arrives.
+        let shown: TokenTarget | null = null;
+        const point = (e: PointerEvent) => {
+          const t = targetOf(props, ctx.item.id, e);
+          if (t?.col === shown?.col) return;
+          shown = t;
+          lspTarget.set(t, props.tokenElement);
+          occurrenceControl.hover(t);
+          if (t) hoverControl.enter(t, props.tokenElement);
+          else hoverControl.leave();
+          markHover(props.tokenElement, !!t && !hoverOnly(useStore.getState().lsp, t.path) && (e.ctrlKey || e.metaKey));
+        };
+        point(event);
+        props.tokenElement.addEventListener('pointermove', point);
+        untrackToken.current = () => props.tokenElement.removeEventListener('pointermove', point);
+      },
+      onTokenLeave: (props: TokenEventBase | DiffTokenEventBaseProps) => {
+        untrackToken.current();
+        untrackToken.current = () => {};
+        lspTarget.set(null);
+        occurrenceControl.hover(null);
+        hoverControl.leave();
+        markHover(props.tokenElement, false);
+      },
+      // Clicking a line's content puts the cursor there (the number column starts a range selection instead).
+      // Fires after onTokenClick on the same click, so it must not close the popover that click opened.
+      onLineClick: (props: OnLineClickProps | OnDiffLineClickProps, ctx: { item: { id: string } }) => {
+        const side = 'annotationSide' in props ? props.annotationSide : 'additions';
+        const range = { start: props.lineNumber, side, end: props.lineNumber, endSide: side };
+        if (props.numberColumn) {
+          // The viewer toggles off a lone selected line pressed again, which is often the cursor's line;
+          // here that press comments on it like any other line's.
+          if (!viewerRef.current?.getSelectedLines()) void openDraft({ id: ctx.item.id, range });
+          return;
+        }
+        setSelection({ id: ctx.item.id, range });
+        setActivePath(pathFromItemId(ctx.item.id));
+      },
+      // A plain click on a symbol focuses it, as `w` would, and opens the action popover; ⌘/Ctrl+click jumps
+      // straight to the definition, or lists references from the definition itself.
+      onTokenClick: (
+        props: TokenEventBase | DiffTokenEventBaseProps,
+        event: MouseEvent,
+        ctx: { item: { id: string } },
+      ) => {
+        const target = targetOf(props, ctx.item.id, event);
+        if (!target || hoverOnly(useStore.getState().lsp, target.path)) return;
+        markHover(props.tokenElement, false);
+        hoverControl.cancel();
+        if (event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          void goToDefinition(target);
+          return;
+        }
+        focusToken(target, props.tokenElement);
+        void openSymbolMenu(target, event.clientX, event.clientY);
+      },
+    }),
+    [
+      openDraft,
+      goToDefinition,
+      openSymbolMenu,
+      setSelection,
+      setActivePath,
+      theme,
+      diffStyle,
+      lineWrap,
+      geometry,
+      appearance,
+    ],
+  );
+
+  const renderAnnotation = useCallback((...[annotation]: CodeViewAnnotationArgs<Annot>) => {
+    const meta = annotation.metadata;
+    if (meta.kind === 'placeholder') return <PlaceholderBanner kind={meta.placeholder} message={meta.message} />;
+    if (meta.kind === 'image') return <ImageDiff path={meta.path} sides={meta.sides} />;
+    if (meta.kind === 'draft') {
+      const range = draftRange(useStore.getState());
+      return <CommentComposer label={range ? rangeLabel(range) : 'whole file'} />;
+    }
+    return <CommentCard thread={meta.thread} />;
+  }, []);
+
+  const resizeHeader = useCallback(
+    (id: string, height: number) => {
+      const viewer = viewerRef.current?.getInstance();
+      const item = viewer?.getRenderedItems().find((r) => r.id === id);
+      if (!viewer || !item) return;
+      const scroller = containerRef.current;
+      const scrollTop = scroller?.scrollTop;
+      // CodeView's default metrics assume equal headers; local search enlarges only its owning file.
+      item.instance.setMetrics({ ...geometry.itemMetrics, diffHeaderHeight: height });
+      viewer.instanceChanged(item.instance, true);
+      viewer.render(true);
+      // Header toggles aren't navigation. Its line anchor can skip a collapsed hunk on each resize.
+      // Restore the viewport synchronously; an explicit offscreen-search jump runs separately.
+      if (scroller && scrollTop !== undefined && scroller.scrollTop !== scrollTop) {
+        scroller.scrollTop = scrollTop;
+        scroller.dispatchEvent(new Event('scroll'));
+        viewer.render(true);
+      }
+    },
+    [geometry],
+  );
+  const renderCustomHeader = useCallback(
+    (item: CodeViewItem<Annot>) => <FileHeader id={item.id} resizeHeader={resizeHeader} />,
+    [resizeHeader],
+  );
+
+  if (error)
+    return (
+      <main className="relative flex min-h-0 min-w-0 flex-col outline-none">
+        <div className="border-b border-b-border bg-hover px-3 py-2 text-danger">{error}</div>
+      </main>
+    );
+  if (!snapshot)
+    return (
+      <main className="relative flex min-h-0 min-w-0 flex-col outline-none">
+        <div className="p-10 text-center text-muted">Loading snapshot…</div>
+      </main>
+    );
+  if (snapshot.changed.length === 0 && !fileView) {
+    return (
+      <main className="relative flex min-h-0 min-w-0 flex-col outline-none">
+        <div className="p-10 text-center text-muted">
+          No changes for <code>{comparisonLabel(snapshot.review)}</code>. Open any file from the tree to comment on it.
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="relative flex min-h-0 min-w-0 flex-col outline-none" tabIndex={-1}>
+      <SearchBar />
+      <SymbolPicker />
+      <SymbolMenu />
+      <HoverTooltip />
+      <ReferencesList />
+      {fileView && <FileViewBar path={fileView.path} />}
+      {fileView
+        ? !fileView.item && (
+            <div className="border-b border-b-border bg-hover px-3 py-2 text-muted">Loading {fileView.path}…</div>
+          )
+        : snapshot.changed.some((f) => !loaded[f.path]) && (
+            <div className="border-b border-b-border bg-hover px-3 py-2 text-muted">Loading diffs…</div>
+          )}
+      <CodeView<Annot>
+        key={`${theme}:${appearance.light}:${appearance.dark}:${appearance.codeFont}:${appearance.codeSize}`}
+        ref={viewerRef}
+        containerRef={attachScroller}
+        className="codeview min-h-0 flex-1 overflow-auto bg-surface outline-none"
+        items={items}
+        options={options}
+        selectedLines={selection}
+        onSelectedLinesChange={onSelectedLinesChange}
+        renderAnnotation={renderAnnotation}
+        renderCustomHeader={renderCustomHeader}
+      />
+    </main>
+  );
+}
+
+/** The file view's header: the path, its change stats, and the note on files outside the repository. */
+function FileViewBar({ path }: { path: string }) {
+  const external = useStore((s) => s.fileView?.external ?? false);
+  const file = useStore((s) => s.snapshot?.changed.find((f) => f.path === path));
+  return (
+    <div className="flex items-center gap-3 border-b border-b-border bg-hover px-3 py-1.5 text-[0.75rem]">
+      <span className="min-w-0 flex-1 truncate font-mono">
+        <FilePath path={path} />
+      </span>
+      {file && (
+        <span className="inline-flex items-center gap-2.5 font-mono text-[0.75rem]">
+          {file.additions > 0 && <span className="text-add">+{file.additions}</span>}
+          {file.deletions > 0 && <span className="text-del">−{file.deletions}</span>}
+        </span>
+      )}
+      {external && (
+        <span className="inline-flex items-center gap-2.5 font-mono text-[0.75rem]">
+          outside the repository, read-only
+        </span>
+      )}
+    </div>
+  );
+}
+
+function toItem(
+  path: string,
+  loaded: Loaded,
+  changed: ChangedFile | undefined,
+  mine: CommentThread[],
+  draft: Draft | null,
+  version: number,
+  gen: number,
+  collapsed: boolean,
+): CodeViewItem<Annot> | null {
+  const id = itemId(changed != null, path, gen);
+  // Threads on the file as a whole, and a draft of one, sit above the first line (the viewer's line 0).
+  const fileLevel: LineAnnotation<Annot>[] = mine
+    .filter((t) => t.anchor.kind === 'file')
+    .map((t) => ({ lineNumber: FILE_LINE, metadata: { kind: 'thread', thread: t } }));
+  if (draft?.path === path && draft.selection == null)
+    fileLevel.push({ lineNumber: FILE_LINE, metadata: { kind: 'draft' } });
+  if (changed) {
+    // The viewer drops file-level annotations on the side a deleted or added file does not have.
+    const fileSide = changed.status === 'D' ? 'deletions' : 'additions';
+    const annotations: DiffLineAnnotation<Annot>[] = fileLevel.map((a) => ({ ...a, side: fileSide }));
+    for (const t of mine) {
+      if (t.anchor.kind !== 'line') continue;
+      annotations.push({
+        side: t.anchor.side === 'old' ? 'deletions' : 'additions',
+        lineNumber: t.anchor.endLine,
+        metadata: { kind: 'thread', thread: t },
+      });
+    }
+    if (draft?.path === path && draft.selection) {
+      const { endLine } = lineBounds(draft.selection);
+      const s = draft.selection.range.endSide ?? draft.selection.range.side ?? 'additions';
+      annotations.push({ side: s, lineNumber: endLine, metadata: { kind: 'draft' } });
+    }
+    // A pure rename keeps the `oldPath -> newPath` arrow by carrying `prevName` on the placeholder: the
+    // library renders the same rename header for file items, and the banner says why there is no body.
+    if (loaded.kind === 'diff' && loaded.fileDiff.hunks.length > 0)
+      return { id, type: 'diff', fileDiff: loaded.fileDiff, annotations, version, collapsed };
+    // Binary, hunkless (a pure rename, a mode change), oversized or failed: an empty file item under the
+    // diff id whose line-0 annotation carries a banner saying why there is nothing to expand, or a binary
+    // image's sides. Either also gives file threads a place to hang.
+    const [placeholder, message] =
+      loaded.kind === 'diff'
+        ? changed.status === 'R'
+          ? // The header's arrow already names the old path; the banner only explains the empty body.
+            (['empty', 'No content changes'] as const)
+          : (['empty', 'No changed lines'] as const)
+        : loaded.kind === 'oversized'
+          ? ([
+              'oversized',
+              `${loaded.lines.toLocaleString()} changed lines: not loaded. Press zo or the header's load button to load the diff.`,
+            ] as const)
+          : loaded.kind === 'error'
+            ? (['error', loaded.message] as const)
+            : loaded.kind === 'loading'
+              ? (['loading', 'Loading…'] as const)
+              : (['binary', 'Binary file'] as const);
+    fileLevel.unshift(standIn(path, loaded, changed, placeholder, message));
+    return {
+      id,
+      type: 'file',
+      file: emptyFile(path, changed.status === 'R' ? changed.oldPath : undefined),
+      annotations: fileLevel,
+      version,
+      collapsed,
+    };
+  }
+  if (loaded.kind !== 'file') {
+    const [placeholder, message] =
+      loaded.kind === 'binary'
+        ? (['binary', 'Binary file'] as const)
+        : loaded.kind === 'error'
+          ? (['error', loaded.message] as const)
+          : (['loading', 'Loading…'] as const);
+    fileLevel.unshift(standIn(path, loaded, undefined, placeholder, message));
+    return { id, type: 'file', file: emptyFile(path), annotations: fileLevel, version, collapsed };
+  }
+  // The file view shows the new side whole: only new-side threads have a line to sit on.
+  const annotations: LineAnnotation<Annot>[] = fileLevel;
+  for (const t of mine) {
+    if (t.anchor.kind === 'line' && t.anchor.side !== 'old')
+      annotations.push({ lineNumber: t.anchor.endLine, metadata: { kind: 'thread', thread: t } });
+  }
+  if (draft?.path === path && draft.selection && sideOf(draft.selection) === 'new') {
+    annotations.push({ lineNumber: lineBounds(draft.selection).endLine, metadata: { kind: 'draft' } });
+  }
+  return { id, type: 'file', file: loaded.file, annotations, version, collapsed };
+}
+
+const emptyFiles = new Map<string, FileContents>();
+
+/**
+ * The bodiless file a placeholder item renders, the same object on every rebuild: an unchanged item's
+ * render throws in the viewer when its file is equal but not identical to the one it last rendered.
+ */
+function emptyFile(path: string, prevName?: string): FileContents {
+  const key = `${path}\0${prevName ?? ''}`;
+  let file = emptyFiles.get(key);
+  // `prevName` is not in FileContents' type, but the library's header renderer picks it up with an
+  // `in` check and draws the rename arrow.
+  if (!file) emptyFiles.set(key, (file = { name: path, contents: '', prevName } as FileContents));
+  return file;
+}
+
+/** The viewer renders an annotation at line 0 above the file's first line: the slot for threads on the whole file. */
+const FILE_LINE = 0;
+
+/** The line-0 annotation that stands in for a body without lines: a binary image's sides, else the banner. */
+function standIn(
+  path: string,
+  loaded: Loaded,
+  changed: ChangedFile | undefined,
+  placeholder: PlaceholderKind,
+  message: string,
+): LineAnnotation<Annot> {
+  const sides = loaded.kind === 'binary' ? imageSides(path, changed) : null;
+  return sides
+    ? { lineNumber: FILE_LINE, metadata: { kind: 'image', path, sides } }
+    : { lineNumber: FILE_LINE, metadata: { kind: 'placeholder', placeholder, message } };
+}
+
+function FileHeader({ id, resizeHeader }: { id: string; resizeHeader: (id: string, height: number) => void }) {
+  const path = pathFromItemId(id);
+  const ref = useRef<HTMLDivElement>(null);
+  const localSearch = useStore(
+    (s) => s.search.open && s.search.kind === 'text' && s.search.scope === 'file' && s.search.path === path,
+  );
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    let previous = 0;
+    const measure = () => {
+      const height = element.getBoundingClientRect().height + 1; // the header's bottom border
+      if (height <= 1 || height === previous) return;
+      previous = height;
+      resizeHeader(id, height);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [id, resizeHeader, localSearch]);
+  const file = useStore((s) => s.snapshot?.changed.find((f) => f.path === path));
+  return (
+    // `data-path` names the file for tests and scripts; the visible title splits it into styled parts.
+    <div ref={ref} data-path={path}>
+      <div className="group flex h-[calc(var(--diffle-header-height)-1px)] items-center gap-2 px-2.5 py-1.5">
+        <FileText size="0.875rem" className="shrink-0 text-muted" />
+        {file?.oldPath && file.oldPath !== path && (
+          <>
+            <FilePath path={file.oldPath} nowrap tooltip={false} />
+            <span className="text-muted">→</span>
+          </>
+        )}
+        {/* The copy button beside it already hands over the full path; a hover tip would only repeat it. */}
+        <FilePath path={path} nowrap tooltip={false} />
+        <CopyPathButton path={path} />
+        <span className="mr-auto" />
+        {file && (
+          <span className="flex shrink-0 gap-2 font-mono text-[0.75rem]">
+            <span className="text-del">−{file.deletions}</span>
+            <span className="text-add">+{file.additions}</span>
+          </span>
+        )}
+        <FileHeaderMeta path={path} />
+      </div>
+      <SearchBar path={path} />
+    </div>
+  );
+}
+
+/** Copies the path for quoting it in a comment; shown only while the header is hovered or the button focused. */
+function CopyPathButton({ path }: { path: string }) {
+  const flash = useStore((s) => s.flash);
+  const { done, copy } = useCopied();
+  return (
+    <Button
+      variant="ghost"
+      icon
+      className={twMerge('shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100', done && 'opacity-100')}
+      title="Copy path (yp)"
+      aria-label="Copy path"
+      onClick={async () => {
+        if (!(await copy(path))) flash('The browser blocked clipboard access');
+      }}
+    >
+      <CopyIcon done={done}>
+        <Copy size="0.875rem" />
+      </CopyIcon>
+    </Button>
+  );
+}
+
+function FileHeaderMeta({ path }: { path: string }) {
+  const file = useStore((s) => s.snapshot?.changed.find((f) => f.path === path));
+  const active = useStore((s) => s.activePath === path);
+  const ref = useRef<HTMLSpanElement | null>(null);
+  // The header lives in the viewer's shadow DOM; flag its host so the injected CSS can tint the active file.
+  useEffect(() => {
+    const host = ref.current && hostOf(ref.current);
+    if (!host) return;
+    host.toggleAttribute('data-active', active);
+    return () => host.removeAttribute('data-active');
+  }, [active]);
+  const toggleCollapsed = useStore((s) => s.toggleCollapsed);
+  const selectFile = useStore((s) => s.selectFile);
+  const full = useStore((s) => s.fileView?.path === path);
+  useEffect(() => {
+    const metadata = ref.current;
+    const host = metadata && hostOf(metadata);
+    const header =
+      host?.shadowRoot?.querySelector<HTMLElement>('[data-diffs-header]') ??
+      metadata?.closest<HTMLElement>('[data-diffs-header]');
+    if (!header) return;
+    // Full-file view has no collapse action, so drop the pointer cue that would promise one. `auto` keeps the
+    // text cursor over the filename while the surrounding band shows the plain arrow.
+    if (full) {
+      header.style.cursor = 'auto';
+      return () => {
+        header.style.cursor = '';
+      };
+    }
+    // The header is the file's one clickable surface, so clicking it also makes the file the current one:
+    // an empty file has no lines to click, and the pane must not wander off to another file (issue #151).
+    const toggle = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('button, input, label, a, form, [role="button"]')) return;
+      // Dragging across the path selects it for copying; only a plain click toggles.
+      if (!(window.getSelection()?.isCollapsed ?? true)) return;
+      selectFile(path);
+      toggleCollapsed(path);
+    };
+    header.addEventListener('click', toggle);
+    return () => header.removeEventListener('click', toggle);
+  }, [path, toggleCollapsed, selectFile, full]);
+  const vs = useStore((s) => (file ? viewedState(s, file) : 'unviewed'));
+  const setViewed = useStore((s) => s.setViewed);
+  const count = useStore((s) => s.threads.filter((t) => t.anchor.path === path && !t.resolved).length);
+  const collapsedNow = useStore((s) => isCollapsed(s, path));
+  const openFullFile = useStore((s) => s.openFullFile);
+  const oversized = useStore((s) => s.loaded[path]?.kind === 'oversized');
+  const loadPatch = useStore((s) => s.loadPatch);
+  const openFileDraft = useStore((s) => s.openFileDraft);
+  const external = useStore((s) => s.fileView?.external === true && s.fileView.path === path);
+  const commentable = useStore((s) => s.snapshot == null || commentsOff(s.snapshot.review) == null);
+  return (
+    <span ref={ref} className="inline-flex items-center gap-2.5 font-mono text-[0.75rem]">
+      {count > 0 && (
+        <span className="inline-flex items-center gap-0.75 rounded-[0.625rem] bg-hover px-1.75 py-0">
+          <MessageSquare size="0.75rem" /> {count}
+        </span>
+      )}
+      {file?.generated && (
+        <span
+          className="inline-flex items-center gap-0.75 rounded-[0.625rem] bg-hover px-1.75 py-0 font-sans text-muted"
+          title="Detected as generated: starts collapsed and ranks low"
+        >
+          generated
+        </span>
+      )}
+      {file?.submodule && (
+        <span
+          className="inline-flex items-center gap-0.75 rounded-[0.625rem] bg-hover px-1.75 py-0 font-sans text-muted"
+          title="Submodule: only the recorded commit changes"
+        >
+          submodule
+        </span>
+      )}
+      {oversized && (
+        <Button variant="ghost" onClick={() => void loadPatch(path)} title="Large diff, not loaded yet (zo)">
+          <Download size="0.875rem" /> Load diff
+        </Button>
+      )}
+      {file && vs === 'restale' && (
+        <span
+          className="inline-flex items-center gap-0.75 rounded-[0.625rem] bg-hover px-1.75 py-0 font-sans text-warn"
+          title="You marked this viewed, then its contents changed"
+        >
+          <RefreshCw size="0.75rem" /> changed since viewed
+        </span>
+      )}
+      {!external && commentable && (
+        <Button variant="ghost" icon onClick={() => openFileDraft(path)} title="Comment on this file as a whole (C)">
+          <MessageSquarePlus size="0.875rem" />
+        </Button>
+      )}
+      {/* In the file view the bar above already carries the way back, so the header offers no second button. */}
+      {!full && (!file || (!file.binary && !file.submodule && file.status !== 'D')) && (
+        <Button variant="ghost" icon onClick={() => void openFullFile(path)} title="View full file (F)">
+          <FileText size="0.875rem" />
+        </Button>
+      )}
+      {file && !full && (
+        <>
+          <label
+            className="inline-flex cursor-pointer items-center gap-1 font-sans"
+            title={
+              vs === 'restale'
+                ? 'Mark viewed again and collapse the file (v)'
+                : 'Mark as viewed and collapse the file (v)'
+            }
+          >
+            <input type="checkbox" checked={vs === 'viewed'} onChange={(e) => void setViewed(path, e.target.checked)} />
+            Viewed
+          </label>
+        </>
+      )}
+      {!full && (
+        <Button variant="ghost" icon onClick={() => toggleCollapsed(path)} title="Collapse / expand">
+          {collapsedNow ? <ChevronRight size="0.875rem" /> : <ChevronDown size="0.875rem" />}
+        </Button>
+      )}
+    </span>
+  );
+}

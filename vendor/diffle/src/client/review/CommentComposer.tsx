@@ -1,0 +1,152 @@
+import { Button } from '@/client/ui/Button.js';
+import { CopyIcon } from '@/client/ui/CopyIcon.js';
+import { FileDiff, Link, MessageSquare } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCopied } from '@/client/clipboard.js';
+import { composerKey } from '@/client/model.js';
+import { useStore } from '@/client/store.js';
+import { draftPermalink } from './permalink.js';
+
+/**
+ * Inline comment editor rendered as an annotation at the selection's last line. Its header names the
+ * lines the comment will attach to, as the saved card's does, since the cursor may have moved on.
+ */
+export function CommentComposer({ label }: { label: string }) {
+  const submitDraft = useStore((s) => s.submitDraft);
+  const closeDraft = useStore((s) => s.closeDraft);
+  const draftQuote = useStore((s) => s.draftQuote);
+  // Each open request makes a new draft; the viewer may keep this composer mounted across them.
+  const draft = useStore((s) => s.draft);
+  // A comment on the whole file has no lines to suggest a replacement for.
+  const fileLevel = draft != null && draft.selection == null;
+  // The text outlives the composer, so Esc or Cancel and reopening on the same lines resumes it.
+  const key = useStore((s) => composerKey(s, { kind: 'draft' }));
+  const text = useStore((s) => (key ? (s.unsent[key] ?? '') : ''));
+  const setUnsent = useStore((s) => s.setUnsent);
+  const setText = (t: string) => key && setUnsent(key, t);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    const textarea = ref.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const style = getComputedStyle(textarea);
+    const borders = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    textarea.style.height = `${textarea.scrollHeight + borders}px`;
+  }, [text]);
+
+  // Focus on every open, not just on mount. The viewer lays out only rows near the viewport: a composer
+  // off screen has no box to take focus until the jump to it renders it.
+  useEffect(() => {
+    const textarea = ref.current;
+    if (!textarea) return;
+    if (textarea.getClientRects().length > 0) return textarea.focus();
+    const observer = new ResizeObserver(() => {
+      if (textarea.getClientRects().length === 0) return;
+      observer.disconnect();
+      textarea.focus();
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [draft]);
+
+  const submit = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    try {
+      await submitDraft(text);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // A ```suggestion fence prefilled with the selected lines; the export renders it as ORIGINAL / SUGGESTED.
+  const suggest = async () => {
+    const quoted = await draftQuote();
+    const block = `\`\`\`suggestion\n${quoted}\n\`\`\``;
+    setText(text.trim() ? `${text.replace(/\s+$/, '')}\n\n${block}\n` : `${block}\n`);
+    ref.current?.focus();
+  };
+
+  return (
+    <div className="@container mx-2 my-1 overflow-hidden rounded-md border border-accent bg-surface font-sans text-[0.8125rem]">
+      <div className="flex items-center gap-2 border-b border-b-border bg-hover px-2.5 py-1 text-[0.75rem] text-muted [&>svg]:flex-none [&>svg]:text-accent">
+        <MessageSquare size="0.8125rem" />
+        <span className="font-mono font-semibold text-foreground">{label}</span>
+        <CopyLinkButton />
+      </div>
+      <div className="p-2">
+        <textarea
+          className="max-h-[60vh] min-h-17.5 w-full resize-y rounded-sm border border-border bg-canvas p-1.5 font-mono text-[0.75rem] leading-[1.5]"
+          ref={ref}
+          value={text}
+          placeholder="Leave a comment…"
+          onChange={(e) => setText(e.target.value)}
+          // Escape is the keymap's: handled here too, it would also drop the cursor.
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit();
+          }}
+        />
+        <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">
+          <span className="mr-auto text-[0.75rem] whitespace-nowrap text-muted @max-[36rem]:hidden">
+            <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd> to save · <kbd>Esc</kbd> to cancel
+          </span>
+          {!fileLevel && (
+            <Button
+              variant="ghost"
+              onClick={() => void suggest()}
+              title="Insert the selected lines as a suggestion block to edit"
+              aria-label="Suggest change"
+            >
+              <FileDiff size="0.8125rem" /> <span className="@max-[18rem]:hidden">Suggest change</span>
+            </Button>
+          )}
+          <Button onClick={closeDraft}>Cancel</Button>
+          <Button variant="primary" onClick={() => void submit()} disabled={!text.trim() || busy}>
+            Comment
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Copies a GitHub permalink to the draft's lines, an icon at the header's end so the actions stay
+ * uncrowded; absent when GitHub could not show them. Each draft and snapshot asks afresh, so lines
+ * pushed since show the button.
+ */
+function CopyLinkButton() {
+  const flash = useStore((s) => s.flash);
+  const draft = useStore((s) => s.draft);
+  const snapshot = useStore((s) => s.snapshot);
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setUrl(null);
+    void draftPermalink(useStore.getState()).then((u) => live && setUrl(u));
+    return () => {
+      live = false;
+    };
+  }, [draft, snapshot]);
+  const { done, copy } = useCopied();
+  if (!url) return null;
+  return (
+    <Button
+      variant="ghost"
+      icon
+      // The header row stays as tall as its label.
+      className="-my-0.5 ml-auto py-0.5 text-muted hover:text-foreground"
+      title="Copy a GitHub permalink to these lines (yl)"
+      aria-label="Copy link"
+      onClick={async () => {
+        if (!(await copy(url))) flash('The browser blocked clipboard access');
+      }}
+    >
+      <CopyIcon done={done} size="0.8125rem">
+        <Link size="0.8125rem" />
+      </CopyIcon>
+    </Button>
+  );
+}

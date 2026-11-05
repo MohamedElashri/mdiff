@@ -1,0 +1,518 @@
+import type { CodeViewLineSelection } from '@pierre/diffs';
+import picomatch from 'picomatch/posix';
+import {
+  refName,
+  rangeOf,
+  shownIterations,
+  type ChangedFile,
+  type CommentAnchor,
+  type Iteration,
+  type CommentThread,
+  type LspSymbol,
+  type EnterRequest,
+  type Review,
+  type Moved,
+  type Side,
+  type Snapshot,
+  type UserConfig,
+  type ViewedState,
+} from '@/shared/protocol.js';
+import { fuzzyFilter } from '@/shared/fuzzy.js';
+import { resolveRange, type ResolvedRange } from './comments/anchor.js';
+import type { ReviewState } from './store.js';
+
+// Pure functions over store state. No effects, no store import at runtime, so
+// every module (the store included) can use them without a cycle.
+
+/**
+ * CodeView item id: kind, path, and content generation. The generation is part
+ * of the id so a reloaded diff gets a fresh renderer instead of being patched
+ * into a stale one.
+ */
+export function itemId(changed: boolean, path: string, gen: number): string {
+  return `${changed ? 'diff' : 'file'}:${path}@${gen}`;
+}
+
+export function pathFromItemId(id: string): string {
+  return id.replace(/^(diff|file):/, '').replace(/@\d+$/, '');
+}
+
+/** The id of the item that shows `path` right now: its whole-file item while the file view is open on it, else its diff. */
+export function itemIdOf(state: Pick<ReviewState, 'snapshot' | 'gens' | 'fileView'>, path: string): string {
+  const changed = state.fileView?.path !== path && (state.snapshot?.changed.some((f) => f.path === path) ?? false);
+  return itemId(changed, path, state.gens[path] ?? 0);
+}
+
+/** Most changed files a patch request carries. */
+export const PATCH_BATCH_FILES = 12;
+/** Most changed lines (additions + deletions) a patch request carries; a single larger file rides alone. */
+export const PATCH_BATCH_LINES = 4000;
+/** A diff past this many changed lines is not loaded until asked for: parsing it would stall the review. */
+export const OVERSIZED_LINES = 10_000;
+
+export const linesOf = (f: ChangedFile): number => f.additions + f.deletions;
+
+/**
+ * Splits the textual files to load into request batches, first-needed first: `first` (the file
+ * the reader is on), then expanded files in list order, collapsed ones last; within each tier a
+ * file too big for a shared batch sinks below the rest, so a lockfile never delays a source file.
+ * Each batch stays within PATCH_BATCH_FILES and PATCH_BATCH_LINES.
+ */
+export function patchBatches(
+  snapshot: Snapshot,
+  files: ChangedFile[],
+  first: string[],
+  isCollapsed: (path: string) => boolean,
+): string[][] {
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  const rank = (p: string) =>
+    first.includes(p) ? 0 : (isCollapsed(p) ? 4 : 2) + (linesOf(byPath.get(p)!) > PATCH_BATCH_LINES ? 1 : 0);
+  const order = orderedPaths(snapshot)
+    .filter((p) => byPath.has(p))
+    .sort((a, b) => rank(a) - rank(b));
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let lines = 0;
+  for (const p of order) {
+    const n = linesOf(byPath.get(p)!);
+    if (batch.length > 0 && (batch.length >= PATCH_BATCH_FILES || lines + n > PATCH_BATCH_LINES)) {
+      batches.push(batch);
+      batch = [];
+      lines = 0;
+    }
+    batch.push(p);
+    lines += n;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
+/** Changed files in the order the file tree pane shows them: the order the review pane and the cursor share. */
+export function orderedPaths(snapshot: Snapshot): string[] {
+  return snapshot.changed.map((f) => f.path).sort(compareTreeOrder);
+}
+
+/** The first changed file after `path` in tree order that `accept` admits, or null when none follows. */
+export function nextFileAfter(
+  snapshot: Snapshot,
+  path: string,
+  accept: (file: ChangedFile) => boolean,
+): ChangedFile | null {
+  const byPath = new Map(snapshot.changed.map((f) => [f.path, f]));
+  const paths = orderedPaths(snapshot);
+  const at = paths.indexOf(path);
+  if (at === -1) return null;
+  for (const p of paths.slice(at + 1)) {
+    const f = byPath.get(p)!;
+    if (accept(f)) return f;
+  }
+  return null;
+}
+
+/**
+ * The file the reader is in: the one the cursor landed on, else the open whole-file view,
+ * else the first file in the list, which is the one in view before the cursor has landed anywhere.
+ */
+export function currentPath(state: Pick<ReviewState, 'snapshot' | 'activePath' | 'fileView'>): string | null {
+  return state.activePath ?? state.fileView?.path ?? (state.snapshot && orderedPaths(state.snapshot)[0]) ?? null;
+}
+
+/** Back is open in a full-file view (which always leaves for the diff) or at any jumplist position past the oldest. */
+export function canJumpBack(state: Pick<ReviewState, 'fileView' | 'jumpIndex'>): boolean {
+  return state.fileView != null || state.jumpIndex > 0;
+}
+
+/** Forward is open while a newer jumplist position than the current one exists. */
+export function canJumpForward(state: Pick<ReviewState, 'jumps' | 'jumpIndex'>): boolean {
+  return state.jumpIndex < state.jumps.length - 1;
+}
+
+/**
+ * The order `@pierre/trees` lists paths in (its path store's default sort), so the review pane and
+ * the tree agree file for file: at the first segment where two paths diverge, folders before
+ * files, then the lowercased segments compared naturally (digit runs as numbers, the rest by code
+ * unit), ties broken by the raw segment; a path that is a prefix of another comes first. A segment
+ * is a folder when it is not the path's last one, so the answer depends only on the two paths.
+ */
+export function compareTreeOrder(a: string, b: string): number {
+  const sa = a.split('/');
+  const sb = b.split('/');
+  const n = Math.min(sa.length, sb.length);
+  for (let i = 0; i < n; i++) {
+    const x = sa[i]!;
+    const y = sb[i]!;
+    if (x === y) continue;
+    const aDir = i < sa.length - 1;
+    const bDir = i < sb.length - 1;
+    if (aDir !== bDir) return aDir ? -1 : 1;
+    const lx = x.toLowerCase();
+    const ly = y.toLowerCase();
+    const natural = compareNatural(lx, ly);
+    if (natural !== 0) return natural;
+    if (lx !== ly) return lx < ly ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return sa.length - sb.length;
+}
+
+/** Digit runs compare as numbers, everything else by code unit; fewer tokens first on a shared prefix. */
+function compareNatural(a: string, b: string): number {
+  const ta = naturalTokens(a);
+  const tb = naturalTokens(b);
+  const n = Math.min(ta.length, tb.length);
+  for (let i = 0; i < n; i++) {
+    const x = ta[i]!;
+    const y = tb[i]!;
+    if (x === y) continue;
+    if (typeof x === 'number' && typeof y === 'number') return x < y ? -1 : 1;
+    const sx = String(x);
+    const sy = String(y);
+    if (sx !== sy) return sx < sy ? -1 : 1;
+  }
+  return ta.length - tb.length;
+}
+
+function naturalTokens(value: string): (string | number)[] {
+  const tokens: (string | number)[] = [];
+  const re = /\d+|\D+/g;
+  for (const m of value.matchAll(re)) tokens.push(/^\d/.test(m[0]) ? Number(m[0]) : m[0]);
+  if (tokens.length === 0) tokens.push('');
+  return tokens;
+}
+
+/**
+ * Explicit mark at the current blob wins. Otherwise a viewed mark at an older
+ * blob means the file changed after sign-off ('restale'); else the auto-viewed
+ * patterns decide.
+ */
+export function viewedState(state: Pick<ReviewState, 'viewed' | 'config'>, file: ChangedFile): ViewedState {
+  const explicit = state.viewed.find((v) => v.path === file.path && v.blob === file.blob);
+  if (explicit) return explicit.viewed ? 'viewed' : 'unviewed';
+  if (state.viewed.some((v) => v.path === file.path && v.viewed && v.blob !== file.blob)) return 'restale';
+  return matchesAutoViewed(state.config, file.path) ? 'viewed' : 'unviewed';
+}
+
+export function isViewed(state: Pick<ReviewState, 'viewed' | 'config'>, file: ChangedFile): boolean {
+  return viewedState(state, file) === 'viewed';
+}
+
+/** Number of changed files currently viewed (explicit marks and auto-viewed patterns; restale does not count). */
+export function countViewed(state: Pick<ReviewState, 'viewed' | 'config'>, changed: readonly ChangedFile[]): number {
+  let n = 0;
+  for (const f of changed) if (isViewed(state, f)) n++;
+  return n;
+}
+
+/** Changed files inside directory `dir`, given with or without its trailing slash. */
+export function filesUnder(changed: readonly ChangedFile[], dir: string): ChangedFile[] {
+  const prefix = dir.endsWith('/') ? dir : `${dir}/`;
+  return changed.filter((f) => f.path.startsWith(prefix));
+}
+
+/** Collapsed defaults to viewed or generated, until the user toggles it. */
+export function isCollapsed(
+  state: Pick<ReviewState, 'collapsed' | 'viewed' | 'config' | 'snapshot'>,
+  path: string,
+): boolean {
+  const explicit = state.collapsed[path];
+  if (explicit != null) return explicit;
+  const f = state.snapshot?.changed.find((x) => x.path === path);
+  return f ? isViewed(state, f) || f.generated : false;
+}
+
+/** Threads the UI shows: open ones, plus resolved when the user asked for them. */
+export function visibleThreads(state: Pick<ReviewState, 'threads' | 'showResolved'>): CommentThread[] {
+  return state.showResolved ? state.threads : state.threads.filter((t) => !t.resolved);
+}
+
+/** The header label of a thread: its line range and side, or the whole file. */
+export function anchorLabel(a: CommentAnchor): string {
+  return a.kind === 'file' ? 'whole file' : rangeLabel(a);
+}
+
+/** The header label of a line range, shared by saved comments and the draft so both name the same lines. */
+export function rangeLabel(r: ResolvedRange): string {
+  const range = r.startLine === r.endLine ? `${r.startLine}` : `${r.startLine}–${r.endLine}`;
+  return `${r.side === 'old' ? 'removed ' : ''}L${range}`;
+}
+
+/** The lines a viewer selection in `path` anchors a comment to; a diff maps context lines to the new side. */
+export function selectionRange(
+  state: Pick<ReviewState, 'loaded'>,
+  path: string,
+  sel: CodeViewLineSelection,
+): ResolvedRange {
+  const l = state.loaded[path];
+  return resolveRange(sel, l?.kind === 'diff' ? l.fileDiff : undefined);
+}
+
+/**
+ * The lines the draft comment will anchor to, resolved the way `submitDraft` anchors them, so the
+ * composer's label and the line tint show what the saved comment will say. Null for a file draft.
+ */
+export function draftRange(state: Pick<ReviewState, 'draft' | 'loaded'>): ResolvedRange | null {
+  const d = state.draft;
+  return d?.selection ? selectionRange(state, d.path, d.selection) : null;
+}
+
+/** A comment editor whose unsent text the store keeps: the open draft, a reply, or an edit. */
+export type ComposerTarget =
+  | { kind: 'draft' }
+  | { kind: 'reply'; threadId: string }
+  | { kind: 'edit'; messageId: string };
+
+/**
+ * Where `target`'s unsent text lives in `ReviewState.unsent`: the comment's anchor within the current
+ * review, so reopening an editor on the same lines, file, thread or message brings the text back.
+ * Null without a snapshot or an open draft.
+ */
+export function composerKey(
+  state: Pick<ReviewState, 'snapshot' | 'draft' | 'loaded'>,
+  target: ComposerTarget,
+): string | null {
+  if (!state.snapshot) return null;
+  const review = state.snapshot.commentKey;
+  if (target.kind === 'reply') return `${review}\0reply\0${target.threadId}`;
+  if (target.kind === 'edit') return `${review}\0edit\0${target.messageId}`;
+  if (!state.draft) return null;
+  const r = draftRange(state);
+  const at = r ? `${r.side}\0${r.startLine}\0${r.endLine}` : 'file';
+  return `${review}\0draft\0${state.draft.path}\0${at}`;
+}
+
+export function threadOfMessage(threads: CommentThread[], messageId: string): CommentThread | undefined {
+  return threads.find((t) => t.messages.some((m) => m.id === messageId));
+}
+
+/**
+ * A fetched thread list with every thread whose content did not change kept as the object
+ * already in the store, so per-path render keys and memoized cards see it as unchanged.
+ */
+export function reuseThreads(prev: CommentThread[], next: CommentThread[]): CommentThread[] {
+  if (prev === next) return next;
+  const byId = new Map(prev.map((t) => [t.id, t]));
+  let same = prev.length === next.length;
+  const out = next.map((t, i) => {
+    const was = byId.get(t.id);
+    const kept = was && JSON.stringify(was) === JSON.stringify(t) ? was : t;
+    if (kept !== prev[i]) same = false;
+    return kept;
+  });
+  return same ? prev : out;
+}
+
+/** Everything CodeView paints for `path` beyond its content; comparable by identity, see `itemVersion`. */
+export function itemDeps(
+  state: Pick<ReviewState, 'draft' | 'replyTo' | 'editingId'>,
+  path: string,
+  mine: CommentThread[],
+  collapsed: boolean,
+): unknown[] {
+  const reply = state.replyTo != null && mine.some((t) => t.id === state.replyTo) ? state.replyTo : null;
+  const editing = state.editingId != null && threadOfMessage(mine, state.editingId) ? state.editingId : null;
+  return [...mine, state.draft?.path === path ? state.draft : null, collapsed, reply, editing];
+}
+
+export interface ItemVersion {
+  deps: unknown[];
+  version: number;
+}
+
+/**
+ * The version an item carries: CodeView re-renders an item only when its version changed, so
+ * it is derived from the render deps rather than bumped by hand. Same deps, same version.
+ */
+export function itemVersion(prev: ItemVersion | undefined, deps: unknown[]): ItemVersion {
+  if (prev && prev.deps.length === deps.length && prev.deps.every((d, i) => d === deps[i])) return prev;
+  return { deps, version: (prev?.version ?? 0) + 1 };
+}
+
+const matcherCache = new Map<string, (p: string) => boolean>();
+function matchesAutoViewed(config: UserConfig, path: string): boolean {
+  const key = config.autoViewed.join('\n');
+  let m = matcherCache.get(key);
+  if (!m) {
+    const patterns = config.autoViewed.filter(Boolean);
+    m = patterns.length ? picomatch(patterns, { dot: true, basename: true }) : () => false;
+    matcherCache.set(key, m);
+  }
+  return m(path);
+}
+
+/** Symbols whose name fuzzy-matches `query` (`fuzzyScore`), best first; a blank query keeps all, in order. */
+export function filterSymbols(all: LspSymbol[], query: string): LspSymbol[] {
+  return fuzzyFilter(all, query, (s) => s.name);
+}
+
+/** Compare two validated, nonnegative ancestor offsets from HEAD. */
+/** The compare menu's entries by position (keys 1–6); Working acts at once and has no pane. */
+export const MODE_PANES = [null, 'refs', 'commits', 'pr', 'commit', 'range-diff'] as const;
+export type ModePane = NonNullable<(typeof MODE_PANES)[number]>;
+
+export function lastCommitsRequest(n: number, m: number): EnterRequest {
+  return { kind: 'revspec', args: [`HEAD~${n}..HEAD~${m}`] };
+}
+
+/** What an export did to the pending review: new comments, bodies rewritten in place, or nothing left to do. */
+export type ExportOutcome = 'added' | 'updated' | 'unchanged';
+
+/** The green suffix the export button shows afterwards. */
+export function exportLabel(outcome: ExportOutcome): string {
+  return outcome === 'updated' ? 'Updated' : outcome === 'unchanged' ? 'Already added' : 'Added';
+}
+
+/** Which end of the live comparison moved since `snapshot`, and where to: `feat 8f2c1ab → 4d9e0f2`. */
+export function movedLabel(snapshot: Snapshot, moved: Moved): string {
+  const live = rangeOf(snapshot.review);
+  if (!live) return '';
+  const { oldSha, newSha } = snapshot.commits;
+  const step = (name: string, from: string, to: string) => `${name} ${from.slice(0, 7)} → ${to.slice(0, 7)}`;
+  const ends: string[] = [];
+  if (moved.newSha !== newSha) ends.push(step(refName(live.new), newSha, moved.newSha));
+  if (moved.oldSha !== oldSha)
+    ends.push(step(live.base === 'merge-base' ? 'merge base' : refName(live.old), oldSha, moved.oldSha));
+  return ends.join(', ');
+}
+
+const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['day', 86_400_000],
+  ['hour', 3_600_000],
+  ['minute', 60_000],
+];
+
+/** "3 hours ago", "yesterday", or "just now" under a minute; `now` is injectable for tests. */
+export function relativeTime(at: number, now = Date.now()): string {
+  const elapsed = now - at;
+  for (const [unit, ms] of UNITS) if (elapsed >= ms) return RELATIVE.format(-Math.round(elapsed / ms), unit);
+  return 'just now';
+}
+
+/**
+ * Why comments are off in this comparison, or null. An interdiff's old side is a replayed tree
+ * and its threads would live under a key the range never shows again.
+ */
+export function commentsOff(review: Review): string | null {
+  if (review.kind !== 'range' || review.view.kind !== 'interdiff') return null;
+  return shownIterations(review)
+    ? 'Comments are off while comparing iterations: leave them on the range itself'
+    : 'Comments are off in a range-diff: leave them on either range itself';
+}
+
+/**
+ * Which two iterations a click on row `n` of the list compares, given the span `shown` (null when the
+ * range itself is shown) and the `latest` iteration. A plain click sets the span's lower number to
+ * `n`, a shift-click its higher one; the two are put in order if that crosses them. Without a span,
+ * any click compares `n` with the latest. Null when nothing would change.
+ */
+export function iterationPick(
+  shown: { from: number; to: number } | null,
+  latest: number,
+  n: number,
+  shift: boolean,
+): { from: number; to: number } | null {
+  const [from, to] = shown ? (shift ? [shown.from, n] : [n, shown.to]) : [n, latest];
+  const next = from < to ? { from, to } : { from: to, to: from };
+  if (next.from === next.to || (shown && shown.from === next.from && shown.to === next.to)) return null;
+  return next;
+}
+
+/**
+ * Where `ij` / `ik` / `iJ` / `iK` take the span: its lower (`end` 'lower') or higher end moves one
+ * iteration older (-1) or newer (1) along `iterations`, through `iterationPick`. Without a span the
+ * end is the latest. Null at the list's edge or when nothing would change.
+ */
+export function iterationStep(
+  iterations: Pick<Iteration, 'n'>[],
+  shown: { from: number; to: number } | null,
+  end: 'lower' | 'higher',
+  direction: -1 | 1,
+): { from: number; to: number } | null {
+  const latest = iterations.at(-1)?.n;
+  if (latest == null) return null;
+  const current = shown ? (end === 'lower' ? shown.from : shown.to) : latest;
+  const target = iterations[iterations.findIndex((it) => it.n === current) + direction];
+  return target ? iterationPick(shown, latest, target.n, end === 'higher') : null;
+}
+
+/** Local repository name, independent of GitHub discovery. */
+export function repoName(snapshot: Snapshot): string {
+  const parts = snapshot.root.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? snapshot.root;
+}
+
+/** Browser tab title; the PR number tells tabs of one repository apart. */
+export function documentTitle(
+  snapshot: Snapshot,
+  github: import('@/shared/protocol.js').GithubMetadata | null = null,
+): string {
+  const pr = github?.pullRequest;
+  return pr ? `mdiff: ${pr.repository} #${pr.number}` : `mdiff: ${repoName(snapshot)}`;
+}
+
+/** Raster formats a browser shows in an `<img>`; SVG is text and keeps its text diff. */
+const IMAGE_PATH = /\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i;
+
+/** What an image view shows: one side, or both to compare. */
+export type ImageSides = Side | 'both';
+
+/**
+ * The sides an image view of `path` shows, or null when the path names no raster image: those a changed
+ * file has (`changed` undefined is the file view, which shows the new side).
+ */
+export function imageSides(path: string, changed: ChangedFile | undefined): ImageSides | null {
+  if (!IMAGE_PATH.test(path)) return null;
+  if (!changed) return 'new';
+  return changed.status === 'A' ? 'new' : changed.status === 'D' ? 'old' : 'both';
+}
+
+/**
+ * A commit message's body, after the subject, as paragraphs to wrap at any width.
+ * Blank lines separate paragraphs; a list item or an indented line keeps its line break.
+ */
+export function commitBody(message: string): string[] {
+  const body = message.split('\n').slice(1).join('\n').trim();
+  if (!body) return [];
+  return body.split(/\n\s*\n/).map((paragraph) =>
+    paragraph
+      .split('\n')
+      .reduce((out, line) => (/^\s|^([-*+]|\d+[.)])\s/.test(line) ? `${out}\n${line}` : `${out} ${line}`), '')
+      .slice(1),
+  );
+}
+
+/** Whether the range lists its uncommitted changes as a stop of their own: it ends at the worktree, past a commit. */
+export function listsWorktree(snapshot: Pick<Snapshot, 'review' | 'commits'>): boolean {
+  const { review, commits } = snapshot;
+  return review.kind === 'range' && review.view.kind !== 'interdiff' && review.new === 'worktree' && commits.total > 0;
+}
+
+/**
+ * Where `direction` steps through a range's list, older (-1) or newer (1), the uncommitted changes past the
+ * newest commit, then the range itself: a commit's hash, `worktree`, null for the range, or undefined past
+ * either end and outside a range. A focused commit no longer listed steps newer to the range.
+ */
+export function rangeStep(
+  snapshot: Pick<Snapshot, 'review' | 'commits' | 'interdiff'>,
+  direction: -1 | 1,
+): string | null | undefined {
+  const { review, commits, interdiff } = snapshot;
+  if (review.kind !== 'range') return undefined;
+  const { view } = review;
+  // Within an interdiff the stops are its pairs with something to show, then the interdiff itself.
+  const order =
+    view.kind === 'interdiff'
+      ? [...(interdiff?.pairs ?? []).filter((p) => p.new && p.status !== 'identical').map((p) => p.new!.sha), null]
+      : [...commits.list.map((c) => c.sha), ...(listsWorktree(snapshot) ? ['worktree'] : []), null];
+  const shown =
+    view.kind === 'interdiff'
+      ? (view.pair ?? null)
+      : view.kind === 'commit'
+        ? view.sha
+        : view.kind === 'uncommitted'
+          ? 'worktree'
+          : null;
+  const at = order.indexOf(shown);
+  if (at < 0) return direction > 0 ? null : undefined;
+  return order[at + direction];
+}

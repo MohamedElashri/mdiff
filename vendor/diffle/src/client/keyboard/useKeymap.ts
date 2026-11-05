@@ -1,0 +1,490 @@
+import { useEffect, useRef } from 'react';
+import { copyText } from '@/client/clipboard.js';
+import { api } from '@/client/api.js';
+import { clearWordFocus, focusedWord, moveWord, moveWordToEdge, scrollCursorInline } from '@/client/lsp/wordNav.js';
+import { currentPath, MODE_PANES } from '@/client/model.js';
+import { remPx } from '@/client/scale.js';
+import { escapeRegex } from '@/client/search/highlight.js';
+import { activeView, panelOf, toggleView, useViews } from '@/client/views/state.js';
+import { copyCursorPermalink } from '@/client/review/permalink.js';
+import { useStore, type ReviewState } from '@/client/store.js';
+import { nextTheme } from '@/client/theme.js';
+
+const CHORD_MS = 800;
+const PREFIXES = new Set(['g', 'd', 'y', 'z', 'i']);
+/** Keys the browser scrolls a focused scroller with; the references peek leaves them native. */
+const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End']);
+
+type Action = (s: ReviewState) => unknown;
+
+/**
+ * Chords that take a vim-style count typed before them: `123gg` / `123G` jump to
+ * line 123 of the current file, `10j` / `10k` walk ten lines down / up.
+ */
+const COUNTED: Record<string, (s: ReviewState, count: number) => unknown> = {
+  gg: (s, n) => void s.goToLine(n),
+  G: (s, n) => void s.goToLine(n),
+  j: (s, n) => s.moveCursorBy(n),
+  k: (s, n) => s.moveCursorBy(-n),
+};
+
+/** Single keys and two-key chords, by the key string(s) of the keydown events. */
+const KEYMAP: Record<string, Action> = {
+  w: () => moveWord(1),
+  b: () => moveWord(-1),
+  '0': () => moveWordToEdge('first'),
+  $: () => moveWordToEdge('last'),
+  j: (s) => s.moveCursor(1),
+  k: (s) => s.moveCursor(-1),
+  J: (s) => s.moveFile(1),
+  K: (s) => s.moveFile(-1),
+  ']': (s) => s.moveHunk(1),
+  '[': (s) => s.moveHunk(-1),
+  '*': (s) => s.searchWord(1),
+  '#': (s) => s.searchWord(-1),
+  n: (s) => (s.search.matches.length ? s.moveMatch(1) : s.moveHunk(1)),
+  N: (s) => (s.search.matches.length ? s.moveMatch(-1) : s.moveHunk(-1)),
+  gg: (s) => s.moveFile('first'),
+  G: (s) => s.moveFile('last'),
+  V: (s) => s.toggleVisual(),
+  c: (s) => s.selection && s.openDraft(s.selection),
+  C: (s) => {
+    const path = currentPath(s);
+    if (path) s.openFileDraft(path);
+  },
+  e: (s) => s.editCommentAtCursor(),
+  dd: (s) => s.deleteCommentAtCursor(),
+  R: (s) => s.toggleResolvedAtCursor(),
+  v: (s) => s.toggleViewedAtCursor(),
+  gv: (s) => s.toggleViewedAbove(),
+  zo: (s) => s.setCollapsedAtCursor(false),
+  zc: (s) => s.setCollapsedAtCursor(true),
+  zC: (s) => s.setAllCollapsed(true),
+  zO: (s) => s.setAllCollapsed(false),
+  zt: (s) => s.scrollCursorTo('top'),
+  zb: (s) => s.scrollCursorTo('bottom'),
+  zz: (s) => s.scrollCursorTo('eye'),
+  zw: (s) => s.saveConfig({ lineWrap: !s.config.lineWrap }),
+  zh: () => scrollCursorInline(-1),
+  zl: () => scrollCursorInline(1),
+  s: (s) => s.setDiffStyle(s.diffStyle === 'split' ? 'unified' : 'split'),
+  t: (s) => s.setTheme(nextTheme(s.theme)),
+  yy: () => void copyComments(),
+  Y: () => void copyComments(),
+  yp: (s) => void copyPath(s),
+  yl: () => void copyCursorPermalink(),
+  '/': (s) => s.openSearch('file', selectedQuery(s)),
+  'g/': (s) => s.openSearch('diff', selectedQuery(s)),
+  gf: () => focusFileSearch(),
+  gd: (s) => s.goToDefinition(),
+  gy: (s) => s.goToTypeDefinition(),
+  gh: (s) => s.showHover(),
+  gA: (s) => s.findReferences(),
+  gs: (s) => s.openSymbols('document'),
+  gS: (s) => s.openSymbols('workspace'),
+  F: (s) => {
+    const path = currentPath(s);
+    if (!s.fileView && path) void s.openFullFile(path);
+  },
+  o: (s) => s.setGithubMenuOpen(!s.githubMenuOpen),
+  m: (s) => s.setModeMenuOpen(!s.modeMenuOpen),
+  '<': (s) => s.stepCommit(-1),
+  '>': (s) => s.stepCommit(1),
+  // Iterations mirror the list's mouse rule: plain keys move the span's lower end, shifted ones its higher.
+  ii: (s) => s.toggleInterdiff(),
+  ij: (s) => s.stepIteration('lower', -1),
+  ik: (s) => s.stepIteration('lower', 1),
+  iJ: (s) => s.stepIteration('higher', -1),
+  iK: (s) => s.stepIteration('higher', 1),
+  ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`i${n}`, (s: ReviewState) => s.pickIteration(n)])),
+  r: (s) => s.reloadIfMoved(),
+  '?': (s) => s.setHelpOpen(!s.helpOpen),
+  M: () => toggleView('graph'),
+};
+
+/** The page's text selection, else the focused word (`w`), as a search query: one line only, escaped when regex search is on. */
+function selectedQuery(s: ReviewState): string | undefined {
+  const text = window.getSelection()?.toString().trim() || focusedWord();
+  if (!text || text.includes('\n')) return undefined;
+  return s.search.regex ? escapeRegex(text) : text;
+}
+
+/** Real target, looking through shadow roots (the tree and diffs retarget events to their hosts). */
+function realTarget(e: Event): HTMLElement | null {
+  const path = e.composedPath();
+  return (path[0] as HTMLElement | undefined) ?? (e.target as HTMLElement | null);
+}
+
+/**
+ * Whether Ctrl or Alt is a real modifier on this press. AltGr (Windows reports
+ * it as Ctrl+Alt; Linux as `AltGraph`) is how `[`, `]`, `#` are typed on many
+ * layouts, so a single printable character produced through it counts as plain.
+ */
+export function hasModifier(e: KeyboardEvent): boolean {
+  if (!e.ctrlKey && !e.altKey) return false;
+  if ([...e.key].length !== 1) return true;
+  return !((e.ctrlKey && e.altKey) || e.getModifierState('AltGraph'));
+}
+
+function isFind(e: KeyboardEvent): boolean {
+  return (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f';
+}
+
+function isEditable(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT' || el.isContentEditable;
+}
+
+/**
+ * Vim-style keymap. Single keys act immediately; `g`, `d`, `y`, `z` start a
+ * chord that resolves on the next key or expires. While a prefix is held down,
+ * every key pressed resolves against it, so holding `z` makes `h` / `l` repeat
+ * `zh` / `zl`. Ignored while typing in a field, except Escape.
+ */
+export function useKeymap(): void {
+  const pending = useRef<{ key: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  // The prefix key physically down, from its press to its release.
+  const held = useRef<string | null>(null);
+  // Digits typed before a chord, as in vim; any key that is not part of the count or a counted chord drops it.
+  const count = useRef('');
+
+  useEffect(() => {
+    const clearPending = () => {
+      if (pending.current) clearTimeout(pending.current.timer);
+      pending.current = null;
+    };
+    const dispatch = (e: KeyboardEvent) => {
+      // Modifier presses (e.g. Shift before `M` in `zM`) must not consume a pending chord.
+      if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta' || e.key === 'CapsLock')
+        return;
+      const s = useStore.getState();
+      const target = realTarget(e);
+      // The count belongs to this press: every path below either uses it or, by
+      // leaving it taken, drops it as vim does on a key that takes no count.
+      const typed = count.current;
+      count.current = '';
+      const n = Number(typed);
+      // Let a ref field dismiss its suggestions before Escape closes the mode picker.
+      if (
+        e.key === 'Escape' &&
+        target?.getAttribute('role') === 'combobox' &&
+        target.getAttribute('aria-expanded') === 'true'
+      )
+        return;
+      if (e.key === 'Escape') {
+        // Leaving a configuration pane returns to the entry list, not the diff.
+        if (s.modePane && !s.helpOpen) {
+          s.escape();
+          if (target?.closest('#mode-picker')) focusModeEntry();
+          clearPending();
+          return;
+        }
+        // A view's own Escape comes before the review's, unless an open menu or the references list claims it.
+        if (!s.helpOpen && !s.modeMenuOpen && !s.references.open && activeView().escape?.(isEditable(target))) {
+          clearPending();
+          return;
+        }
+        if (isEditable(target)) {
+          target!.blur();
+          if (s.treeModel?.isSearchOpen()) s.treeModel.closeSearch();
+        }
+        // Hand focus to the review pane so the tree or a field stops swallowing keys.
+        // The tree re-focuses its search box synchronously, so defer a frame.
+        requestAnimationFrame(() => focusReview());
+        clearWordFocus();
+        s.escape();
+        clearPending();
+        return;
+      }
+      if (
+        !isEditable(target) &&
+        !e.metaKey &&
+        !hasModifier(e) &&
+        ([...e.key].length === 1 || e.key === 'Backspace' || e.key === 'Enter') &&
+        s.search.open &&
+        s.search.kind === 'text' &&
+        s.search.editing &&
+        s.search.scope === 'file'
+      ) {
+        e.preventDefault();
+        clearPending();
+        if ([...e.key].length === 1 || e.key === 'Backspace') s.typeSearchInput(e.key);
+        else if (e.key === 'Enter') void s.runSearch(s.search.input);
+        return;
+      }
+      // Ctrl/⌘+F opens a view's own find in place of the browser's.
+      const find = activeView().find;
+      if (find && !s.modeMenuOpen && !s.helpOpen && isFind(e)) {
+        e.preventDefault();
+        clearPending();
+        find();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        clearPending();
+        if (!s.layout.treeVisible) {
+          s.setLayout({ treeVisible: true });
+          requestAnimationFrame(focusFileSearch);
+        } else focusFileSearch();
+        return;
+      }
+      // The references overlay owns the keys while open, wherever focus sits.
+      if (s.references.open) {
+        e.stopPropagation();
+        // The focused peek scrolls natively on the page keys.
+        if (s.references.peek && SCROLL_KEYS.has(e.key)) return;
+        e.preventDefault();
+        if (e.key === 'j' || e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) return s.moveReference(1);
+        if (e.key === 'k' || e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) return s.moveReference(-1);
+        if (e.key === 'Enter') return s.pickReference();
+        if (e.key === ' ') return s.togglePeek();
+        if (s.references.peek && (e.key === 'J' || e.key === 'K' || (e.ctrlKey && (e.key === 'd' || e.key === 'u')))) {
+          const pane = document.querySelector<HTMLElement>('[aria-label="Peek"]');
+          if (!pane) return;
+          const step = e.ctrlKey ? pane.clientHeight / 2 : 3 * parseFloat(getComputedStyle(pane).lineHeight);
+          pane.scrollBy({ top: e.key === 'J' || e.key === 'd' ? step : -step });
+        }
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        const l = s.layout;
+        const view = useViews.getState().active;
+        if (e.shiftKey) s.setPanel(view, { visible: !panelOf(l, view).visible });
+        else s.setLayout({ treeVisible: !l.treeVisible });
+        return;
+      }
+      // Editor convention for "focus the explorer"; shows the tree when it is hidden.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        focusTree();
+        return;
+      }
+      if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'o' || e.key === 'i') && !isEditable(target)) {
+        e.preventDefault();
+        if (e.key === 'o') s.jumpBack();
+        else s.jumpForward();
+        return;
+      }
+      if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'd' || e.key === 'u') && !isEditable(target)) {
+        e.preventDefault();
+        const h = document.querySelector('.codeview')?.clientHeight ?? 800;
+        const rows = Math.max(5, Math.floor(h / 2 / (1.25 * remPx()))); // 1.25rem: the diff row height
+        s.moveCursorBy(e.key === 'd' ? rows : -rows);
+        return;
+      }
+      // Arrow keys: up/down walk lines; left hands focus to the tree (whose own
+      // arrows walk files); right comes back from the tree to the review pane.
+      // Focus inside the tree's shadow root surfaces as the host element.
+      if (document.activeElement?.tagName === 'FILE-TREE-CONTAINER') {
+        if (e.key === 'ArrowRight' && !isEditable(target)) {
+          e.preventDefault();
+          e.stopPropagation(); // otherwise the tree moves focus to the next row afterwards
+          focusReview();
+        }
+        return; // the tree owns every other key while focused
+      }
+      if (isEditable(target) || e.metaKey || hasModifier(e)) return;
+      // A view covering the diff owns the keys, but for a few that act on the whole review.
+      const view = activeView();
+      if (view.keys && !s.modeMenuOpen && !s.helpOpen) {
+        if (view.keys(e)) {
+          e.preventDefault();
+          clearPending();
+          return;
+        }
+        if (!view.passes?.has(e.key)) return;
+      }
+      // The open compare menu owns its navigation keys wherever focus sits. A focused button and the
+      // configuration pane keep native Enter, so Enter and Space activate the same control.
+      if (s.modeMenuOpen && !s.helpOpen) {
+        const step = e.key === 'j' || e.key === 'ArrowDown' ? 1 : e.key === 'k' || e.key === 'ArrowUp' ? -1 : 0;
+        const entry = new RegExp(`^[1-${MODE_PANES.length}]$`).test(e.key)
+          ? Number(e.key)
+          : e.key === 'Enter' && !target?.closest('button, #mode-config')
+            ? s.modeEntry
+            : 0;
+        if (step || entry) {
+          e.preventDefault();
+          if (step) {
+            s.highlightModeEntry(s.modeEntry + step);
+            // Focus on any button follows the highlight, so its native Enter picks the entry shown.
+            if (target?.closest('button') && !target.closest('#mode-config')) focusModeEntry();
+          } else s.pickModeEntry(entry);
+          return;
+        }
+        // l / → enter the highlighted entry's pane, which sits to the right; h / ← leave it for the list.
+        if (e.key === 'l' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          if (s.modeEntry === 1) return; // Working has no pane
+          // An already open pane keeps its fields mounted, so autofocus will not move focus into it.
+          if (s.modePane === MODE_PANES[s.modeEntry - 1]) focusModeConfig();
+          else s.pickModeEntry(s.modeEntry);
+          return;
+        }
+        if (e.key === 'h' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          s.closeModePane();
+          if (target?.closest('#mode-picker')) focusModeEntry();
+          return;
+        }
+      }
+      if (s.modeMenuOpen && target?.closest('#mode-picker')) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const dir = e.key === 'ArrowDown' ? 1 : -1;
+        if (n > 0) s.moveCursorBy(dir * n);
+        else s.moveCursor(dir);
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        focusTree();
+        return;
+      }
+      if (s.helpOpen && e.key !== '?') {
+        s.setHelpOpen(false);
+        return;
+      }
+      // Auto-repeat of a held prefix is not a second press: holding `z` must not fire `zz`.
+      if (e.repeat && e.key === held.current) {
+        e.preventDefault();
+        return;
+      }
+      // A held prefix applies only where it forms a chord, so a key rolled over its release still acts alone.
+      const prefix = pending.current?.key ?? (held.current && KEYMAP[held.current + e.key] ? held.current : undefined);
+      clearPending();
+      // A count starts with 1-9 (`0` alone is a motion) and grows with any digit.
+      if (!prefix && /^[0-9]$/.test(e.key) && (typed || e.key !== '0')) {
+        e.preventDefault();
+        count.current = typed + e.key;
+        return;
+      }
+      if (!prefix && PREFIXES.has(e.key)) {
+        // `g` alone also has no action; wait for the second key, which the count outlives (`10gg`).
+        count.current = typed;
+        pending.current = { key: e.key, timer: setTimeout(clearPending, CHORD_MS) };
+        held.current = e.key;
+        return;
+      }
+      const chord = prefix ? prefix + e.key : e.key;
+      const counted = n > 0 ? COUNTED[chord] : undefined;
+      const action = KEYMAP[chord];
+      // Unknown keys keep their browser behavior (Tab, Space, PageDown, F5, ...).
+      if (!counted && !action) return;
+      e.preventDefault();
+      if (counted) counted(s, n);
+      else action!(s);
+    };
+    // A key we acted on is ours alone: the viewer cancels its pending programmatic scroll on any
+    // keydown reaching it, which would cancel the very jump the key requested.
+    const onKey = (e: KeyboardEvent) => {
+      dispatch(e);
+      if (e.defaultPrevented) e.stopPropagation();
+    };
+    // A deliberate click elsewhere releases search ownership; virtualization removing the input does not.
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0 || realTarget(e)?.closest('[data-content-search]')) return;
+      const s = useStore.getState();
+      if (!s.search.open || !s.search.editing) return;
+      s.blurSearchInput();
+      document.querySelector<HTMLInputElement>('[data-content-search]')?.blur();
+      clearPending();
+      count.current = '';
+    };
+    // Capture phase and window blur: a release the page never sees would leave later keys chorded.
+    const onRelease = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === held.current) held.current = null;
+    };
+    const onBlur = () => {
+      held.current = null;
+    };
+    // The tree closes its search on Escape key-up and re-focuses its input; take focus back after that.
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || realTarget(e)?.getAttribute('role') === 'combobox') return;
+      // Escape that only closed a configuration pane leaves focus on the entry list.
+      if (useStore.getState().modeMenuOpen && document.activeElement?.closest('#mode-picker')) return;
+      setTimeout(focusReview, 0);
+    };
+    // Capture phase: the tree stops propagation of keys it handles (arrows), and we
+    // need ArrowRight to hand focus back. Editable targets are skipped early.
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keyup', onKeyUp);
+    document.addEventListener('keyup', onRelease, true);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keyup', onKeyUp);
+      document.removeEventListener('keyup', onRelease, true);
+      window.removeEventListener('blur', onBlur);
+      clearPending();
+      count.current = '';
+    };
+  }, []);
+}
+
+function focusModeEntry(): void {
+  document.querySelector<HTMLElement>(`[data-mode-entry="${useStore.getState().modeEntry}"]`)?.focus();
+}
+
+function focusModeConfig(): void {
+  document.querySelector<HTMLElement>('#mode-config :is(input, [tabindex="0"])')?.focus();
+}
+
+/** Re-focus filename search without discarding its current filter. */
+function focusFileSearch(): void {
+  const model = useStore.getState().treeModel;
+  model?.openSearch(model.getSearchValue());
+  document
+    .querySelector('file-tree-container')
+    ?.shadowRoot?.querySelector<HTMLInputElement>('[data-file-tree-search-input]')
+    ?.focus({ preventScroll: true });
+}
+
+/** Focus the file tree on the active file so its own arrow keys walk the files. */
+function focusTree(): void {
+  const s = useStore.getState();
+  if (!s.layout.treeVisible) s.setLayout({ treeVisible: true });
+  const model = s.treeModel;
+  const host = document.querySelector<HTMLElement>('file-tree-container');
+  requestAnimationFrame(() => {
+    const path =
+      s.activePath && model?.getItem(s.activePath) ? s.activePath : model?.focusNearestPath(s.activePath ?? null);
+    if (path && model) model.focusPath(path);
+    // The tree keeps one focusable row (tabindex=0); DOM focus must land on it for its arrow keys to work.
+    const row =
+      host?.shadowRoot?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]') ??
+      host?.shadowRoot?.querySelector<HTMLElement>('[role="tree"]');
+    (row ?? host)?.focus();
+  });
+}
+
+async function copyPath(s: ReviewState): Promise<void> {
+  const path = currentPath(s);
+  if (!path) return;
+  s.flash((await copyText(path)) ? `Copied ${path}` : 'The browser blocked clipboard access');
+}
+
+/** Move keyboard focus to the review pane, so the vim keys reach the cursor instead of the tree or a field. */
+export function focusReview(): void {
+  (document.activeElement as HTMLElement | null)?.blur?.();
+  document.querySelector<HTMLElement>('main[tabindex]')?.focus({ preventScroll: true });
+}
+
+async function copyComments(): Promise<void> {
+  const s = useStore.getState();
+  let text: string;
+  try {
+    text = await api.exportComments();
+  } catch (e) {
+    // A silent failure leaves the previous clipboard to be pasted into the agent.
+    return s.report('Copying comments', e);
+  }
+  const ok = await copyText(text);
+  if (ok) s.noteCopiedAll();
+  s.flash(ok ? 'Copied all comments' : 'Clipboard blocked; use the panel buttons');
+}

@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Main window permissions",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "clipboard-manager:allow-write-text",
+    "opener:allow-open-url"
+  ]
+}

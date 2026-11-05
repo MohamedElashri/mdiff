@@ -1,0 +1,276 @@
+// Minimal stdio language server for tests: answers initialize, definition, references,
+// documentSymbol, workspace/symbol, hover, documentHighlight, shutdown. FAKE_LSP_GRAPH=1 makes
+// outlines and references real enough for the change graph (see `graphOutline`). Definitions point
+// at line 2 (FAKE_LSP_DEFINITION_LINE) of the queried file plus one location outside the root; references echo the open document's text length.
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+let buf = Buffer.alloc(0);
+const docs = new Map();
+process.stdin.on('data', (chunk) => {
+  buf = Buffer.concat([buf, chunk]);
+  for (;;) {
+    const end = buf.indexOf('\r\n\r\n');
+    if (end === -1) return;
+    const len = Number(/Content-Length: (\d+)/.exec(buf.subarray(0, end).toString())[1]);
+    if (buf.length < end + 4 + len) return;
+    const msg = JSON.parse(buf.subarray(end + 4, end + 4 + len).toString());
+    buf = buf.subarray(end + 4 + len);
+    handle(msg);
+  }
+});
+
+function send(msg) {
+  const body = Buffer.from(JSON.stringify(msg));
+  process.stdout.write(`Content-Length: ${body.length}\r\n\r\n`);
+  process.stdout.write(body);
+}
+const log = (line) => process.stderr.write(line + '\n');
+// FAKE_LSP_EXTERNAL: the file outside the root definitions also point at; tests set it to a real file.
+const EXTERNAL = process.env.FAKE_LSP_EXTERNAL ?? '/usr/lib/python3/site.py';
+// FAKE_LSP_EXTERNAL_NEXT: where a definition asked from inside EXTERNAL points instead, one hop further out.
+const EXTERNAL_NEXT = process.env.FAKE_LSP_EXTERNAL_NEXT;
+const base = (uri) => uri.replace(/^.*\//, '');
+const reply = (id, result) => send({ jsonrpc: '2.0', id, result });
+const range = (line, ch = 0) => ({ start: { line, character: ch }, end: { line, character: ch + 1 } });
+const span = (startLine, endLine, ch = 0) => ({
+  start: { line: startLine, character: ch },
+  end: { line: endLine, character: 0 },
+});
+
+const DEFINITION_LINE = Number(process.env.FAKE_LSP_DEFINITION_LINE ?? 2);
+
+// FAKE_LSP_TAG: a server joining another on the same file; its answers say who spoke.
+const TAG = process.env.FAKE_LSP_TAG;
+
+/** FAKE_LSP_MODIFIED: refuse this many document requests with ContentModified before answering. */
+let modified = Number(process.env.FAKE_LSP_MODIFIED ?? 0);
+
+const ALL_FEATURES = 'definition,typeDefinition,hover,references,documentSymbol,workspaceSymbol,documentHighlight';
+/** FAKE_LSP_OFFERS: the providers to advertise at initialize, comma-separated; FAKE_LSP_WITHOUT: ones to leave out. */
+const offers = (process.env.FAKE_LSP_OFFERS ?? ALL_FEATURES)
+  .split(',')
+  .filter((f) => f && !(process.env.FAKE_LSP_WITHOUT ?? '').split(',').includes(f));
+/** FAKE_LSP_REGISTERS: features registered after `initialized` instead of advertised. */
+const registers = (process.env.FAKE_LSP_REGISTERS ?? '').split(',').filter(Boolean);
+let nextId = 1000;
+
+function handle(msg) {
+  // A response to a request of ours: nothing to do with it.
+  if (!msg.method) return;
+  if (modified > 0 && msg.id != null && msg.method?.startsWith('textDocument/')) {
+    modified--;
+    log(`refused ${msg.method}`);
+    return send({ jsonrpc: '2.0', id: msg.id, error: { code: -32801, message: 'content modified' } });
+  }
+  switch (msg.method) {
+    case 'initialize':
+      if (process.env.FAKE_LSP_DIE === '1') process.exit(3);
+      if (!msg.params.capabilities.window?.workDoneProgress) process.exit(4);
+      if (msg.params.initializationOptions) log('init ' + JSON.stringify(msg.params.initializationOptions));
+      // A server may only register later what the client allowed it to.
+      for (const f of registers) {
+        const section =
+          f === 'workspaceSymbol'
+            ? msg.params.capabilities.workspace?.symbol
+            : msg.params.capabilities.textDocument?.[f];
+        if (!section?.dynamicRegistration) process.exit(5);
+      }
+      return reply(msg.id, {
+        capabilities: Object.fromEntries(
+          offers.filter((f) => !registers.includes(f)).map((f) => [`${f}Provider`, true]),
+        ),
+      });
+    case 'initialized':
+      if (!registers.length) return;
+      return send({
+        jsonrpc: '2.0',
+        id: nextId++,
+        method: 'client/registerCapability',
+        params: {
+          registrations: registers.map((f) => ({
+            id: `reg-${f}`,
+            method: f === 'workspaceSymbol' ? 'workspace/symbol' : `textDocument/${f}`,
+            registerOptions: {},
+          })),
+        },
+      });
+    case 'workspace/didChangeConfiguration':
+      return log('config ' + JSON.stringify(msg.params.settings));
+    case 'test/request':
+      return send({ jsonrpc: '2.0', id: nextId++, method: msg.params.method, params: msg.params.params });
+    case 'test/notification':
+      return send({ jsonrpc: '2.0', method: msg.params.method, params: msg.params.params });
+    // Logged in line with the document events, so a test sees when everything before it landed.
+    case 'test/mark':
+      return log(msg.params.mark);
+    // Document lifecycle goes to stderr so tests can observe what the bridge opened.
+    case 'textDocument/didOpen':
+      docs.set(msg.params.textDocument.uri, msg.params.textDocument.text);
+      return log(`open ${base(msg.params.textDocument.uri)} v${msg.params.textDocument.version}`);
+    case 'textDocument/didChange':
+      docs.set(msg.params.textDocument.uri, msg.params.contentChanges[0].text);
+      return log(`change ${base(msg.params.textDocument.uri)} v${msg.params.textDocument.version}`);
+    case 'textDocument/didClose':
+      docs.delete(msg.params.textDocument.uri);
+      return log(`close ${base(msg.params.textDocument.uri)}`);
+    case 'textDocument/definition': {
+      if (TAG) return reply(msg.id, [{ uri: msg.params.textDocument.uri, range: range(4) }]);
+      if (process.env.FAKE_LSP_LOADING_DURING_QUERY === '1') {
+        send({
+          jsonrpc: '2.0',
+          method: '$/progress',
+          params: { token: 'reload', value: { kind: 'begin', title: 'Reloading workspace' } },
+        });
+        return reply(msg.id, null);
+      }
+      // FAKE_LSP_REAL_ROOT mimics a server that canonicalizes symlinked roots.
+      const uri = process.env.FAKE_LSP_REAL_ROOT
+        ? msg.params.textDocument.uri.replace(
+            pathToFileURL(process.env.FAKE_LSP_ROOT).href,
+            pathToFileURL(process.env.FAKE_LSP_REAL_ROOT).href,
+          )
+        : msg.params.textDocument.uri;
+      const fromExternal = EXTERNAL_NEXT && msg.params.textDocument.uri === pathToFileURL(EXTERNAL).href;
+      return reply(msg.id, [
+        { uri, range: range(DEFINITION_LINE - 1, 4) },
+        { uri: pathToFileURL(fromExternal ? EXTERNAL_NEXT : EXTERNAL).href, range: range(0) },
+      ]);
+    }
+    case 'textDocument/references': {
+      if (GRAPH) return reply(msg.id, graphReferences(msg.params.textDocument.uri, msg.params.position));
+      const text = docs.get(msg.params.textDocument.uri) ?? '';
+      return reply(msg.id, [
+        { uri: msg.params.textDocument.uri, range: range(0, text.length) },
+        { uri: msg.params.textDocument.uri.replace(/[^/]+$/, 'other.py'), range: range(2) },
+        { uri: msg.params.textDocument.uri.replace(/[^/]+$/, 'ignored.py'), range: range(0) },
+      ]);
+    }
+    case 'textDocument/hover':
+      // Empty text at line 1: nothing to say. Elsewhere: markdown plus a legacy language block.
+      if (msg.params.position.line === 0) return reply(msg.id, null);
+      if (TAG) return reply(msg.id, { contents: { kind: 'markdown', value: `${TAG} says hi` } });
+      // FAKE_LSP_HOVER_LINKS mimics pyright's "Go to X" links: one inside the root, one outside it.
+      if (process.env.FAKE_LSP_HOVER_LINKS === '1')
+        return reply(msg.id, {
+          contents: {
+            kind: 'markdown',
+            value: `Go to [f](${msg.params.textDocument.uri}#3,4) or [site](${pathToFileURL('/usr/lib/python3/site.py').href}#10,2)`,
+          },
+        });
+      return reply(msg.id, {
+        contents: [{ language: 'python', value: 'def f() -> None' }, 'Does the `f` thing.'],
+        range: range(msg.params.position.line, 4),
+      });
+    case 'textDocument/documentHighlight': {
+      // The word at the position, wherever it recurs inside the enclosing top-level block (a stand-in
+      // for scope); one followed by a lone `=` counts as a write (3), the others as reads (2).
+      const lines = (docs.get(msg.params.textDocument.uri) ?? '').split('\n');
+      const { line, character } = msg.params.position;
+      const word = [...(lines[line] ?? '').matchAll(/\w+/g)].find(
+        (m) => character >= m.index && character < m.index + m[0].length,
+      )?.[0];
+      if (!word) return reply(msg.id, null);
+      let first = line;
+      while (first > 0 && !/^\S/.test(lines[first])) first--;
+      let last = line + 1;
+      while (last < lines.length && !/^\S/.test(lines[last])) last++;
+      const out = [];
+      for (let l = first; l < last; l++)
+        for (const m of lines[l].matchAll(new RegExp(`(?<!\\w)${word}(?!\\w)(\\s*=(?!=))?`, 'g')))
+          out.push({
+            range: { start: { line: l, character: m.index }, end: { line: l, character: m.index + word.length } },
+            kind: m[1] ? 3 : 2,
+          });
+      return reply(msg.id, out);
+    }
+    case 'textDocument/documentSymbol':
+      if (GRAPH) return reply(msg.id, graphOutline(textOf(msg.params.textDocument.uri)));
+      return reply(msg.id, [
+        {
+          name: 'Foo',
+          kind: 5,
+          range: span(0, 3),
+          selectionRange: range(0, 6),
+          children: [{ name: 'bar', kind: 6, range: span(1, 2), selectionRange: range(1, 8) }],
+        },
+        { name: 'baz', kind: 12, range: span(5, 6), selectionRange: range(5, 4) },
+      ]);
+    case 'workspace/symbol':
+      return reply(msg.id, [
+        {
+          name: msg.params.query + '_sym',
+          kind: 12,
+          containerName: 'mod',
+          location: {
+            uri: pathToFileURL((process.env.FAKE_LSP_ROOT ?? process.cwd()) + '/other.py').href,
+            range: range(4, 2),
+          },
+        },
+        { name: 'outside', kind: 12, location: { uri: pathToFileURL('/elsewhere/x.py').href, range: range(0) } },
+      ]);
+    case 'shutdown':
+      return reply(msg.id, null);
+    case 'exit':
+      return process.exit(0);
+    default:
+      if (msg.id != null) reply(msg.id, null);
+  }
+}
+
+const GRAPH = process.env.FAKE_LSP_GRAPH === '1';
+const textOf = (uri) => docs.get(uri) ?? readFileSync(fileURLToPath(uri), 'utf8');
+
+/**
+ * A Python outline from indentation: each `class`/`def` spans until the next line indented no
+ * deeper; a `def` inside another symbol is a method (6), else a function (12); classes are 5.
+ */
+function graphOutline(text) {
+  const lines = text.split('\n');
+  const indent = (l) => (/\S/.test(l) ? /^\s*/.exec(l)[0].length : Infinity);
+  const out = [];
+  lines.forEach((l, line) => {
+    const m = /^(\s*)(class|def) (\w+)/.exec(l);
+    if (!m) return;
+    let end = line;
+    while (end + 1 < lines.length && indent(lines[end + 1]) > m[1].length) end++;
+    const kind = m[2] === 'class' ? 5 : m[1] ? 6 : 12;
+    const ch = m[1].length + m[2].length + 1;
+    out.push({
+      name: m[3],
+      kind,
+      range: span(line, end, m[1].length),
+      selectionRange: { start: { line, character: ch }, end: { line, character: ch + m[3].length } },
+    });
+  });
+  return out;
+}
+
+/** The `.py` files under the root, depth first; the server's working directory is the root. */
+function pyFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((e) =>
+      e.isDirectory() ? pyFiles(`${dir}/${e.name}`) : e.name.endsWith('.py') ? [`${dir}/${e.name}`] : [],
+    );
+}
+
+/** Every whole-word occurrence, in every `.py` file under the root, of the word at the position. */
+function graphReferences(uri, { line, character }) {
+  const word = [...(textOf(uri).split('\n')[line] ?? '').matchAll(/\w+/g)].find(
+    (m) => character >= m.index && character <= m.index + m[0].length,
+  )?.[0];
+  if (!word) return [];
+  const out = [];
+  for (const path of pyFiles(process.env.FAKE_LSP_ROOT ?? process.cwd())) {
+    const file = pathToFileURL(path).href;
+    textOf(file)
+      .split('\n')
+      .forEach((l, at) => {
+        for (const m of l.matchAll(new RegExp(`(?<!\\w)${word}(?!\\w)`, 'g')))
+          out.push({ uri: file, range: range(at, m.index) });
+      });
+  }
+  return out;
+}

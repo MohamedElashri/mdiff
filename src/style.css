@@ -1,0 +1,590 @@
+:root {
+  --ink: var(--fg);
+  --canvas: var(--bg);
+  --surface: var(--bg-2);
+  --line: var(--border);
+  --paper: var(--bg);
+  --hover: var(--bg-3);
+  --secondary: var(--fg-2);
+  font-family: var(--sans);
+  color: var(--fg);
+  background: var(--bg);
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  button,
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  input,
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  textarea,
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  select {
+  font: inherit;
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  button {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  button:hover {
+  background: var(--hover);
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  button:focus-visible,
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  input:focus-visible,
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  textarea:focus-visible,
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
+  select:focus-visible {
+  outline: 2px solid #4269cd;
+  outline-offset: 2px;
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel) svg {
+  flex-shrink: 0;
+}
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.desktop-chrome {
+  height: 55px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  gap: 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px;
+}
+.brand svg {
+  width: 25px;
+  height: 25px;
+  color: var(--accent);
+}
+.brand strong {
+  font-size: 22px;
+  letter-spacing: -1px;
+}
+.header-divider {
+  height: 20px;
+  width: 1px;
+  background: var(--line);
+}
+.subtitle {
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.window-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.open {
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+.review-frame {
+  width: 100%;
+  border: 0;
+  flex: 1;
+  min-height: 0;
+  background: var(--paper);
+}
+.home {
+  overflow: auto;
+  flex: 1;
+  padding: 28px max(24px, calc((100vw - 1000px) / 2));
+}
+.intro {
+  position: relative;
+  padding: 0 0 24px;
+}
+.welcome-mark {
+  position: absolute;
+  left: 0;
+  top: 10px;
+  width: 54px;
+  color: var(--accent);
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel) h1 {
+  font-size: 26px;
+  line-height: 1.15;
+  letter-spacing: -1px;
+  font-weight: 600;
+  margin: 0 0 15px;
+}
+.intro p {
+  color: var(--fg-2);
+  font-size: 14px;
+  line-height: 1.65;
+  margin: 0 0 20px;
+}
+.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  padding: 10px 16px;
+}
+.primary:hover {
+  background: var(--accent);
+  filter: brightness(0.92);
+}
+.intro > small {
+  color: var(--fg-2);
+  margin-left: 12px;
+  font-size: 11px;
+}
+.home-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel) h2 {
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 20px;
+}
+:where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel) h3 {
+  font-size: 14px;
+  margin: 22px 0 12px;
+}
+.review-form label,
+.settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 14px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.review-form input,
+.review-form select,
+.settings input:not([type="checkbox"]):not([type="radio"]),
+.settings textarea {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.review-form small {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-2);
+}
+.folder-field {
+  display: flex;
+  gap: 6px;
+}
+.folder-field input {
+  min-width: 0;
+}
+.folder-field button {
+  border: 1px solid var(--line);
+}
+.recent > button {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  border-bottom: 1px solid #e2e7f0;
+  border-radius: 0;
+  padding: 12px 4px;
+  align-items: flex-start;
+}
+.recent > button > svg {
+  color: var(--fg-2);
+  margin-top: 3px;
+}
+.recent > button span {
+  min-width: 0;
+}
+.recent small {
+  display: block;
+  margin-top: 5px;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
+.recent .recent-path {
+  font-size: 10px;
+  color: var(--fg-2);
+}
+.recent p {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-2);
+}
+.feature-note {
+  margin-top: 25px;
+  border-left: 2px solid #9db2df;
+  padding-left: 15px;
+}
+.feature-note strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.attribution {
+  font-size: 10px !important;
+  margin-top: 30px;
+}
+.error {
+  background: #fff0e9;
+  color: #9c4938;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow: auto;
+  flex-shrink: 0;
+}
+.loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  color: var(--fg-2);
+}
+.loading h2 {
+  margin-top: 18px;
+  color: #4b617f;
+}
+.spin {
+  animation: spin 1.4s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #17253d55;
+  display: grid;
+  place-items: center;
+}
+.settings {
+  background: var(--canvas);
+  padding: 26px 30px;
+  border-radius: 12px;
+  box-shadow: 0 20px 80px #14233c55;
+  width: 600px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+.settings > p {
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.settings textarea {
+  font-family: var(--mono);
+  min-height: 90px;
+  resize: vertical;
+}
+.settings .checkbox {
+  flex-direction: row;
+  align-items: center;
+}
+.checkbox input {
+  width: 0.875rem;
+}
+.delete {
+  float: right;
+  padding: 2px;
+}
+.settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 20px;
+  gap: 15px;
+}
+.settings-footer span {
+  font-size: 11px;
+  color: #608577;
+}
+.settings summary {
+  cursor: pointer;
+  color: var(--fg-2);
+  margin: 15px 0;
+}
+.settings input[type="password"] {
+  font-family: var(--mono);
+}
+@media (max-width: 1000px) {
+  .subtitle {
+    display: none;
+  }
+  .home {
+    padding: 30px;
+  }
+  .home-columns {
+    gap: 25px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+.review-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.review-content {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.gitlab-panel {
+  width: 350px;
+  flex-shrink: 0;
+  overflow: auto;
+  padding: 18px;
+  border-left: 1px solid var(--line);
+  background: var(--canvas);
+  color: var(--ink);
+}
+.gitlab-panel article {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.gitlab-panel p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.gitlab-panel textarea {
+  width: 100%;
+  min-height: 75px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: 8px;
+}
+.gitlab-panel .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 12px 0;
+}
+.gitlab-panel small {
+  color: var(--secondary);
+}
+
+.reviewing .desktop-chrome {
+  height: 38px;
+  gap: 12px;
+  padding: 0 14px;
+}
+.reviewing .brand strong {
+  font-size: 17px;
+  letter-spacing: -0.5px;
+}
+.reviewing .brand svg {
+  width: 20px;
+  height: 20px;
+}
+.reviewing .desktop-chrome button {
+  padding: 4px 8px;
+}
+.gitlab-control {
+  color: var(--fg);
+  font: inherit;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+.preferences-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.preferences-tabs button[aria-pressed="true"] {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.settings .appearance-mode label {
+  flex-direction: row;
+  margin: 0;
+  color: var(--fg);
+}
+.settings .appearance-mode input {
+  width: auto;
+}
+.settings .appearance-check {
+  flex-direction: row;
+  align-items: center;
+}
+.settings .appearance-grid label {
+  margin: 0;
+}
+.settings .appearance-grid input[type="checkbox"] {
+  width: 0.875rem;
+}
+.settings .appearance-preview code {
+  background: transparent;
+}
+.primary {
+  color: var(--accent-fg);
+}
+@media (max-width: 760px) {
+  .home {
+    padding: 20px;
+  }
+  .home-columns {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .intro h1 {
+    font-size: 23px;
+    margin-bottom: 8px;
+  }
+  .intro p {
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .intro > small {
+    display: block;
+    margin: 8px 0 0;
+  }
+  .desktop-chrome {
+    height: 44px;
+    gap: 8px;
+    padding: 0 10px;
+  }
+  .window-actions {
+    gap: 2px;
+  }
+  .window-actions button {
+    padding: 6px;
+    font-size: 12px;
+  }
+  .brand strong {
+    font-size: 18px;
+  }
+  .header-divider {
+    display: none;
+  }
+  .settings {
+    padding: 18px;
+  }
+  .gitlab-panel {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: min(350px, 100%);
+    z-index: 30;
+    box-shadow: -8px 0 24px #0003;
+  }
+}
+.review-workspace {
+  position: relative;
+}
+.settings .appearance-grid label {
+  display: block;
+  font-size: 0.8125rem;
+  color: var(--fg-2);
+}
+.settings .appearance-heading {
+  justify-content: space-between;
+  min-height: 24px;
+}
+.settings .appearance-heading h3 {
+  margin: 0;
+}
+.settings .appearance-heading > button:only-child {
+  margin-left: auto;
+}
+.settings .appearance-panel {
+  margin-bottom: 0;
+}
+.settings .appearance-grid select,
+.settings .appearance-grid input[type="number"],
+.review-form select {
+  appearance: none;
+  min-height: 36px;
+  padding: 8px 10px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background-color: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+.settings .appearance-grid select,
+.review-form select {
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4 3 3 3-3' fill='none' stroke='%23888888' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-position: right 9px center;
+  background-repeat: no-repeat;
+}
+.settings .appearance-grid label.appearance-check {
+  display: flex;
+  gap: 0.5rem;
+}
+.settings .appearance-check input {
+  margin: 0;
+  padding: 0;
+}
+
+.settings .settings-error {
+  color: var(--danger);
+  margin: 12px 0;
+  font-size: 13px;
+}
