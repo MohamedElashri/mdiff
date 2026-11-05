@@ -133,3 +133,32 @@ async fn refuses_a_graph_when_the_new_side_is_not_the_checkout() {
     assert_eq!(res.status, 409, "{}", res.body);
     s.close().await;
 }
+
+#[tokio::test]
+async fn shows_symbols_first_and_expands_only_the_requested_file() {
+    if fake_servers().is_none() {
+        return;
+    }
+    let t = agent_repo();
+    fake_env(&t.path, Some("fake"), &[("FAKE_LSP_GRAPH", "1")]);
+    let overrides = HashMap::from([(LanguageId::Python, "fake".to_owned())]);
+    let s = TestServer::with_lsp(t, EnterRequest::Working, Some(overrides)).await;
+    eventually("a ready server", || {
+        s.lsp.as_ref().unwrap().status().servers.iter().any(|x| x.state == LspState::Ready)
+    })
+    .await;
+    let symbols = s.get("/api/lsp/graph?phase=symbols").await;
+    assert_eq!(symbols.status, 200);
+    let symbols = symbols.json();
+    assert!(!symbols["nodes"].as_array().unwrap().is_empty());
+    assert!(symbols["edges"].as_array().unwrap().is_empty());
+    assert!(symbols["nodes"].as_array().unwrap().iter().all(|n| n["status"] != "consumer"));
+    let expanded = s.get("/api/lsp/graph?node=agent.py").await;
+    assert_eq!(expanded.status, 200);
+    let expanded = expanded.json();
+    let nodes = expanded["nodes"].as_array().unwrap();
+    let edges = expanded["edges"].as_array().unwrap();
+    assert!(!edges.is_empty());
+    assert!(edges.iter().all(|edge| nodes.iter().any(|n| n["id"] == edge["to"] && n["path"] == "agent.py")));
+    s.close().await;
+}

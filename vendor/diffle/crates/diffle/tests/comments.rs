@@ -36,7 +36,21 @@ fn first_body(t: &CommentThread) -> &str {
 }
 
 fn raw(dir: &Path) -> Value {
-    serde_json::from_str(&std::fs::read_to_string(dir.join("diffle/comments.json")).unwrap()).unwrap()
+    let db = rusqlite::Connection::open(dir.join("diffle/comments.sqlite")).unwrap();
+    let mut sets = serde_json::Map::new();
+    let mut stmt = db.prepare("SELECT key,viewed FROM reviews").unwrap();
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap() {
+        let (key, viewed) = row.unwrap();
+        let threads: Vec<Value> = db
+            .prepare("SELECT data FROM threads WHERE review=?1 ORDER BY rowid")
+            .unwrap()
+            .query_map([&key], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+            .collect();
+        sets.insert(key, json!({"threads":threads,"viewed":serde_json::from_str::<Value>(&viewed).unwrap()}));
+    }
+    json!({"version":3,"sets":sets})
 }
 
 fn entry(path: &str, blob: &str, viewed: bool) -> ViewedEntry {
@@ -126,20 +140,21 @@ async fn writes_the_comment_file_and_its_directory_owner_only() {
     let store = CommentStore::open(dir.path(), "working").await.unwrap();
     store.add_thread(anchor(), "hello".into()).await.unwrap();
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode(&dir.path().join("diffle/comments.json")), 0o600);
+    assert_eq!(mode(&dir.path().join("diffle/comments.sqlite")), 0o600);
     assert_eq!(mode(&dir.path().join("diffle")), 0o700);
 }
 
 #[tokio::test]
-async fn reads_an_older_format_as_an_empty_store_and_replaces_it_on_the_next_write() {
+async fn refuses_unknown_legacy_formats_without_overwriting_them() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("diffle")).unwrap();
-    let v2 = json!({ "version": 2, "sets": { "working": { "threads": [], "viewed": [{ "path": "a.py", "blob": "sha", "viewed": true }] } } });
-    std::fs::write(dir.path().join("diffle/comments.json"), v2.to_string()).unwrap();
+    let legacy = dir.path().join("diffle/comments.json");
+    let text = json!({ "version": 2, "sets": {} }).to_string();
+    std::fs::write(&legacy, &text).unwrap();
     let s = CommentStore::open(dir.path(), "working").await.unwrap();
-    assert!(s.viewed().await.unwrap().is_empty());
-    s.add_thread(anchor(), "hello".into()).await.unwrap();
-    assert_eq!(raw(dir.path())["version"], 3);
+    assert!(s.viewed().await.is_err());
+    assert!(s.add_thread(anchor(), "hello".into()).await.is_err());
+    assert_eq!(std::fs::read_to_string(legacy).unwrap(), text);
 }
 
 #[tokio::test]
@@ -384,7 +399,7 @@ async fn concurrent_writes_from_several_stores_and_keys_all_survive_reload() {
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     left.sort();
-    assert_eq!(left, ["comments.json", "comments.json.lock"]);
+    assert_eq!(left, ["comments.sqlite", "comments.sqlite.lock"]);
 }
 
 #[tokio::test]
@@ -421,4 +436,70 @@ async fn store_futures_are_send() {
     send(s.relocate_all(&Whole("", None)));
     send(s.import_threads(Vec::new(), &Quotes));
     send(s.add_thread(anchor(), String::new()));
+}
+
+#[tokio::test]
+async fn migrates_legacy_reviews_once_and_indexes_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = tempfile::tempdir().unwrap();
+    let source = CommentStore::open(original.path(), "branch:first").await.unwrap();
+    let t = source.add_thread(anchor(), "review this migration".into()).await.unwrap();
+    let legacy = json!({"version":3,"sets":{"branch:first":{"threads":[t],"viewed":[]}}}).to_string();
+    std::fs::create_dir_all(dir.path().join("diffle")).unwrap();
+    std::fs::write(dir.path().join("diffle/comments.json"), &legacy).unwrap();
+    let store = CommentStore::open(dir.path(), "branch:first").await.unwrap();
+    assert_eq!(store.threads(&all()).await.unwrap().len(), 1);
+    let hits = store.search_history("migration").await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0, "branch:first");
+    store.remove_thread(&t.id).await.unwrap();
+    assert!(store.search_history("migration").await.unwrap().is_empty());
+    assert_eq!(std::fs::read_to_string(dir.path().join("diffle/comments.json")).unwrap(), legacy);
+    assert!(CommentStore::open(dir.path(), "branch:first").await.unwrap().threads(&all()).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn duplicate_quotes_are_unresolved_without_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CommentStore::open(dir.path(), "working").await.unwrap();
+    let t = store
+        .add_thread(
+            CommentAnchor::Line {
+                path: "a.py".into(),
+                side: Side::New,
+                start_line: 1,
+                end_line: 1,
+                quoted: "repeat".into(),
+            },
+            "check".into(),
+        )
+        .await
+        .unwrap();
+    store.relocate_all(&Whole("repeat\nx\nrepeat\n", None)).await.unwrap();
+    assert!(store.get(&t.id).await.unwrap().unwrap().stale);
+}
+
+#[tokio::test]
+async fn failed_migration_can_retry_and_failed_transaction_preserves_existing_threads() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("diffle");
+    std::fs::create_dir_all(&folder).unwrap();
+    let legacy = folder.join("comments.json");
+    std::fs::write(&legacy, "{broken").unwrap();
+    let store = CommentStore::open(dir.path(), "working").await.unwrap();
+    assert!(store.threads(&all()).await.is_err());
+    assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "{broken");
+    std::fs::write(&legacy, r#"{"version":3,"sets":{}}"#).unwrap();
+    let kept = store.add_thread(anchor(), "keep me".into()).await.unwrap();
+    let db = rusqlite::Connection::open(store.file()).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_write BEFORE INSERT ON threads BEGIN SELECT RAISE(ABORT,'test failure'); END;",
+    )
+    .unwrap();
+    assert!(store.add_thread(anchor(), "must not persist".into()).await.is_err());
+    assert_eq!(store.threads(&all()).await.unwrap().len(), 1);
+    assert_eq!(store.get(&kept.id).await.unwrap().unwrap().messages[0].body, "keep me");
+    db.execute_batch("DROP TRIGGER fail_write").unwrap();
+    store.reply(&kept.id, "recovered".into()).await.unwrap();
+    assert_eq!(store.get(&kept.id).await.unwrap().unwrap().messages.len(), 2);
 }

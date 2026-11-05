@@ -71,15 +71,25 @@ impl GitRepo {
     /// diff call yields status, line counts and, against a commit, each side's blob; the
     /// worktree's blobs are hashed from disk.
     pub async fn numstat(&self, old: &str, new: &str) -> Result<Vec<ChangedFile>> {
+        self.numstat_paths(old, new, None).await
+    }
+
+    /// A restricted diff is used only for edits to existing regular files; renames and
+    /// membership changes must use the full comparison to preserve rename detection.
+    pub async fn numstat_paths(&self, old: &str, new: &str, paths: Option<&[String]>) -> Result<Vec<ChangedFile>> {
         if old == WORKTREE && new == WORKTREE {
             return Ok(Vec::new());
         }
         let reverse = old == WORKTREE;
         let mut args = vec!["diff", "-z", "-M", "--raw", "--no-abbrev", "--numstat"];
         args.extend(diff_range(old, new));
+        if let Some(paths) = paths {
+            args.push("--");
+            args.extend(paths.iter().map(String::as_str));
+        }
         let live = old == WORKTREE || new == WORKTREE;
         let (diff, untracked) = tokio::join!(self.exec(&args, ExecOptions::default()), async {
-            if live { self.untracked().await } else { Ok(Vec::new()) }
+            if live && paths.is_none() { self.untracked().await } else { Ok(Vec::new()) }
         });
         let mut files = parse_raw_numstat(&diff?);
         let known: HashSet<&str> =
@@ -134,6 +144,7 @@ impl GitRepo {
     /// call; everything else is hashed on its own, so a gitlink, a broken link or an unreadable
     /// path never fails the batch. A path that cannot be hashed gets an empty blob.
     async fn hash_worktree(&self, files: &[(String, bool)]) -> Vec<String> {
+        self.hashed_files.fetch_add(files.len(), std::sync::atomic::Ordering::Relaxed);
         let kinds = map_limit(0..files.len(), READ_CONCURRENCY, |i| async move {
             let (path, submodule) = &files[i];
             if *submodule {

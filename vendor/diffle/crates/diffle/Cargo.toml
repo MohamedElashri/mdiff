@@ -46,6 +46,7 @@ notify = "8"
 octocrab = { version = "0.54", default-features = false, features = ["reqwest"] }
 mime_guess = "2"
 regex = "1"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 regress = "0.12"
 reqwest = { version = "0.13.5", features = ["json"] }
 rust-embed = { version = "8", optional = true, features = ["interpolate-folder-path", "debug-embed"] }

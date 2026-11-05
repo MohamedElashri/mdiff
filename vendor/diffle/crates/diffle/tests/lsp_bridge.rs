@@ -644,3 +644,55 @@ async fn reports_unavailable_when_the_server_dies_during_initialize() {
     assert!(message.contains("exited") || message.contains("initialize failed"), "{message}");
     s.bridge.close().await;
 }
+
+#[tokio::test]
+async fn unchanged_blob_versions_skip_reads_and_changed_versions_resync() {
+    let Some(s) = start(&[]) else { return };
+    let paths = vec!["a.py".to_owned()];
+    let versions = HashMap::from([("a.py".to_owned(), "one".to_owned())]);
+    s.bridge.track_versions(&paths, &versions).await;
+    let reads = s.reads.lock().unwrap().len();
+    s.bridge.track_versions(&paths, &versions).await;
+    assert_eq!(s.reads.lock().unwrap().len(), reads);
+    s.set("a.py", "updated\n");
+    s.bridge.track_versions(&paths, &HashMap::from([("a.py".to_owned(), "two".to_owned())])).await;
+    s.settle().await;
+    assert_eq!(s.events(), ["open a.py v1", "change a.py v2"]);
+    s.bridge.close().await;
+}
+
+#[tokio::test]
+async fn tracked_documents_also_obey_the_byte_budget() {
+    let Some(s) = start(&[]) else { return };
+    let large = "x".repeat(17 * 1024 * 1024);
+    s.set("a.py", &large);
+    s.set("other.py", &large);
+    s.bridge.track(&["a.py".into(), "other.py".into()]).await;
+    s.settle().await;
+    assert_eq!(s.events(), ["open a.py v1", "open other.py v1", "close a.py"]);
+    s.bridge.close().await;
+}
+
+#[tokio::test]
+async fn negotiates_incremental_sync_and_preserves_unicode_document_text() {
+    let Some(s) = start(&[("FAKE_LSP_SYNC", "2")]) else { return };
+    s.set("a.py", "a😀before\r\nend\n");
+    s.bridge.track(&["a.py".into()]).await;
+    s.set("a.py", "a😀after\r\nend\n");
+    s.bridge.track(&["a.py".into()]).await;
+    s.settle().await;
+    assert!(s.events().iter().any(|event| event == "change a.py v2"));
+    let uri = url::Url::from_file_path(s.root.join("a.py")).unwrap().to_string();
+    let text = s
+        .bridge
+        .process()
+        .connection()
+        .await
+        .unwrap()
+        .request("test/document", json!({"uri":uri}), Some(std::time::Duration::from_secs(2)))
+        .await
+        .unwrap();
+    assert_eq!(text, json!("a😀after\r\nend\n"));
+    assert!(s.bridge.process().incremental_sync());
+    s.bridge.close().await;
+}

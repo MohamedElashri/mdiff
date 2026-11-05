@@ -117,7 +117,17 @@ impl Session {
     /// tree file shows its new side whole (the file view) and nothing of its old side. A file thread
     /// only needs its file in the review.
     pub(super) async fn relocate_comments(self: &Arc<Self>, a: &Active, snap: &Arc<Snapshot>) -> Result<()> {
-        let view = Review { session: self, snapshotter: &a.snapshotter, snap };
+        let view = Review { session: self, snapshotter: &a.snapshotter, snap, affected: None };
+        a.comments.relocate_all(&view).await.map(drop)
+    }
+
+    pub(super) async fn relocate_changed_comments(
+        self: &Arc<Self>,
+        a: &Active,
+        snap: &Arc<Snapshot>,
+        paths: &HashSet<String>,
+    ) -> Result<()> {
+        let view = Review { session: self, snapshotter: &a.snapshotter, snap, affected: Some(paths) };
         a.comments.relocate_all(&view).await.map(drop)
     }
 }
@@ -143,9 +153,21 @@ struct Review<'a> {
     session: &'a Arc<Session>,
     snapshotter: &'a Arc<Snapshotter>,
     snap: &'a Arc<Snapshot>,
+    affected: Option<&'a HashSet<String>>,
 }
 
 impl ReviewView for Review<'_> {
+    fn renamed(&self, path: &str) -> Option<String> {
+        if self.session.has_file(self.snap, path) {
+            return None;
+        }
+        let mut matches = self.snap.changed.iter().filter(|f| f.old_path.as_deref() == Some(path));
+        let next = matches.next()?.path.clone();
+        matches.next().is_none().then_some(next)
+    }
+    fn affected(&self, path: &str) -> bool {
+        self.affected.is_none_or(|paths| paths.contains(path))
+    }
     async fn side(&self, path: &str, side: Side) -> Result<Option<SideView>> {
         let Some(buf) = self.session.read_side(self.snap, path, side).await? else { return Ok(None) };
         let contents = String::from_utf8_lossy(&buf).into_owned();

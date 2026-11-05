@@ -44,6 +44,9 @@ export interface GraphState {
   /** The find field's text while it is open; its matches are `findMatches(view, find)`. */
   find: string | null;
   reload(): Promise<void>;
+  expanding: boolean;
+  expanded: boolean;
+  expand(node?: string): Promise<void>;
   /** Selects a node, or clears the selection with null. */
   select(id: string | null): void;
   selectEdge(key: string | null): void;
@@ -70,9 +73,13 @@ export interface GraphState {
   closeFind(): void;
 }
 
+let graphAbort = new AbortController();
+
 /** The change graph view. It reads the review store and never the other way round. */
 export const useGraph = create<GraphState>((set, get) => ({
   load: { state: 'idle' },
+  expanding: false,
+  expanded: false,
   snapshot: null,
   filters: { symbols: false, consumers: false, tests: false },
   view: null,
@@ -89,17 +96,64 @@ export const useGraph = create<GraphState>((set, get) => ({
   async reload() {
     const snapshot = useStore.getState().snapshot;
     const generation = ++loads;
-    set({ load: { state: 'loading' }, snapshot });
+    graphAbort.abort();
+    graphAbort = new AbortController();
+    const signal = graphAbort.signal;
+    set({ load: { state: 'loading' }, snapshot, expanding: false, expanded: false });
     // A newer snapshot, or a newer reload, owns the result.
     const current = () => generation === loads && useStore.getState().snapshot === snapshot;
     try {
       const { all, scope } = get();
-      const graph = await api.lspGraph({ ...(all ? { all: '1' } : {}), ...(scope ? { scope } : {}) });
+      const graph = await api.lspGraph(
+        { phase: 'symbols', ...(all ? { all: '1' } : {}), ...(scope ? { scope } : {}) },
+        signal,
+      );
       if (!current()) return;
       const view = derive(graph, get().filters, get().only);
       set({ load: { state: 'ready', graph }, view, ...keptSelection(view) });
+      if (get().filters.consumers) await get().expand();
     } catch (e) {
       if (current()) set({ load: { state: 'error', message: e instanceof Error ? e.message : String(e) }, view: null });
+    }
+  },
+
+  async expand(node) {
+    const { snapshot, all, scope, load } = get();
+    if (!snapshot || load.state !== 'ready' || useStore.getState().snapshot !== snapshot) return;
+    graphAbort.abort();
+    graphAbort = new AbortController();
+    const signal = graphAbort.signal;
+    const generation = ++loads;
+    set({ expanding: true });
+    const current = () => generation === loads && useStore.getState().snapshot === snapshot;
+    try {
+      const found = await api.lspGraph(
+        { ...(all ? { all: '1' } : {}), ...(scope ? { scope } : {}), ...(node ? { node } : {}) },
+        signal,
+      );
+      if (!current()) return;
+      const graph = node
+        ? {
+            ...found,
+            nodes: [...new Map([...load.graph.nodes, ...found.nodes].map((n) => [n.id, n])).values()],
+            edges: [...new Map([...load.graph.edges, ...found.edges].map((e) => [edgeKey(e), e])).values()],
+          }
+        : found;
+      const filters = { ...get().filters, consumers: true };
+      const view = derive(graph, filters, get().only);
+      set({
+        load: { state: 'ready', graph },
+        view,
+        filters,
+        expanding: false,
+        expanded: node ? get().expanded : true,
+        ...keptSelection(view),
+      });
+    } catch (e) {
+      if (current()) {
+        set({ expanding: false });
+        useStore.getState().flash(e instanceof Error ? e.message : String(e));
+      }
     }
   },
 
@@ -144,6 +198,7 @@ export const useGraph = create<GraphState>((set, get) => ({
     const load = get().load;
     const view = load.state === 'ready' ? derive(load.graph, filters, get().only) : null;
     set({ filters, view, ...(view ? keptSelection(view) : { selected: null, selectedEdge: null }) });
+    if (filter === 'consumers' && on && !get().expanded) void get().expand();
   },
 
   showOnly(part) {

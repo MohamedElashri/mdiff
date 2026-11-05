@@ -46,21 +46,26 @@ afterEach(() => {
 it('keeps the local form mounted when toggling and remembers the global mode separately', () => {
   act(() => useStore.getState().openSearch('file'));
   const input = host.querySelector('section input');
-  const toggle = () => host.querySelector<HTMLButtonElement>('[aria-label="Search full file"]')!;
-  act(() => toggle().click());
+  const select = () => host.querySelector<HTMLSelectElement>('[aria-label="Search content"]')!;
+  const choose = (value: string) =>
+    act(() => {
+      select().value = value;
+      select().dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  choose('full');
   expect(host.querySelector('section input')).toBe(input);
   expect(host.querySelector('header input')).toBeNull();
-  expect(toggle().getAttribute('aria-pressed')).toBe('true');
+  expect(select().value).toBe('full');
   expect(useStore.getState().search.path).toBe('a.txt');
 
   act(() => useStore.getState().openSearch('diff'));
   expect(host.querySelector('header input')).not.toBeNull();
-  expect(toggle().getAttribute('aria-pressed')).toBe('false');
-  act(() => toggle().click());
+  expect(select().value).toBe('diff');
+  choose('removed');
   expect(host.querySelector('header input')).not.toBeNull();
   act(() => useStore.getState().openSearch('file'));
-  expect(toggle().getAttribute('aria-pressed')).toBe('true');
-  act(() => toggle().click());
+  expect(select().value).toBe('full');
+  choose('both');
   act(() => useStore.getState().openSearch('diff'));
-  expect(toggle().getAttribute('aria-pressed')).toBe('true');
+  expect(select().value).toBe('removed');
 });

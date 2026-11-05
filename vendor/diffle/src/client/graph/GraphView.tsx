@@ -11,13 +11,15 @@ export function GraphView() {
   const view = useGraph((s) => s.view);
   const filters = useGraph((s) => s.filters);
   const scope = useGraph((s) => s.scope);
+  const expanding = useGraph((s) => s.expanding);
+  const selected = useGraph((s) => s.selected);
   const graph = view?.graph;
   const changed = graph?.nodes.filter((n) => n.status !== 'consumer').length ?? 0;
   const full = load.state === 'ready' ? load.graph : null;
   const loading = load.state === 'loading';
   return (
     <section className="flex h-full min-h-0 flex-col bg-canvas" aria-label="Change graph view">
-      <div className="flex items-center gap-2.5 border-b border-border bg-surface px-3 py-1.5 text-[0.8125rem]">
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-border bg-surface px-3 py-1.5 text-[0.8125rem]">
         {graph && (
           <span className="text-muted">
             {changed} changed · {graph.nodes.length - changed} using them · {graph.edges.length} links
@@ -49,6 +51,21 @@ export function GraphView() {
           </span>
         )}
         <span className="flex-1" />
+        {selected && graph?.nodes.some((node) => node.id === selected && node.status !== 'consumer') && (
+          <Button
+            variant="ghost"
+            disabled={expanding}
+            onClick={() => void useGraph.getState().expand(selected)}
+            title="Find code using this symbol"
+          >
+            {expanding ? 'Finding uses…' : 'Find uses'}
+          </Button>
+        )}
+        {expanding && !selected && (
+          <span className="text-muted" role="status">
+            Finding dependents…
+          </span>
+        )}
         <div className="flex items-center gap-1" role="group" aria-label="Show in the graph">
           <FilterChip filter="symbols" title="One box per symbol instead of per file (s)">
             <SquareFunction size="0.8125rem" /> Symbols

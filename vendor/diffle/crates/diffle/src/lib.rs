@@ -23,6 +23,7 @@ pub mod lsp;
 pub mod mode;
 pub mod persist;
 pub mod protocol;
+pub mod scheduler;
 pub mod server;
 pub mod session;
 pub mod snapshotter;

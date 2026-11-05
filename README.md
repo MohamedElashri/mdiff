@@ -28,10 +28,14 @@ Git is required. Code intelligence needs a language server. Connection tokens st
 Requires Node.js 26, Rust 1.99, and [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```sh
-npm run setup
-npm run tauri dev      # development
-npm run tauri build    # desktop packages
+make setup
+make dev              # native app with live reload
+make build            # desktop packages
+make check            # lint, types, tests, and frontend build
+make help             # all commands
 ```
+
+Use `make build-debug` for a debug app, or `make build TARGET=x86_64-apple-darwin BUNDLES=app` for a specific installed Rust target. Signed packages use `make build-signed` with the updater signing environment variables; publishing remains tag-driven in GitHub Actions.
 
 ## License
 

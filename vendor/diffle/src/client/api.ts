@@ -1,3 +1,4 @@
+import { completePatchPrefix } from './patchPages.js';
 import { request, reviewTransport } from './transport.js';
 import { z } from 'zod';
 import {
@@ -9,6 +10,8 @@ import {
   EnterRequestSchema,
   RangeViewSchema,
   PatchRequestSchema,
+  PatchPageRequestSchema,
+  PatchPageResponseSchema,
   ReplyCreateSchema,
   ResolvedRequestSchema,
   ThreadCreateSchema,
@@ -105,7 +108,10 @@ export const api = {
   github: () => json(GithubMetadataSchema, 'api/github'),
   /** A link to lines on origin's forge, or why there is none; local refs only, so it answers at once. */
   permalink: (req: PermalinkRequest) =>
-    json(PermalinkSchema, 'api/permalink', { method: 'POST', body: encode(PermalinkRequestSchema, req) }),
+    json(PermalinkSchema, 'api/permalink', {
+      method: 'POST',
+      body: encode(PermalinkRequestSchema, req),
+    }),
   snapshot: () => json(SnapshotSchema, 'api/snapshot'),
   moved: () => json(MovedSchema.nullable(), 'api/moved'),
   /** Recompute the snapshot where the refs point now. */
@@ -116,9 +122,16 @@ export const api = {
   deleteIteration: (n: number) => json(SnapshotSchema, `api/iterations/${n}`, { method: 'DELETE' }),
   /** Enter another review, as the CLI does. */
   enter: (req: EnterRequest) =>
-    json(SnapshotSchema, 'api/review', { method: 'POST', body: encode(EnterRequestSchema, req) }),
+    json(SnapshotSchema, 'api/review', {
+      method: 'POST',
+      body: encode(EnterRequestSchema, req),
+    }),
   /** Show a slice of the active range. */
-  show: (view: RangeView) => json(SnapshotSchema, 'api/view', { method: 'PUT', body: encode(RangeViewSchema, view) }),
+  show: (view: RangeView) =>
+    json(SnapshotSchema, 'api/view', {
+      method: 'PUT',
+      body: encode(RangeViewSchema, view),
+    }),
   refs: () => json(RefsResponseSchema, 'api/refs'),
   lastCommitsPreview: (oldOffset: number, newOffset: number, signal?: AbortSignal) =>
     json(
@@ -126,14 +139,59 @@ export const api = {
       `api/last-commits-preview?${q({ oldOffset: String(oldOffset), newOffset: String(newOffset) })}`,
       { signal },
     ),
-  patch: (path: string) => text(`api/patch?${q({ path })}`),
+  patch: (path: string, version?: number, signal?: AbortSignal) =>
+    text(`api/patch?${q({ path, version: version?.toString() })}`, { signal }),
   /** Patches of several changed files in one response. */
-  patches: (paths: string[]) =>
+  patches: (paths: string[], version?: number, signal?: AbortSignal) =>
     text('api/patch', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: encode(PatchRequestSchema, { paths }),
+      body: encode(PatchRequestSchema, { paths, version }),
+      signal,
     }),
+  /** Pulling one bounded chunk at a time provides backpressure on native IPC too. */
+  async patchPages(
+    path: string,
+    version: number,
+    signal: AbortSignal,
+    preview: (patch: string) => void,
+  ): Promise<string> {
+    let offset = 0;
+    let digest: string | undefined;
+    let patch = '';
+    let rendered = 0;
+    let nextPreviewAt = 0;
+    for (;;) {
+      signal.throwIfAborted();
+      const page = await json(PatchPageResponseSchema, 'api/patch-page', {
+        method: 'POST',
+        signal,
+        body: encode(PatchPageRequestSchema, { path, version, offset, digest }),
+      });
+      signal.throwIfAborted();
+      if (
+        page.version !== version ||
+        (digest && page.digest !== digest) ||
+        page.next < offset ||
+        (!page.done && page.next === offset)
+      )
+        throw new Error('The review changed. Reload this file.');
+      patch += page.patch;
+      digest = page.digest;
+      offset = page.next;
+      if (page.done) return patch;
+      // Exponential preview intervals bound total reparsing work to roughly twice
+      // the final patch size instead of reparsing the full prefix for every chunk.
+      if (patch.length >= nextPreviewAt) {
+        nextPreviewAt = Math.max(64 * 1024, patch.length * 2);
+        const complete = completePatchPrefix(patch, false);
+        if (complete.length > rendered) {
+          preview(complete);
+          rendered = complete.length;
+        }
+      }
+    }
+  },
   /** One side's full contents; `signal` aborts the request when its consumer no longer wants it. */
   file: (path: string, rev: Side, signal?: AbortSignal) =>
     json(FileResponseSchema, `api/file?${q({ path, rev })}`, { signal }),
@@ -165,6 +223,17 @@ export const api = {
     ),
   threads: (query: ThreadQuery = {}) =>
     json(CommentThreadSchema.array(), `api/threads?${q({ state: query.state, path: query.path })}`),
+  searchHistory: (query: string) =>
+    json(
+      z
+        .object({
+          review: z.string(),
+          current: z.boolean(),
+          thread: CommentThreadSchema,
+        })
+        .array(),
+      `api/threads/history?${q({ q: query })}`,
+    ),
   /** Open threads as the agent prompt. */
   exportComments: () => text(`api/threads/export?${q({ state: 'open' })}`),
   /** One message, with its thread's location and quote, as an agent prompt. */
@@ -177,7 +246,10 @@ export const api = {
       body: encode(GithubExportRequestSchema, req),
     }),
   addThread: (t: ThreadCreate) =>
-    json(CommentThreadSchema.array(), 'api/threads', { method: 'POST', body: encode(ThreadCreateSchema, t) }),
+    json(CommentThreadSchema.array(), 'api/threads', {
+      method: 'POST',
+      body: encode(ThreadCreateSchema, t),
+    }),
   reply: (id: string, r: ReplyCreate) =>
     json(CommentThreadSchema, `api/threads/${encodeURIComponent(id)}/replies`, {
       method: 'POST',
@@ -201,7 +273,10 @@ export const api = {
       method: 'PUT',
       body: encode(ResolvedRequestSchema, { resolved }),
     }),
-  deleteThread: (id: string) => json(z.undefined(), `api/threads/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteThread: (id: string) =>
+    json(z.undefined(), `api/threads/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
   clearThreads: () => json(z.undefined(), 'api/threads', { method: 'DELETE' }),
   deleteStaleThreads: () => json(z.undefined(), 'api/threads?stale=1', { method: 'DELETE' }),
   viewed: () => json(ViewedEntrySchema.array(), 'api/viewed'),
@@ -219,7 +294,10 @@ export const api = {
   /** The retained log lines of the server started by `command`. */
   lspLog: (command: string) => json(LspLogResponseSchema, `api/lsp/log?${q({ server: command })}`),
   lspDefinition: (pos: LspPosition) =>
-    json(LspLocationsResponseSchema, 'api/lsp/definition', { method: 'POST', body: encode(LspPositionSchema, pos) }),
+    json(LspLocationsResponseSchema, 'api/lsp/definition', {
+      method: 'POST',
+      body: encode(LspPositionSchema, pos),
+    }),
   lspTypeDefinition: (pos: LspPosition) =>
     json(LspLocationsResponseSchema, 'api/lsp/type-definition', {
       method: 'POST',
@@ -227,21 +305,34 @@ export const api = {
     }),
   /** What the server knows about the symbol at `pos`, as markdown. */
   lspHover: (req: LspHoverRequest) =>
-    json(LspHoverResponseSchema, 'api/lsp/hover', { method: 'POST', body: encode(LspHoverRequestSchema, req) }),
+    json(LspHoverResponseSchema, 'api/lsp/hover', {
+      method: 'POST',
+      body: encode(LspHoverRequestSchema, req),
+    }),
   /** What class of token sits at `pos`; `keyword` means symbol navigation has nothing to offer. */
   lspReferences: (pos: LspPosition) =>
-    json(LspLocationsResponseSchema, 'api/lsp/references', { method: 'POST', body: encode(LspPositionSchema, pos) }),
+    json(LspLocationsResponseSchema, 'api/lsp/references', {
+      method: 'POST',
+      body: encode(LspPositionSchema, pos),
+    }),
   /** The snapshot's changed symbols and the code using them. */
-  lspGraph: (query: GraphQuery) => json(GraphResponseSchema, `api/lsp/graph?${q(query)}`),
+  lspGraph: (query: GraphQuery, signal?: AbortSignal) =>
+    json(GraphResponseSchema, `api/lsp/graph?${q(query)}`, { signal }),
   lspOccurrences: (pos: LspPosition) =>
-    json(LspOccurrencesResponseSchema, 'api/lsp/occurrences', { method: 'POST', body: encode(LspPositionSchema, pos) }),
+    json(LspOccurrencesResponseSchema, 'api/lsp/occurrences', {
+      method: 'POST',
+      body: encode(LspPositionSchema, pos),
+    }),
 
   /** Document symbols for a path, or workspace symbols matching a query. */
   lspSymbols: (query: SymbolsQuery) => json(LspSymbolsResponseSchema, `api/lsp/symbols?${q(query)}`),
   config: () => json(UserConfigSchema, 'api/config'),
   /** lspCommands and githubHosts are CLI-only; the server ignores them. */
   saveConfig: (config: ConfigUpdate) =>
-    json(UserConfigSchema, 'api/config', { method: 'PUT', body: encode(ConfigUpdateSchema, config) }),
+    json(UserConfigSchema, 'api/config', {
+      method: 'PUT',
+      body: encode(ConfigUpdateSchema, config),
+    }),
 };
 
 /** A local server answers the upgrade in milliseconds; one that has not after this is hung. */

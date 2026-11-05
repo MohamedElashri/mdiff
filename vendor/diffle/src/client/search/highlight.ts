@@ -133,14 +133,18 @@ export function installSearchHighlights(
         return;
       }
       const current = search.matches[search.index];
+      const matched = new Set(search.matches.map((m) => JSON.stringify([m.path, m.side ?? 'new', m.line])));
       const all: Range[] = [];
       const cur: Range[] = [];
       for (const { id, root } of items) {
         const path = pathFromItemId(id);
         for (const row of root.querySelectorAll<HTMLElement>('[data-line]')) {
           // Matches are new-side lines; a deleted row's text is not on disk.
-          if (isDeletionRow(row)) continue;
-          const here = current != null && current.path === path && Number(row.dataset.line) === current.line;
+          const side = isDeletionRow(row) ? 'old' : 'new';
+          const line = Number(row.dataset.line);
+          if (!matched.has(JSON.stringify([path, side, line]))) continue;
+          const here =
+            current != null && current.path === path && line === current.line && (current.side ?? 'new') === side;
           for (const r of cache.rangesFor(row, pattern)) (here ? cur : all).push(r);
         }
       }

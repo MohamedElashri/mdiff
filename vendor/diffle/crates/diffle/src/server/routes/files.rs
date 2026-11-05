@@ -12,7 +12,6 @@ use axum::routing::get;
 use serde::Deserialize;
 
 use super::{ApiDeps, ApiError, ApiResult, body, query};
-use crate::comments::hunks::shown_ranges;
 use crate::concurrency::map_limit;
 use crate::git::GrepOptions;
 use crate::git::is_binary;
@@ -30,6 +29,7 @@ const SEARCH_LIMIT: usize = 500;
 pub fn routes() -> Router<Arc<ApiDeps>> {
     Router::new()
         .route("/api/patch", get(patch).post(patch_many))
+        .route("/api/patch-page", axum::routing::post(patch_page))
         .route("/api/file", get(file))
         .route("/api/image", get(image))
         .route("/api/search", get(search))
@@ -42,6 +42,12 @@ fn text(body: String) -> Response {
 async fn patch(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiResult {
     let q: PatchQuery = query(raw.as_deref())?;
     let snapshotter = d.session.snapshotter()?;
+    if let Some(version) = q.version {
+        let expected = version.parse::<i64>().map_err(|_| ApiError::bad_request("invalid version"))?;
+        if snapshotter.current().await?.version != expected {
+            return Err(ApiError::bad_request("review changed; retry"));
+        }
+    }
     let Some(path) = q.path.filter(|p| !p.is_empty()) else { return Ok(text(snapshotter.patch_all().await?)) };
     match snapshotter.patch(&path).await? {
         Some(patch) => Ok(text(patch)),
@@ -52,6 +58,7 @@ async fn patch(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiRes
 #[derive(Deserialize)]
 struct PatchRequest {
     paths: Vec<String>,
+    version: Option<i64>,
 }
 
 async fn patch_many(State(d): State<Arc<ApiDeps>>, raw: Bytes) -> ApiResult {
@@ -59,7 +66,27 @@ async fn patch_many(State(d): State<Arc<ApiDeps>>, raw: Bytes) -> ApiResult {
     if req.paths.len() > MAX_PATCH_PATHS {
         return Err(ApiError::bad_request(format!("paths: at most {MAX_PATCH_PATHS} per request")));
     }
-    Ok(text(d.session.snapshotter()?.patch_many(&req.paths).await?))
+    let snapshotter = d.session.snapshotter()?;
+    if let Some(version) = req.version
+        && snapshotter.current().await?.version != version
+    {
+        return Err(ApiError::bad_request("review changed; retry"));
+    }
+    Ok(text(crate::scheduler::background(snapshotter.patch_many(&req.paths)).await?))
+}
+
+#[derive(Deserialize)]
+struct PageRequest {
+    path: String,
+    version: i64,
+    #[serde(default)]
+    offset: usize,
+    digest: Option<String>,
+}
+async fn patch_page(State(d): State<Arc<ApiDeps>>, raw: Bytes) -> ApiResult {
+    let req: PageRequest = body(&raw)?;
+    Ok(Json(d.session.snapshotter()?.patch_page(&req.path, req.version, req.offset, req.digest.as_deref()).await?)
+        .into_response())
 }
 
 async fn file(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiResult {
@@ -105,45 +132,74 @@ async fn search(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiRe
     let flag = |v: Option<String>| v.as_deref() == Some("1");
     let snapshotter = d.session.snapshotter()?;
     let snap = snapshotter.current().await?;
-    // File scope is pinned to the new-side allowlist; global text search covers changed files.
-    let mut paths: Option<Vec<String>> = match q.scope {
-        SearchScope::Repo => None,
-        SearchScope::File => Some(snap.tree.iter().filter(|p| Some(*p) == q.path.as_ref()).cloned().collect()),
-        SearchScope::Diff => {
-            Some(snap.changed.iter().filter(|f| f.status != ChangeStatus::D).map(|f| f.path.clone()).collect())
+    let sides: &[Side] = match q.content {
+        SearchContent::Removed => &[Side::Old],
+        SearchContent::Both => &[Side::Old, Side::New],
+        _ => &[Side::New],
+    };
+    let mut matches = Vec::new();
+    let mut truncated = false;
+    for &side in sides {
+        let mut paths: Option<Vec<String>> = match q.scope {
+            SearchScope::Repo => None,
+            SearchScope::File => Some(snap.tree.iter().filter(|p| Some(*p) == q.path.as_ref()).cloned().collect()),
+            SearchScope::Diff => {
+                Some(snap.changed.iter().filter(|f| f.status != ChangeStatus::D).map(|f| f.path.clone()).collect())
+            }
+        };
+        let mut ranges = None;
+        let mut renamed = HashMap::new();
+        if q.content != SearchContent::Full {
+            let candidates: Vec<_> = snap
+                .changed
+                .iter()
+                .filter(|f| !f.binary)
+                .filter(|f| q.scope != SearchScope::File || Some(&f.path) == q.path.as_ref())
+                .cloned()
+                .collect();
+            let snapshotter = &snapshotter;
+            let entries = map_limit(candidates, 8, |file| async move {
+                let spans = snapshotter.search_ranges(&file.path, side, q.content == SearchContent::Diff).await?;
+                let source = if side == Side::Old {
+                    file.old_path.clone().unwrap_or_else(|| file.path.clone())
+                } else {
+                    file.path.clone()
+                };
+                Ok::<_, crate::error::Error>((source, file.path, spans))
+            })
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+            paths = Some(entries.iter().filter(|(_, _, spans)| !spans.is_empty()).map(|(p, _, _)| p.clone()).collect());
+            let mut indexed = HashMap::new();
+            for (source, path, spans) in entries {
+                renamed.insert(source.clone(), path);
+                indexed.insert(source, spans);
+            }
+            ranges = Some(indexed);
         }
-    };
-    let mut ranges: Option<HashMap<String, Vec<(i64, i64)>>> = None;
-    if q.content == SearchContent::Diff {
-        let candidates: Vec<_> = snap
-            .changed
-            .iter()
-            .filter(|f| f.status != ChangeStatus::D && !f.binary)
-            .filter(|f| paths.as_ref().is_none_or(|p| p.contains(&f.path)))
-            .cloned()
-            .collect();
-        // The snapshotter's cache: the review already loaded most of these patches, and the rest
-        // stay cached for it. A file that left the changed set meanwhile has no shown lines.
-        let snapshotter = &snapshotter;
-        let entries = map_limit(candidates, 8, |file| async move {
-            let patch = snapshotter.patch(&file.path).await?.unwrap_or_default();
-            Ok::<_, crate::error::Error>((file.path, shown_ranges(&patch, Side::New)))
-        })
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
-        paths = Some(entries.iter().filter(|(_, spans)| !spans.is_empty()).map(|(p, _)| p.clone()).collect());
-        ranges = Some(entries.into_iter().collect());
+        let opts = GrepOptions {
+            word: flag(q.word.map(|w| w.to_string())),
+            ignore_case: flag(q.i.map(|w| w.to_string())),
+            regex: flag(q.re.map(|w| w.to_string())),
+            paths: paths.as_deref(),
+            ranges: ranges.as_ref(),
+        };
+        let rev = if side == Side::Old { &snap.old_sha } else { &snap.new_sha };
+        let found = d.session.repo.grep(&q.q, rev, SEARCH_LIMIT, opts).await.map_err(crate::error::Error::from)?;
+        truncated |= found.truncated;
+        matches.extend(found.matches.into_iter().map(|m| SearchMatch {
+            path: renamed.get(&m.path).cloned().unwrap_or(m.path),
+            line: m.line,
+            text: m.text,
+            side: Some(side),
+        }));
     }
-    let opts = GrepOptions {
-        word: flag(q.word.map(|w| w.to_string())),
-        ignore_case: flag(q.i.map(|w| w.to_string())),
-        regex: flag(q.re.map(|w| w.to_string())),
-        paths: paths.as_deref(),
-        ranges: ranges.as_ref(),
-    };
-    let found =
-        d.session.repo.grep(&q.q, &snap.new_sha, SEARCH_LIMIT, opts).await.map_err(crate::error::Error::from)?;
-    let matches = found.matches.into_iter().map(|m| SearchMatch { path: m.path, line: m.line, text: m.text }).collect();
-    Ok(Json(SearchResponse { query: q.q, matches, truncated: found.truncated }).into_response())
+    if snapshotter.current().await?.version != snap.version {
+        return Err(crate::error::Error::Invalid("Review changed during search; search again".into()).into());
+    }
+    matches.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+    truncated |= matches.len() > SEARCH_LIMIT;
+    matches.truncate(SEARCH_LIMIT);
+    Ok(Json(SearchResponse { query: q.q, matches, truncated }).into_response())
 }

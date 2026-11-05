@@ -50,6 +50,7 @@ struct State {
     registrations: HashMap<String, LspFeature>,
     /// What the server is answered from: the latest `reconfigure`'s, else the options'.
     settings: Option<SettingsFuture>,
+    incremental_sync: bool,
     closing: bool,
     rpc: Option<Connection>,
     pid: Option<u32>,
@@ -89,6 +90,7 @@ impl LspProcess {
                     advertised: Vec::new(),
                     registrations: HashMap::new(),
                     settings: opts.settings.clone(),
+                    incremental_sync: false,
                     closing: false,
                     rpc: None,
                     pid: None,
@@ -127,6 +129,10 @@ impl LspProcess {
     /// Whether the server advertised `f`, at `initialize` or by registering it since.
     pub fn supports(&self, f: LspFeature) -> bool {
         self.state.lock().unwrap().advertised.contains(&f)
+    }
+
+    pub fn incremental_sync(&self) -> bool {
+        self.state.lock().unwrap().incremental_sync
     }
 
     pub fn features(&self) -> Vec<LspFeature> {
@@ -257,7 +263,14 @@ impl LspProcess {
         let capabilities = init.get("capabilities").cloned().unwrap_or_default();
         let advertised: Vec<LspFeature> =
             all_features().into_iter().filter(|f| capabilities.get(provider_of(*f)).is_some_and(truthy)).collect();
-        self.state.lock().unwrap().advertised.extend(advertised);
+        {
+            let mut state = self.state.lock().unwrap();
+            state.advertised.extend(advertised);
+            let sync = &capabilities["textDocumentSync"];
+            // The client uses the protocol default UTF-16 positions.
+            state.incremental_sync = (sync.as_u64() == Some(2) || sync["change"].as_u64() == Some(2))
+                && capabilities["positionEncoding"].as_str().is_none_or(|encoding| encoding == "utf-16");
+        }
         rpc.notify("initialized", json!({}));
         let settings = self.state.lock().unwrap().settings.clone();
         if let Some(settings) = settings {

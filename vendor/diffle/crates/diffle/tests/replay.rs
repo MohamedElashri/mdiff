@@ -113,3 +113,43 @@ async fn a_range_diff_review_replays_the_older_range_and_pairs_its_commits() {
     let diffle::protocol::Review::Range { old, .. } = &snap.review else { panic!("a range") };
     assert_eq!(old, "main~1");
 }
+
+#[tokio::test]
+async fn compares_more_than_250_commits_and_retains_exact_pairings() {
+    use diffle::mode::rangediff::pair_ranges;
+    use diffle::protocol::{PairStatus, RangeEnds};
+    let t = TestRepo::new();
+    t.write("base.txt", "base\n");
+    t.commit("base");
+    let base = t.git(&["rev-parse", "HEAD"]);
+    let tree = t.git(&["rev-parse", "HEAD^{tree}"]);
+    let mut head = base.clone();
+    for i in 0..251 {
+        head = t.git(&["commit-tree", &tree, "-p", &head, "-m", &format!("step {i}")]);
+    }
+    let extra = t.git(&["commit-tree", &tree, "-p", &head, "-m", "extra"]);
+    let repo = t.open().await;
+    let before = RangeEnds { old_sha: base.clone(), new_sha: head };
+    let after = RangeEnds { old_sha: base, new_sha: extra };
+    let pairs = pair_ranges(&repo, &before, &after).await.unwrap();
+    assert_eq!(pairs.len(), 252);
+    assert_eq!(pairs.iter().filter(|p| p.status == PairStatus::Identical).count(), 251);
+    assert_eq!(pairs.iter().filter(|p| p.status == PairStatus::Added).count(), 1);
+    // A rebased/reworded tail uses fingerprints; an amended tail falls back to Git.
+    t.git(&["checkout", "-q", "--detach", &before.new_sha]);
+    t.write("topic.txt", "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n");
+    t.commit("topic");
+    let old_head = t.git(&["rev-parse", "HEAD"]);
+    t.git(&["commit", "--amend", "-qm", "topic reworded"]);
+    let reworded = t.git(&["rev-parse", "HEAD"]);
+    let old = RangeEnds { old_sha: before.old_sha.clone(), new_sha: old_head };
+    let new = RangeEnds { old_sha: before.old_sha.clone(), new_sha: reworded };
+    let pairs = pair_ranges(&repo, &old, &new).await.unwrap();
+    assert_eq!(pairs.iter().filter(|p| p.status == PairStatus::Message).count(), 1);
+    t.write("topic.txt", "one\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nten\n");
+    t.git(&["add", "topic.txt"]);
+    t.git(&["commit", "--amend", "-qm", "topic"]);
+    let new = RangeEnds { old_sha: before.old_sha, new_sha: t.git(&["rev-parse", "HEAD"]) };
+    let pairs = pair_ranges(&repo, &old, &new).await.unwrap();
+    assert_eq!(pairs.iter().filter(|p| p.status == PairStatus::Changed).count(), 1);
+}

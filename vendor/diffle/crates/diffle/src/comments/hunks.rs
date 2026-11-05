@@ -24,13 +24,46 @@ pub fn shown_ranges(patch: &str, side: Side) -> Vec<(i64, i64)> {
         .collect()
 }
 
+/// Changed lines on either side, excluding context. Compact ranges support Git's search filters.
+pub fn changed_ranges(patch: &str, side: Side) -> Vec<(i64, i64)> {
+    let mut ranges: Vec<(i64, i64)> = Vec::new();
+    let mut positions = None;
+    for line in patch.lines() {
+        if let Some(m) = HUNK.captures(line) {
+            positions = Some((m[1].parse::<i64>().unwrap_or(0), m[3].parse::<i64>().unwrap_or(0)));
+            continue;
+        }
+        if line.starts_with("diff --git ") {
+            positions = None;
+        }
+        let Some((old, new)) = positions.as_mut() else { continue };
+        let kind = line.as_bytes().first().copied();
+        let selected = matches!((side, kind), (Side::Old, Some(b'-')) | (Side::New, Some(b'+')));
+        if selected {
+            let n = if side == Side::Old { *old } else { *new };
+            if let Some((_, end)) = ranges.last_mut().filter(|(_, end)| *end + 1 == n) {
+                *end = n;
+            } else {
+                ranges.push((n, n));
+            }
+        }
+        if matches!(kind, Some(b'-' | b' ')) {
+            *old += 1;
+        }
+        if matches!(kind, Some(b'+' | b' ')) {
+            *new += 1;
+        }
+    }
+    ranges
+}
+
 /// True when every line of [start, end] lies inside one shown range.
 pub fn is_shown(ranges: &[(i64, i64)], start: i64, end: i64) -> bool {
     ranges.iter().any(|&(s, e)| start >= s && end <= e)
 }
 
 /// Where a patch changes its new side, the lines the language servers read.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewSideChanges {
     /// Added lines as ranges (1-based, inclusive), ascending.
     pub added: Vec<(i64, i64)>,
@@ -204,5 +237,16 @@ mod tests {
     fn a_new_file_adds_everything_and_a_binary_patch_nothing() {
         assert_eq!(new_side_changes("@@ -0,0 +1,2 @@\n+a\n+b\n").added, [(1, 2)]);
         assert_eq!(new_side_changes("Binary files a/x and b/x differ\n"), NewSideChanges::default());
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    #[test]
+    fn indexes_only_changes_with_correct_side_offsets() {
+        let patch = "@@ -10,3 +20,4 @@\n unchanged\n-removed\n+added\n+second\n context\n";
+        assert_eq!(changed_ranges(patch, Side::Old), vec![(11, 11)]);
+        assert_eq!(changed_ranges(patch, Side::New), vec![(21, 22)]);
     }
 }

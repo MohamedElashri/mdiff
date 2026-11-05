@@ -21,6 +21,7 @@ pub fn routes() -> Router<Arc<ApiDeps>> {
     Router::new()
         .route("/api/threads", get(threads).post(import).delete(clear))
         .route("/api/threads/export", get(export))
+        .route("/api/threads/history", get(history))
         .route("/api/threads/{id}", delete(remove_thread))
         .route("/api/threads/{id}/replies", post(reply))
         .route("/api/threads/{id}/resolved", put(resolve))
@@ -44,6 +45,25 @@ fn thread_query(raw: Option<&str>, default: ThreadState) -> ApiResult<ThreadQuer
 async fn threads(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiResult {
     let q = thread_query(raw.as_deref(), ThreadState::All)?;
     Ok(Json(d.session.comments()?.threads(&q).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    q: String,
+}
+async fn history(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiResult {
+    let q: HistoryQuery = query(raw.as_deref())?;
+    if q.q.trim().is_empty() || q.q.len() > 500 {
+        return Err(ApiError::bad_request("Enter 1–500 characters"));
+    }
+    let store = d.session.comments()?;
+    let found: Vec<_> = store
+        .search_history(&q.q)
+        .await?
+        .into_iter()
+        .map(|(review, thread)| serde_json::json!({"current":review == store.key(),"review":review,"thread":thread}))
+        .collect();
+    Ok(Json(found).into_response())
 }
 
 async fn export(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiResult {

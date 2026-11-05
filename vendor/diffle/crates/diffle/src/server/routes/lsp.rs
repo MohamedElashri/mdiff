@@ -126,9 +126,19 @@ async fn symbols(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiR
 async fn graph(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiResult {
     let q: GraphQuery = query(raw.as_deref())?;
     let cap = q.all.is_none().then_some(crate::graph::MAX_NODES);
-    let pool = pool_for(&d, None, Some(LspFeature::References)).await?;
+    let expand = q.phase != Some(crate::protocol::GraphQueryPhase::Symbols);
+    let pool =
+        pool_for(&d, None, Some(if expand { LspFeature::References } else { LspFeature::DocumentSymbol })).await?;
     let snapshotter = d.session.snapshotter()?;
     let snap = snapshotter.current().await?;
-    Ok(Json(crate::graph::build(&pool, &snapshotter, &snap, cap, q.scope.as_deref().map(String::as_str)).await?)
-        .into_response())
+    let job = crate::graph::build_phase(
+        &pool,
+        &snapshotter,
+        &snap,
+        cap,
+        q.scope.as_deref().map(String::as_str),
+        expand,
+        q.node.as_deref(),
+    );
+    Ok(Json(snapshotter.read(snap.version, crate::scheduler::background(job)).await?).into_response())
 }
