@@ -2,19 +2,18 @@
 
 <!-- Keep entries concise and user-facing. Use Added, Changed, and Fixed bullets only. -->
 
-## [Unreleased]
+## [0.1.1] - Unreleased
 
 ### Changed
 
-- Removed upstream AI development instructions and recording skills.
-- Improved scheduling for large reviews.
+- Improved large-review performance.
+- Removed upstream AI instructions and skills.
 
 ### Fixed
 
-- Preserve accessible labels on icon buttons when tooltips update.
-- Keep the current diff visible when a comparison request fails.
-- Comparison, GitHub, and language-server popups clipped by the toolbar.
-- Sensitive-path diagnostics and request-derived paths in upstream tooling.
+- Clipped toolbar popups and missing icon labels.
+- Disappearing diffs after failed comparisons.
+- Sensitive-path logging and unsafe path handling in upstream tooling.
 
 ## [0.1.0] - 2026-11-05
 
