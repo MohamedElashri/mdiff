@@ -2,7 +2,7 @@
 
 <!-- Keep entries concise and user-facing. Use Added, Changed, and Fixed bullets only. -->
 
-## [0.1.1] - Unreleased
+## [0.1.1] - 2026-11-05
 
 ### Changed
 
@@ -13,7 +13,7 @@
 
 - Clipped toolbar popups and missing icon labels.
 - Disappearing diffs after failed comparisons.
-- Sensitive-path logging and unsafe path handling in upstream tooling.
+- Sensitive-path logging and unsafe paths in upstream tooling.
 
 ## [0.1.0] - 2026-11-05
 
