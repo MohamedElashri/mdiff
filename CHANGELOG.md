@@ -4,22 +4,21 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-05
+
 ### Added
 
-- Unified build, test, and release preparation commands with Make.
-- Load change dependents and symbol uses on demand.
-- Search added or removed code and saved discussions.
+- Search added and removed code and saved discussions.
+- On-demand symbol references and unified Make commands.
 
 ### Changed
 
-- Reuse cached patches and refresh edited files selectively.
-- Prioritize interactive work and load large diffs in bounded chunks.
-- Reduce language-server updates and bound document memory.
-- Store reviews transactionally and compare larger commit ranges.
+- Faster large reviews, language-server updates, and commit comparisons.
+- Transactional review storage with preserved migration backups.
 
 ### Fixed
 
-- Follow renamed files and disambiguate comment anchors.
+- Comment relocation across renames and repeated code.
 
 ## [0.1.1] - 2026-11-05
 
