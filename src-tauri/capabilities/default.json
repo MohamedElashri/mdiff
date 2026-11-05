@@ -8,6 +8,7 @@
     "core:default",
     "dialog:allow-open",
     "clipboard-manager:allow-write-text",
-    "opener:allow-open-url"
+    "opener:allow-open-url",
+    "updater:default"
   ]
 }

@@ -24,6 +24,9 @@ const ReviewWorkspace = lazy(() =>
 import { applyTheme, readTheme } from "../vendor/diffle/src/client/theme";
 applyTheme(readTheme());
 import { bindReview } from "./transport";
+import { BrandMark } from "./Brand";
+import { About } from "./About";
+import { Updates } from "./Updates";
 import { OpenInEditor } from "./OpenInEditor";
 import { GitlabPanel } from "./GitlabPanel";
 import "../vendor/diffle/src/client/styles.css";
@@ -41,19 +44,6 @@ function read<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-function Mark() {
-  return (
-    <svg viewBox="0 0 32 32" aria-hidden="true">
-      <path
-        d="M5 25V9h8v10h6V9h8v16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path d="M5 4h8M19 29h8" stroke="currentColor" strokeWidth="3" />
-    </svg>
-  );
 }
 function App() {
   const [review, setReview] = useState<Review | null>(null),
@@ -306,7 +296,7 @@ function App() {
           onClick={home}
           disabled={busy}
         >
-          <Mark />
+          <BrandMark />
           <strong>mdiff</strong>
         </button>
         <span className="header-divider" />
@@ -517,20 +507,28 @@ function App() {
             </button>
             <h2 id="settings-title">Preferences</h2>
             <nav className="preferences-tabs" aria-label="Preference sections">
-              {["appearance", "connections", "tools"].map((tab) => (
-                <button
-                  key={tab}
-                  aria-pressed={settingsTab === tab}
-                  onClick={() => setSettingsTab(tab)}
-                >
-                  {tab === "appearance"
-                    ? "Appearance"
-                    : tab === "connections"
-                      ? "Connections"
-                      : "Code intelligence"}
-                </button>
-              ))}
+              {["appearance", "connections", "tools", "updates", "about"].map(
+                (tab) => (
+                  <button
+                    key={tab}
+                    aria-pressed={settingsTab === tab}
+                    onClick={() => setSettingsTab(tab)}
+                  >
+                    {tab === "appearance"
+                      ? "Appearance"
+                      : tab === "connections"
+                        ? "Connections"
+                        : tab === "tools"
+                          ? "Code intelligence"
+                          : tab === "updates"
+                            ? "Updates"
+                            : "About"}
+                  </button>
+                ),
+              )}
             </nav>
+            {settingsTab === "updates" && <Updates />}
+            {settingsTab === "about" && <About />}
             {settingsTab === "appearance" && (
               <AppearancePanel showHeading={false} />
             )}
@@ -650,7 +648,7 @@ function App() {
                 {settingsError.replace(/^Error: /, "")}
               </p>
             )}
-            {settingsTab !== "appearance" && (
+            {(settingsTab === "connections" || settingsTab === "tools") && (
               <div className="settings-footer">
                 <span role="status">
                   {settingsSaved ? "Saved. Reopen your review to apply." : ""}

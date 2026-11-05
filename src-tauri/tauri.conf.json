@@ -39,5 +39,14 @@
       "../LICENCE.md": "licenses/LICENCE.md"
     },
     "license": "GPL-3.0-only"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyNkMyOTlGRjA2OEE5QkQKUldTOXFXandueWxzTWkzL2V4ODg5Uk92QXR0TjhzKzIwSVd3ZnVRcDlDQnJsNWFTU0V1MHI4ZHgK",
+      "endpoints": [
+        "https://github.com/MohamedElashri/mdiff/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true
+    }
   }
 }

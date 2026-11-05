@@ -4,6 +4,7 @@ mod engine;
 mod gitlab;
 mod settings;
 mod transport;
+mod updater;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 fn main() {
@@ -33,8 +34,11 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(engine::Engine::default())
         .invoke_handler(tauri::generate_handler![
+            updater::updater_info,
+            updater::restart_after_update,
             editors::discover_editors,
             editors::open_in_editor,
             engine::open_review,
@@ -47,13 +51,16 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("Unable to start mdiff")
         .run(move |app, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if code == Some(tauri::RESTART_EXIT_CODE) {
+                    return;
+                }
                 if !exiting.swap(true, Ordering::SeqCst) {
                     api.prevent_exit();
                     let handle = app.clone();
                     tauri::async_runtime::spawn(async move {
                         handle.state::<engine::Engine>().close().await;
-                        handle.exit(0);
+                        handle.exit(code.unwrap_or(0));
                     });
                 }
             }

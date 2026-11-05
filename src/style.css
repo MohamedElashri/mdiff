@@ -645,3 +645,212 @@ body {
     gap: 2px;
   }
 }
+
+.settings-page-heading,
+.about-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.settings .settings-page-heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.app-version {
+  margin-left: auto;
+  color: var(--fg-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.update-status {
+  display: flex;
+  gap: 16px;
+  padding: 24px 0;
+}
+.update-status-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--accent);
+}
+.update-status-body {
+  min-width: 0;
+  flex: 1;
+}
+.settings .update-status h4,
+.settings .about-credits h4,
+.settings .update-release-notes h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings .update-status p {
+  margin: 0 0 16px;
+  line-height: 1.6;
+  color: var(--fg-2);
+}
+.update-status.has-error .update-status-icon {
+  color: var(--danger);
+}
+.update-progress {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.update-progress progress {
+  width: 100%;
+  height: 5px;
+  accent-color: var(--accent);
+}
+.settings .update-error {
+  margin-top: 14px;
+  overflow-wrap: anywhere;
+}
+.settings .update-error summary {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.settings .update-error p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+.update-release-notes {
+  border-top: 1px solid var(--line);
+  padding: 18px 0;
+}
+.update-release-notes > div {
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.settings .update-release-notes h3 {
+  font-size: 13px;
+  margin: 14px 0 6px;
+}
+.settings .update-release-notes p {
+  margin: 6px 0;
+}
+.update-release-notes ul {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+.update-footer,
+.about-license {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.update-footer > span,
+.update-footer a,
+.about-links a,
+.about-license a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.update-footer a,
+.about-license a {
+  margin-left: auto;
+}
+.update-page a,
+.about-page a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.update-page a:hover,
+.about-page a:hover {
+  text-decoration: underline;
+}
+.update-page a:focus-visible,
+.about-page a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+.about-brand {
+  padding: 6px 0;
+}
+.about-mark {
+  width: 52px;
+  height: 52px;
+  color: var(--accent);
+  flex: none;
+}
+.about-mark svg {
+  width: 100%;
+  height: 100%;
+}
+.settings .about-brand h3 {
+  font-size: 30px;
+  line-height: 1.1;
+  letter-spacing: -1px;
+  margin: 0;
+}
+.settings .about-brand p {
+  margin: 5px 0 0;
+  color: var(--fg-2);
+}
+.settings .about-intro {
+  margin: 18px 0;
+  line-height: 1.65;
+  max-width: 48ch;
+}
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 22px;
+  margin: 0 0 24px;
+  font-size: 12px;
+}
+.about-credits {
+  border-top: 1px solid var(--line);
+  padding: 20px 0 10px;
+}
+.settings .about-credits p {
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 8px 0 12px;
+}
+.about-license strong,
+.about-license span {
+  display: block;
+}
+.about-license strong {
+  font-weight: 500;
+  color: var(--fg);
+  margin-bottom: 5px;
+}
+.about-license span {
+  line-height: 1.6;
+}
+@media (max-width: 680px) {
+  .settings .preferences-tabs {
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+  .settings .preferences-tabs button {
+    padding: 7px 9px;
+    font-size: 12px;
+  }
+  .update-footer a,
+  .about-license a {
+    margin-left: 0;
+  }
+  .update-status {
+    gap: 12px;
+  }
+}

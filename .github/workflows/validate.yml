@@ -27,6 +27,7 @@ jobs:
         run: |
           bash -n install.sh
           shellcheck install.sh
+          python3 -m unittest discover -s tests -p 'test_update_manifest.py'
           if [[ -n "$RELEASE_TAG" ]]; then
             python3 scripts/release-notes.py --tag "$RELEASE_TAG"
           else
@@ -82,7 +83,9 @@ jobs:
             vendor/diffle/package-lock.json
       - run: npm run setup
       - name: Review unit tests
-        run: npm run test:review
+        run: |
+          npm run test:updater
+          npm run test:review
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2.9.3
         with:

@@ -8,12 +8,13 @@
     "build": "npm run build:desktop",
     "tauri": "tauri",
     "format": "prettier --write src package.json tsconfig.json src-tauri/tauri.conf.json",
-    "check": "npm run build && npm run typecheck --prefix vendor/diffle && npm run test:review && cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "check": "npm run build && npm run typecheck --prefix vendor/diffle && npm run test:updater && npm run test:review && cargo test --locked --manifest-path src-tauri/Cargo.toml",
     "build:desktop": "tsc && vite build",
     "build:review": "npm run build --prefix vendor/diffle",
     "setup": "npm ci && npm ci --prefix vendor/diffle",
     "test:review": "npm test --prefix vendor/diffle",
-    "test:engine": "cargo test --manifest-path vendor/diffle/Cargo.toml"
+    "test:engine": "cargo test --manifest-path vendor/diffle/Cargo.toml",
+    "test:updater": "node --test tests/updater.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -29,6 +30,7 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2.7.2",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "commander": "^15.0.0",
     "lucide-react": "^1.61.0",
     "picomatch": "^4.0.7",

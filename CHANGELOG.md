@@ -6,10 +6,11 @@
 
 ### Added
 
+- About page with project credits and licence information.
+- Manually check, install, and restart for signed app updates.
 - Open repositories in automatically discovered IDEs.
 - Copy review prompts when opening an editor.
 - Automatic macOS and Linux installation and updates.
-
 - Native code review for macOS and Linux.
 - Working-tree, branch, commit, and range-diff comparisons.
 - GitHub pull requests and GitLab merge requests, including self-managed hosts.
@@ -25,5 +26,4 @@
 ### Fixed
 
 - Preserve and restore the previous macOS app when an update fails.
-
 - Checkbox contrast, configuration feedback, and keyboard handling in settings.

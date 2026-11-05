@@ -13,3 +13,6 @@ release-notes.txt
 **/playwright-report/
 **/coverage/
 *.log
+
+# Python test caches
+__pycache__/
