@@ -38,3 +38,7 @@ npm run tauri build    # desktop packages
 ## License
 
 [GPL-3.0-only](LICENSE). Built on [Diffle](https://github.com/moritzwilksch/diffle), with its Apache-2.0 license and [attribution](vendor/diffle/MDIFF-PROVENANCE.md) retained. Dependencies retain their respective licenses.
+
+Releases are published from `v<version>` tags after CI passes. Tags must match the app version; packages and checksums use the matching changelog entry.
+
+Action dependencies use Sanad and `.github/workflows/actions.lock`. After workflow edits, run `sanad sync --write` and `sanad check`.
