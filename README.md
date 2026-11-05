@@ -41,4 +41,6 @@ npm run tauri build    # desktop packages
 
 Push a `v<version>` tag matching the app version to run CI and publish packages, the installer, and checksums using the changelog entry. Prerelease tags are marked as prereleases.
 
+Documentation-only changes skip CI. Code changes run lint and unit tests before cached macOS/Linux builds; releases reuse these stages and build the frontend once.
+
 Action dependencies use Sanad and `actions.lock`. After workflow edits, run `sanad sync --write` and `sanad check`.

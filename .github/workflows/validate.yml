@@ -1,0 +1,95 @@
+name: Validate
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Validate this tag before preparing a release
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint and metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check installer and release metadata
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          bash -n install.sh
+          shellcheck install.sh
+          if [[ -n "$RELEASE_TAG" ]]; then
+            python3 scripts/release-notes.py --tag "$RELEASE_TAG"
+          else
+            python3 scripts/release-notes.py
+          fi
+      - uses: MohamedElashri/sanad@v1.0.1
+        with:
+          mode: check
+          base: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            vendor/diffle/package-lock.json
+      - run: npm run setup
+      - name: Lint and typecheck
+        run: |
+          npm run lint --prefix vendor/diffle
+          npx tsc --noEmit
+          npm run typecheck --prefix vendor/diffle
+  test:
+    name: Unit tests and frontend
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            vendor/diffle/package-lock.json
+      - run: npm run setup
+      - name: Review unit tests
+        run: npm run test:review
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: |
+            src-tauri -> target
+            vendor/diffle -> target
+          shared-key: unit-tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install native test dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      # Default engine tests embed these assets at compile time.
+      - name: Prepare engine test assets
+        run: npm run build:review
+      - name: Engine and desktop unit tests
+        run: |
+          cargo test --locked --manifest-path vendor/diffle/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build shared frontend
+        run: npx vite build
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: desktop-frontend
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1

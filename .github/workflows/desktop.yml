@@ -1,0 +1,79 @@
+name: Desktop build
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        description: Package all release architectures
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: ${{ !inputs.release }}
+      matrix:
+        include: ${{ fromJSON(inputs.release && '[{"os":"macos-latest","target":"aarch64-apple-darwin","bundles":"app"},{"os":"macos-latest","target":"x86_64-apple-darwin","bundles":"app"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","bundles":"deb,appimage"}]' || '[{"os":"macos-latest","target":"aarch64-apple-darwin","bundles":"app"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","bundles":"deb,appimage"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+      # The frontend was built and checked once in the validation job.
+      - run: npm ci
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: desktop-frontend
+          path: dist
+      - uses: dtolnay/rust-toolchain@1.99
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: src-tauri -> target
+          shared-key: desktop-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+      - name: Collect target license notices
+        if: inputs.release
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml --target "$TARGET"
+          python3 scripts/native-notices.py
+      - name: Build desktop
+        env:
+          TARGET: ${{ matrix.target }}
+          BUNDLES: ${{ matrix.bundles }}
+          PACKAGE_RELEASE: ${{ inputs.release }}
+          APPLE_SIGNING_IDENTITY: '-'
+        run: |
+          if [[ "$PACKAGE_RELEASE" == true ]]; then
+            npm run tauri build -- --target "$TARGET" --bundles "$BUNDLES" --config '{"build":{"beforeBuildCommand":""}}' -- --locked
+          else
+            npm run tauri build -- --target "$TARGET" --no-bundle --config '{"build":{"beforeBuildCommand":""}}' -- --locked
+          fi
+      - name: Collect release files
+        if: inputs.release
+        env:
+          TARGET: ${{ matrix.target }}
+        run: python3 scripts/release-artifacts.py "$TARGET"
+      - uses: actions/upload-artifact@v7.0.2
+        if: inputs.release
+        with:
+          name: mdiff-${{ matrix.target }}
+          path: release-artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
