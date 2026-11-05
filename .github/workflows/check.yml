@@ -7,11 +7,19 @@ on:
       - '**/*.md'
       - 'docs/**'
       - 'assets/**'
+      - 'Casks/**'
+      - 'scripts/update-cask.py'
+      - 'tests/test_cask.py'
+      - '.github/workflows/homebrew.yml'
   pull_request:
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
       - 'assets/**'
+      - 'Casks/**'
+      - 'scripts/update-cask.py'
+      - 'tests/test_cask.py'
+      - '.github/workflows/homebrew.yml'
 
 permissions:
   contents: read

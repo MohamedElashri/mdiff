@@ -4,20 +4,28 @@ mdiff is a native code review app for macOS and Linux. Review local changes, Git
 
 [![CI](https://github.com/MohamedElashri/mdiff/actions/workflows/check.yml/badge.svg)](https://github.com/MohamedElashri/mdiff/actions/workflows/check.yml)
 [![Release](https://github.com/MohamedElashri/mdiff/actions/workflows/release.yml/badge.svg)](https://github.com/MohamedElashri/mdiff/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0--unreleased-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/github/v/release/MohamedElashri/mdiff)](https://github.com/MohamedElashri/mdiff/releases/latest)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENCE.md)
 
 ![mdiff reviewing a feature branch in the native macOS app](assets/demo.png)
 
 ## Quick start
 
-Install or update the latest release:
+macOS with [Homebrew](https://brew.sh):
+
+```sh
+brew tap MohamedElashri/mdiff https://github.com/MohamedElashri/mdiff && brew install --cask MohamedElashri/mdiff/mdiff
+```
+
+Update with `brew upgrade --cask --greedy MohamedElashri/mdiff/mdiff`.
+
+macOS or Linux without Homebrew:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/MohamedElashri/mdiff/main/install.sh | bash
 ```
 
-Installs to `~/Applications` on macOS or `~/.local/bin` on Linux, with an application menu entry. Supports Apple Silicon, Intel Macs, and Linux x86_64 (Ubuntu 24.04 or compatible, with FUSE 2). Downloads are checksum-verified. **Installation requires the first published release.** [Manual downloads](https://github.com/MohamedElashri/mdiff/releases).
+Installs to `~/Applications` on macOS or `~/.local/bin` on Linux, with an application menu entry. Supports Apple Silicon, Intel Macs, and Linux x86_64 (Ubuntu 24.04 or compatible, with FUSE 2). Downloads are checksum-verified. [Manual downloads](https://github.com/MohamedElashri/mdiff/releases).
 
 Open mdiff, choose **Open repository**, and select a Git folder. Use **New review** for another comparison or a PR/MR URL. Configure appearance and connections in **Preferences**; press `?` for review shortcuts.
 

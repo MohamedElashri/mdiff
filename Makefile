@@ -17,7 +17,7 @@ export TARGET BUNDLES PROFILE FRONTEND SIGNED RELEASE_TAG
 .PHONY: help doctor setup dev dev-web build build-debug build-native build-signed \
  build-frontend build-assets build-review build-engine lint lint-metadata typecheck \
  format format-check clippy check test test-review test-engine test-native \
- test-updater test-installer test-performance test-tooling test-e2e protocol \
+ test-updater test-installer test-homebrew test-performance test-tooling test-e2e protocol \
  release-check release-notes release-artifacts release-manifest notices clean
 
 help: ## Show commands and build options (default)
@@ -108,7 +108,7 @@ check: ## Run lint, typechecks, metadata checks, Clippy, tests, then build asset
 	$(MAKE) test
 	$(MAKE) build-assets
 
-test: test-updater test-review test-engine test-native test-installer ## Run all local unit and integration suites (no browser/container required)
+test: test-updater test-review test-engine test-native test-installer test-homebrew ## Run all local unit and integration suites (no browser/container required)
 
 test-review: ## Run frontend unit and desktop performance tests
 	$(NPM) run test:review
@@ -164,3 +164,6 @@ clean: ## Remove generated builds, reports, and release artifacts; keep dependen
 	$(CARGO) clean --manifest-path vendor/diffle/Cargo.toml
 	rm -rf dist vendor/diffle/crates/diffle/client release-artifacts release-notes.txt
 	rm -rf vendor/diffle/test-results vendor/diffle/playwright-report vendor/diffle/coverage
+
+test-homebrew: ## Test Homebrew release updates
+	$(PYTHON) tests/test_cask.py

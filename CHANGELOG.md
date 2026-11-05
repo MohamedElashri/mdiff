@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Homebrew installation for macOS.
+
 ## [0.1.2] - 2026-11-05
 
 ### Added

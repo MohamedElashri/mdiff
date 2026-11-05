@@ -62,3 +62,45 @@ jobs:
           else
             gh release edit "$RELEASE_TAG" --draft=false --latest
           fi
+  homebrew:
+    name: Update Homebrew cask
+    needs: publish
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: macos-latest
+    timeout-minutes: 10
+    concurrency:
+      group: homebrew-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_ANALYTICS: 1
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: main
+      - name: Update and validate cask
+        run: |
+          latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)
+          if [[ "$latest" != "$RELEASE_TAG" ]]; then
+            echo 'Skipping a release that is no longer latest'
+            exit 0
+          fi
+          gh release download "$RELEASE_TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP/cask-release"
+          python3 scripts/update-cask.py --version "${RELEASE_TAG#v}" --checksums "$RUNNER_TEMP/cask-release/SHA256SUMS"
+          python3 tests/test_cask.py
+          brew tap MohamedElashri/mdiff "$GITHUB_WORKSPACE"
+          cp Casks/mdiff.rb "$(brew --repository MohamedElashri/mdiff)/Casks/mdiff.rb"
+          brew trust --cask MohamedElashri/mdiff/mdiff
+          brew style MohamedElashri/mdiff/mdiff
+          brew audit --cask --strict --arch=all MohamedElashri/mdiff/mdiff
+          if git diff --quiet -- Casks/mdiff.rb; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Casks/mdiff.rb
+          git commit -m "Update Homebrew cask to $RELEASE_TAG"
+          git push origin HEAD:main
