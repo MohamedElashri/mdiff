@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-06
+
 ### Added
 
 - Homebrew installation for macOS.
@@ -14,7 +16,7 @@
 
 ### Fixed
 
-- Bind automatic GitHub environment tokens to their configured host.
+- Bind automatic GitHub environment tokens to their configured host; Enterprise tokens require `GH_HOST`.
 - Authenticate private GitHub downloads with the connection token.
 - Verify pull request repository hosts and downloaded commits.
 - Prevent worktree file reads from following parent-directory symlinks.
