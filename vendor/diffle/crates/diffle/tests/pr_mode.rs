@@ -229,6 +229,22 @@ async fn fetches_from_the_remote_that_points_at_the_base_repository_whatever_it_
 }
 
 #[tokio::test]
+async fn a_session_token_uses_https_when_the_matching_remote_uses_ssh() {
+    let f = Fixture::new();
+    // The fixture's HTTPS URL is rewritten to its local stand-in; the SSH URL
+    // deliberately has no rewrite or credentials and must never be used.
+    git_in(&f.local, &["remote", "set-url", "origin", "git@github.com:o/r.git"]);
+    let auth = diffle::git::auth::GitAuth::github("github.com", "synthetic-token").unwrap();
+    let repo = f.repo().await.with_git_auth(Some(auth));
+    let review = resolve_review(&pr("7"), &repo, &with(&f.github())).await.unwrap();
+    let Review::Range { new, .. } = review else { panic!("a range") };
+    assert_eq!(repo.resolve(&new).await.unwrap(), f.head);
+    let config = std::fs::read_to_string(repo.git_dir.join("config")).unwrap();
+    assert!(!config.contains("synthetic-token") && !config.contains("extraHeader"));
+    repo.clean_review_refs().await.unwrap();
+}
+
+#[tokio::test]
 async fn refuses_foreign_prs_in_an_existing_session_without_fetching() {
     let f = Fixture::new();
     let repo = f.repo().await;
@@ -237,6 +253,33 @@ async fn refuses_foreign_prs_in_an_existing_session_without_fetching() {
     let err = resolve_review(&pr("7"), &repo, &with(&foreign)).await.unwrap_err();
     assert!(err.to_string().contains("foreign repository"), "{err}");
     assert_eq!(git_in(&f.local, &["show-ref"]), refs);
+}
+
+#[tokio::test]
+async fn refuses_a_matching_repository_name_on_another_host_before_fetching() {
+    let f = Fixture::new();
+    for remote in ["https://gitlab.example/o/r", "https://github.com:8443/o/r", f.origin.to_str().unwrap()] {
+        git_in(&f.local, &["remote", "set-url", "origin", remote]);
+        let repo = f.repo().await;
+        let refs = git_in(&f.local, &["show-ref"]);
+        let err = resolve_review(&pr("https://github.com/o/r/pull/7"), &repo, &with(&f.github())).await.unwrap_err();
+        assert!(err.to_string().contains("foreign repository"), "{err}");
+        assert_eq!(git_in(&f.local, &["show-ref"]), refs);
+    }
+}
+
+#[tokio::test]
+async fn refuses_fetched_commits_that_do_not_match_the_api() {
+    let f = Fixture::new();
+    let repo = f.repo().await;
+    for field in ["headRefOid", "baseRefOid"] {
+        let mut node = f.node(json!({}));
+        node[field] = "1111111111111111111111111111111111111111".into();
+        let client = knows(Some(node));
+        let err = resolve_review(&pr("7"), &repo, &with(&client)).await.unwrap_err();
+        assert!(err.to_string().contains("fetched commits do not match"), "{err}");
+    }
+    repo.clean_review_refs().await.unwrap();
 }
 
 #[tokio::test]

@@ -69,7 +69,7 @@ impl Fixture {
             "url": "https://github.com/o/r/pull/7",
             "baseRefName": "main",
             "headRefName": "feat",
-            "headRefOid": "unused-here",
+            "headRefOid": self.head,
             "headRepository": { "name": "r", "owner": { "login": "o" } },
         });
         for (key, value) in over.as_object().unwrap() {

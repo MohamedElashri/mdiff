@@ -1,9 +1,9 @@
 //! A GitHub pull request as a range, fetched into refs this run owns.
-use super::resolve::{remote_slug, resolve_range};
+use super::resolve::resolve_range;
 use crate::error::{Error, GithubError, Result};
 use crate::git::GitRepo;
 use crate::github::client::no_token;
-use crate::github::hosts::Github;
+use crate::github::hosts::{Github, GithubInstance, github_repository};
 use crate::github::pulls::{PullRequest, view_pr};
 use crate::protocol::{ComparisonBase, PullRef, RangeView, Review};
 
@@ -20,7 +20,14 @@ pub async fn resolve_pr(selector: Option<&str>, repo: &GitRepo, github: &Github)
     let base = format!("{}/{}/base/{}", repo.review_refs, pr.number, pr.base_ref_name);
     let refspecs =
         [format!("+refs/pull/{}/head:{head}", pr.number), format!("+refs/heads/{}:{base}", pr.base_ref_name)];
-    repo.fetch(&fetch_source(repo, &pr).await?, &refspecs).await?;
+    repo.fetch(&fetch_source(repo, &pr, &github.instance).await?, &refspecs).await?;
+    let (actual_head, actual_base) = tokio::try_join!(repo.resolve(&head), repo.resolve(&base))?;
+    if actual_head != pr.head_ref_oid || actual_base != pr.base_ref_oid {
+        return Err(GithubError::conflict(
+            "The fetched commits do not match the pull request. It may have changed; reopen the review.",
+        )
+        .into());
+    }
     resolve_range(repo, &base, &head, ComparisonBase::MergeBase).await?;
     Ok(Review::Range {
         old: base,
@@ -38,10 +45,15 @@ pub async fn resolve_pr(selector: Option<&str>, repo: &GitRepo, github: &Github)
 
 /// `refs/pull/*` lives on the base repository, so the fetch goes to the remote that points at it.
 /// Foreign repositories are opened in a clone by the CLI instead.
-async fn fetch_source(repo: &GitRepo, pr: &PullRequest) -> Result<String> {
-    let slug = pr.repository.to_lowercase();
+async fn fetch_source(repo: &GitRepo, pr: &PullRequest, instance: &GithubInstance) -> Result<String> {
     let remotes = repo.remotes().await?;
-    match remotes.into_iter().find(|r| remote_slug(&r.url) == slug) {
+    match remotes
+        .into_iter()
+        .find(|r| github_repository(&r.url, instance).is_some_and(|name| name.eq_ignore_ascii_case(&pr.repository)))
+    {
+        // An entered token also works when the local remote uses SSH and the
+        // user has no SSH credentials. Its scope is the canonical HTTPS host.
+        Some(_) if repo.has_git_auth() => Ok(instance.repository_url(&pr.repository)),
         Some(remote) => Ok(remote.name),
         None => Err(Error::revspec(format!("foreign repository; open it with diffle pr {}", pr.url))),
     }

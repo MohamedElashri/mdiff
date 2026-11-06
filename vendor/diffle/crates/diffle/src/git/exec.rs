@@ -29,6 +29,7 @@ pub const CONFIG_ARGS: [&str; 12] = [
 
 #[derive(Default)]
 pub struct ExecOptions<'a> {
+    pub auth: Option<&'a super::auth::GitAuth>,
     /// Exit codes that are not errors (e.g. 1 for `diff --no-index`).
     pub ok_codes: &'a [i32],
     pub input: Option<&'a [u8]>,
@@ -63,6 +64,9 @@ pub async fn exec_git(cwd: &Path, args: &[&str], opts: ExecOptions<'_>) -> Resul
         .stdin(if opts.input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(auth) = opts.auth {
+        auth.apply(&mut cmd);
+    }
     let mut child = cmd.spawn().map_err(|e| spawn_error(args, &e))?;
     // Feed stdin while the output drains, so neither pipe fills and blocks the other.
     let feed = {
@@ -114,6 +118,7 @@ pub async fn exec_git(cwd: &Path, args: &[&str], opts: ExecOptions<'_>) -> Resul
         return Ok(output.stdout);
     }
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stderr = opts.auth.map_or_else(|| stderr.clone(), |auth| auth.redact(&stderr));
     let detail =
         if stderr.trim().is_empty() { format!("exit status {}", output.status) } else { stderr.trim().to_owned() };
     Err(GitError {

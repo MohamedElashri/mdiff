@@ -30,7 +30,6 @@ async fn large_review_snapshot_reads_and_reopen_stay_bounded() {
                 EnterRequest::Working,
                 None,
                 None,
-                false,
                 None,
             )
             .await

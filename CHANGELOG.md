@@ -4,9 +4,22 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-06
+
 ### Added
 
 - Homebrew installation for macOS.
+
+### Changed
+
+- Require repository trust before enabling code intelligence in each review.
+
+### Fixed
+
+- Bind automatic GitHub environment tokens to their configured host; Enterprise tokens require `GH_HOST`.
+- Authenticate private GitHub downloads with the connection token.
+- Verify pull request repository hosts and downloaded commits.
+- Prevent worktree file reads from following parent-directory symlinks.
 
 ## [0.1.2] - 2026-11-05
 

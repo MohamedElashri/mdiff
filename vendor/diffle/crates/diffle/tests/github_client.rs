@@ -48,13 +48,21 @@ async fn prefers_github_token_then_gh_token_then_what_gh_holds_for_github_com() 
 
 #[tokio::test]
 async fn reads_the_enterprise_variables_for_a_github_enterprise_server_as_gh_does() {
-    let vars = [("GITHUB_TOKEN", "cloud"), ("GH_ENTERPRISE_TOKEN", "server")];
+    let vars = [("GITHUB_TOKEN", "cloud"), ("GH_ENTERPRISE_TOKEN", "server"), ("GH_HOST", "github.work.com")];
     let asked = Arc::default();
     assert_eq!(
         resolve_token_with("github.work.com", env(&vars), gh(&asked, None)).await,
         found("server", "GH_ENTERPRISE_TOKEN")
     );
-    assert_eq!(resolve_token_with("acme.ghe.com", env(&vars), gh(&asked, None)).await, found("cloud", "GITHUB_TOKEN"));
+    assert_eq!(
+        resolve_token_with(
+            "acme.ghe.com",
+            env(&[("GITHUB_TOKEN", "cloud"), ("GH_HOST", "acme.ghe.com")]),
+            gh(&asked, None)
+        )
+        .await,
+        found("cloud", "GITHUB_TOKEN")
+    );
     let asked = Arc::default();
     resolve_token_with("github.work.com", env(&[("GITHUB_TOKEN", "cloud")]), gh(&asked, None)).await;
     assert_eq!(*asked.lock().unwrap(), ["github.work.com"]);
@@ -65,6 +73,22 @@ async fn is_none_when_nothing_has_a_token() {
     assert_eq!(resolve_token_with("github.com", env(&[]), gh(&Arc::default(), None)).await, None);
 }
 
+#[tokio::test]
+async fn never_reuses_environment_tokens_for_an_unbound_host() {
+    let vars = [("GITHUB_TOKEN", "cloud"), ("GH_ENTERPRISE_TOKEN", "private")];
+    for host in ["attacker.invalid", "tenant.ghe.com", "github.work.com"] {
+        let asked = Arc::default();
+        assert_eq!(resolve_token_with(host, env(&vars), gh(&asked, None)).await, None);
+        assert_eq!(*asked.lock().unwrap(), [host]);
+    }
+    let vars = [("GH_HOST", "github.work.com"), ("GITHUB_ENTERPRISE_TOKEN", "private")];
+    assert_eq!(resolve_token_with("attacker.invalid", env(&vars), gh(&Arc::default(), None)).await, None);
+    assert_eq!(
+        resolve_token_with("other.work.com", env(&vars), gh(&Arc::default(), Some("host-specific"))).await,
+        found("host-specific", "gh auth token")
+    );
+}
+
 #[test]
 fn says_where_to_put_a_token_for_the_host_that_lacks_one() {
     assert_eq!(
@@ -73,7 +97,7 @@ fn says_where_to_put_a_token_for_the_host_that_lacks_one() {
     );
     assert_eq!(
         no_token("github.work.com"),
-        "No GitHub token for github.work.com: set GITHUB_ENTERPRISE_TOKEN or sign in with gh auth login --hostname github.work.com"
+        "No GitHub token for github.work.com: set GH_HOST=github.work.com and GITHUB_ENTERPRISE_TOKEN or sign in with gh auth login --hostname github.work.com"
     );
 }
 

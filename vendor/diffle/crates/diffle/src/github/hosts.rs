@@ -92,6 +92,24 @@ pub fn github_repository(url: &str, instance: &GithubInstance) -> Option<String>
 }
 
 fn parse_remote(url: &str) -> Option<(String, String)> {
+    if url.contains("://") {
+        let url = url::Url::parse(url).ok()?;
+        if !matches!(url.scheme(), "https" | "ssh" | "git+ssh") || url.query().is_some() || url.fragment().is_some() {
+            return None;
+        }
+        let host = url.host_str()?.to_lowercase();
+        let host = if url.scheme() == "https" {
+            url.port().map_or(host.clone(), |port| format!("{host}:{port}"))
+        } else {
+            host
+        };
+        let parts: Vec<_> = url.path().trim_matches('/').split('/').collect();
+        let [owner, repo] = parts.as_slice() else { return None };
+        if owner.is_empty() || repo.is_empty() || owner.contains('%') || repo.contains('%') {
+            return None;
+        }
+        return Some((host, format!("{owner}/{}", DOT_GIT.replace(repo, ""))));
+    }
     let m = REMOTE.captures(url)?;
     let host = m.get(1).or_else(|| m.get(2))?.as_str().to_lowercase();
     Some((host, format!("{}/{}", &m[3], DOT_GIT.replace(&m[4], ""))))
@@ -156,6 +174,9 @@ mod tests {
             assert_eq!(github_repository(url, &com).as_deref(), Some("o/r"), "{url}");
         }
         assert_eq!(github_repository("https://gitlab.com/o/r", &com), None);
+        for url in ["https://github.com:8443/o/r", "http://github.com/o/r", "file:///o/r", "/tmp/o/r"] {
+            assert_eq!(github_repository(url, &com), None, "{url}");
+        }
         assert_eq!(
             GithubInstance { host: "acme.ghe.com".into(), git_hosts: vec![] }.api_base_url(),
             "https://api.acme.ghe.com"

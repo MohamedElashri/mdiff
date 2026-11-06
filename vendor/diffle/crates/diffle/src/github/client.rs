@@ -20,7 +20,8 @@ pub fn token_variables(host: &str) -> [&'static str; 2] {
 pub fn no_token(host: &str) -> String {
     let login =
         if host == "github.com" { "gh auth login".to_owned() } else { format!("gh auth login --hostname {host}") };
-    format!("No GitHub token for {host}: set {} or sign in with {login}", token_variables(host)[0])
+    let binding = if host == "github.com" { String::new() } else { format!("GH_HOST={host} and ") };
+    format!("No GitHub token for {host}: set {binding}{} or sign in with {login}", token_variables(host)[0])
 }
 
 /// The token for `host` and where it came from: its environment variables, then the one `gh`
@@ -35,9 +36,14 @@ pub async fn resolve_token_with<F: Future<Output = Option<String>>>(
     env: impl Fn(&str) -> Option<String>,
     gh: impl FnOnce(String) -> F,
 ) -> Option<(String, String)> {
-    for name in token_variables(host) {
-        if let Some(token) = env(name).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()) {
-            return Some((token, name.to_owned()));
+    // Environment tokens have no host metadata. GH_HOST explicitly binds them to an
+    // Enterprise instance; without it only github.com may receive them.
+    let bound_host = env("GH_HOST").unwrap_or_else(|| "github.com".into());
+    if host.eq_ignore_ascii_case(bound_host.trim()) {
+        for name in token_variables(host) {
+            if let Some(token) = env(name).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()) {
+                return Some((token, name.to_owned()));
+            }
         }
     }
     gh(host.to_owned()).await.map(|token| (token, "gh auth token".to_owned()))
@@ -55,6 +61,11 @@ async fn gh_auth_token(host: &str) -> Option<String> {
 /// The transport the rest of the server knows: one GraphQL request, answered by its `data` or a
 /// `GithubError` carrying GitHub's own message. Tests answer queries by shape instead.
 pub trait GithubClient: Send + Sync {
+    /// Session-only Git authentication. Fake clients and tokenless clients supply none.
+    fn git_token(&self) -> Option<&str> {
+        None
+    }
+
     fn graphql(
         &self,
         query: &str,
@@ -67,6 +78,7 @@ pub trait GithubClient: Send + Sync {
 /// (either case) as git does.
 pub struct HttpClient {
     octocrab: octocrab::Octocrab,
+    token: String,
 }
 
 impl HttpClient {
@@ -74,11 +86,11 @@ impl HttpClient {
     pub fn new(token: String, base_url: &str) -> Result<Self, GithubError> {
         let octocrab = octocrab::Octocrab::builder()
             .base_uri(graphql_root(base_url))
-            .and_then(|b| b.personal_token(token).build_with_reqwest(octocrab::ReqwestClientConfig::Default))
+            .and_then(|b| b.personal_token(token.clone()).build_with_reqwest(octocrab::ReqwestClientConfig::Default))
             .map_err(|e| {
                 GithubError::new(format!("cannot set up the GitHub client: {}", first_line(&e.to_string())), 400)
             })?;
-        Ok(Self { octocrab })
+        Ok(Self { octocrab, token })
     }
 }
 
@@ -90,6 +102,10 @@ fn graphql_root(base_url: &str) -> String {
 }
 
 impl GithubClient for HttpClient {
+    fn git_token(&self) -> Option<&str> {
+        Some(&self.token)
+    }
+
     fn graphql(
         &self,
         query: &str,
@@ -152,7 +168,7 @@ mod tests {
         assert_eq!(token_variables("git.corp"), ["GITHUB_ENTERPRISE_TOKEN", "GH_ENTERPRISE_TOKEN"]);
         assert_eq!(
             no_token("git.corp"),
-            "No GitHub token for git.corp: set GITHUB_ENTERPRISE_TOKEN or sign in with gh auth login --hostname git.corp"
+            "No GitHub token for git.corp: set GH_HOST=git.corp and GITHUB_ENTERPRISE_TOKEN or sign in with gh auth login --hostname git.corp"
         );
         assert_eq!(graphql_root("https://api.github.com"), "https://api.github.com");
         assert_eq!(graphql_root("https://git.corp/api/v3"), "https://git.corp/api");

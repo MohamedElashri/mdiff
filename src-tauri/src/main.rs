@@ -44,6 +44,7 @@ fn main() {
             editors::open_in_editor,
             engine::open_review,
             engine::close_review,
+            engine::enable_review_lsp,
             transport::review_request,
             transport::cancel_review_request,
             gitlab::gitlab_action,
