@@ -34,6 +34,28 @@ pub struct ReviewRuntime {
     _clone: Option<tempfile::TempDir>,
 }
 impl ReviewRuntime {
+    async fn enable_lsp(&mut self) -> anyhow::Result<diffle::protocol::LspStatus> {
+        if self.lsp.is_none() {
+            let snapshot = self.session.snapshotter()?.current().await?;
+            let pool = lsp::start(
+                &self.session,
+                &self.hub,
+                self.config.get().lsp_commands,
+                vec![],
+            );
+            self.router = desktop_router(ApiDeps {
+                session: self.session.clone(),
+                config: self.config.clone(),
+                extra_auto_viewed: vec![],
+                hub: self.hub.clone(),
+                lsp: Some(pool.clone()),
+            });
+            self.lsp = Some(pool.clone());
+            tokio::spawn(pool.track(&snapshot));
+        }
+        Ok(self.lsp.as_ref().unwrap().status())
+    }
+
     pub(crate) fn repository_root(&self) -> &std::path::Path {
         &self.repo.root
     }
@@ -79,7 +101,6 @@ pub struct OpenOptions {
     request: EnterRequest,
     token: Option<String>,
     token_host: Option<String>,
-    enable_lsp: bool,
     gitlab_url: Option<String>,
     gitlab_token: Option<String>,
     gitlab_host: Option<String>,
@@ -95,7 +116,6 @@ pub async fn open_review(
         request,
         token,
         token_host,
-        enable_lsp,
         gitlab_url,
         gitlab_token,
         gitlab_host,
@@ -138,7 +158,6 @@ pub async fn open_review(
         request,
         token,
         token_host,
-        enable_lsp,
         gitlab,
     )
     .await
@@ -173,7 +192,6 @@ async fn start(
     mut request: EnterRequest,
     token: Option<String>,
     token_host: Option<String>,
-    enable_lsp: bool,
     gitlab: Option<Arc<crate::gitlab::Gitlab>>,
 ) -> anyhow::Result<(ReviewRuntime, OpenedReview)> {
     let config = Arc::new(UserConfigStore::open(config_path).await);
@@ -213,7 +231,9 @@ async fn start(
             follow_refs: settings.follow_refs,
         },
     );
-    let pool = enable_lsp.then(|| lsp::start(&session, &hub, settings.lsp_commands, vec![]));
+    // Every newly opened repository starts without language servers, including
+    // downloaded MRs. Only the session-scoped trust action below can start them.
+    let pool = None;
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let router = desktop_router(ApiDeps {
         session: session.clone(),
@@ -260,10 +280,96 @@ pub async fn close_review(state: State<'_, Engine>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn enable_review_lsp(
+    state: State<'_, Engine>,
+    id: String,
+) -> Result<diffle::protocol::LspStatus, String> {
+    let mut slot = state.0.lock().await;
+    let runtime = slot
+        .as_mut()
+        .filter(|r| r.id == id)
+        .ok_or("This review has closed")?;
+    runtime.enable_lsp().await.map_err(|e| format!("{e:#}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transport::dispatch;
+    #[tokio::test]
+    async fn language_servers_require_trust_again_for_each_opened_review() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(dir.path().join("example.py"), "print('review')\n").unwrap();
+        let script = dir.path().join(".git/server.sh");
+        let marker = dir.path().join(".git/server-started");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf started > '{}'\n", marker.display()),
+        )
+        .unwrap();
+        let config = dir.path().join(".git/settings.json");
+        let store = UserConfigStore::open(config.clone()).await;
+        store
+            .set_desktop_commands(
+                std::collections::HashMap::from([(
+                    diffle::protocol::LanguageId::Python,
+                    format!("/bin/sh '{}'", script.display()),
+                )]),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        let (mut runtime, _) = start(
+            config.clone(),
+            dir.path().into(),
+            EnterRequest::Working,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let status = dispatch(runtime.router.clone(), "GET", "/api/lsp/status", None)
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+        assert_eq!(status["enabled"], false);
+        assert!(!marker.exists());
+        assert!(runtime.enable_lsp().await.unwrap().enabled);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !marker.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("trusted language server did not start");
+        let pool = runtime.lsp.clone().unwrap();
+        runtime.enable_lsp().await.unwrap();
+        assert!(Arc::ptr_eq(&pool, runtime.lsp.as_ref().unwrap()));
+        runtime.close().await;
+        std::fs::remove_file(&marker).unwrap();
+        let (runtime, _) = start(
+            config,
+            dir.path().into(),
+            EnterRequest::Working,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(runtime.lsp.is_none());
+        assert!(!marker.exists());
+        runtime.close().await;
+    }
+
     #[tokio::test]
     async fn native_review_reads_writes_and_reopens_without_a_server() {
         let dir = tempfile::tempdir().unwrap();
@@ -281,7 +387,6 @@ mod tests {
             EnterRequest::Working,
             None,
             None,
-            false,
             None,
         )
         .await
@@ -343,7 +448,6 @@ mod tests {
             EnterRequest::Working,
             None,
             None,
-            false,
             None,
         )
         .await

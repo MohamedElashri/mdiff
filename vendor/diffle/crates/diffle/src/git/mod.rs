@@ -1,4 +1,5 @@
 //! All Git execution. Calls run with cwd = the repository root, except reading a submodule's HEAD.
+pub mod auth;
 mod catfile;
 mod changes;
 mod commits;
@@ -8,6 +9,8 @@ mod grep;
 mod patch;
 pub(crate) mod patch_cache;
 mod refs;
+#[cfg(unix)]
+mod worktree;
 
 use std::path::{Path, PathBuf};
 
@@ -36,6 +39,9 @@ pub struct GitRepo {
     pub common_dir: PathBuf,
     /// Where this run fetches pull requests; unique, so two servers never share refs.
     pub review_refs: String,
+    git_auth: Option<auth::GitAuth>,
+    #[cfg(unix)]
+    worktree: std::sync::Arc<std::fs::File>,
     cat_file: CatFileBatch,
     pub(crate) hashed_files: std::sync::atomic::AtomicUsize,
     pub(crate) patches: patch_cache::PatchCache,
@@ -63,6 +69,9 @@ impl GitRepo {
         let git_dir = native(git_dir);
         let common_dir = lines.next().map_or_else(|| git_dir.clone(), |common| native_path(&root.join(native(common))));
         Ok(Self {
+            #[cfg(unix)]
+            worktree: std::sync::Arc::new(std::fs::File::open(&root)?),
+            git_auth: None,
             cat_file: CatFileBatch::new(root.clone()),
             hashed_files: std::sync::atomic::AtomicUsize::new(0),
             patches: Default::default(),
@@ -75,9 +84,22 @@ impl GitRepo {
 
     /// Clone into an empty directory; full history preserves merge bases.
     pub async fn clone_into(url: &str, dir: &Path) -> Result<Self> {
-        let opts = ExecOptions { env: &[("GIT_TERMINAL_PROMPT", "0")], ..Default::default() };
+        Self::clone_with_auth(url, dir, None).await
+    }
+
+    pub fn with_git_auth(mut self, auth: Option<auth::GitAuth>) -> Self {
+        self.git_auth = auth;
+        self
+    }
+
+    pub(crate) fn has_git_auth(&self) -> bool {
+        self.git_auth.is_some()
+    }
+
+    pub async fn clone_with_auth(url: &str, dir: &Path, auth: Option<auth::GitAuth>) -> Result<Self> {
+        let opts = ExecOptions { env: &[("GIT_TERMINAL_PROMPT", "0")], auth: auth.as_ref(), ..Default::default() };
         exec_git(dir, &["clone", "--quiet", "--no-tags", "--", url, "."], opts).await?;
-        Self::open(dir).await
+        Ok(Self::open(dir).await?.with_git_auth(auth))
     }
 
     /// How many `cat-file --batch` processes this repository has started. Diagnostics and tests.

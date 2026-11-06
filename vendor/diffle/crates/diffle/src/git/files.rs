@@ -1,6 +1,7 @@
 //! Reading either side: blobs through the shared batch, worktree files from disk.
 use std::collections::HashMap;
 
+#[cfg(not(unix))]
 use tokio::io::AsyncReadExt;
 
 use super::{GitRepo, WORKTREE, inside};
@@ -17,21 +18,52 @@ impl GitRepo {
     /// target string, which is what git stores for it, so a link pointing outside the repository
     /// never exposes the target's contents.
     pub async fn read_worktree(&self, path: &str) -> std::io::Result<Option<Vec<u8>>> {
+        self.read_worktree_bounded(path, usize::MAX, true).await
+    }
+
+    #[cfg(unix)]
+    async fn read_worktree_bounded(&self, path: &str, bytes: usize, links: bool) -> std::io::Result<Option<Vec<u8>>> {
         let Some(abs) = inside(&self.root, path) else {
             return Ok(None);
         };
+        let relative = abs.strip_prefix(&self.root).unwrap().to_owned();
+        let root = self.worktree.clone();
+        tokio::task::spawn_blocking(move || super::worktree::read(&root, &relative, bytes, links))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    #[cfg(not(unix))]
+    async fn read_worktree_bounded(&self, path: &str, bytes: usize, links: bool) -> std::io::Result<Option<Vec<u8>>> {
+        let Some(abs) = inside(&self.root, path) else { return Ok(None) };
+        let root = tokio::fs::canonicalize(&self.root).await?;
+        let parent = tokio::fs::canonicalize(abs.parent().unwrap()).await?;
+        if !parent.starts_with(&root) {
+            return Ok(None);
+        }
         let meta = match tokio::fs::symlink_metadata(&abs).await {
             Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
         if meta.is_symlink() {
-            return Ok(Some(tokio::fs::read_link(&abs).await?.to_string_lossy().into_owned().into_bytes()));
+            return if links {
+                Ok(Some(tokio::fs::read_link(&abs).await?.to_string_lossy().into_owned().into_bytes()))
+            } else {
+                Ok(None)
+            };
         }
         if !meta.is_file() {
             return Ok(None);
         }
-        tokio::fs::read(&abs).await.map(Some)
+        let file = tokio::fs::File::open(&abs).await?;
+        let real = tokio::fs::canonicalize(&abs).await?;
+        if !real.starts_with(&root) {
+            return Ok(None);
+        }
+        let mut buf = Vec::new();
+        file.take(bytes as u64).read_to_end(&mut buf).await?;
+        Ok(Some(buf))
     }
 
     /// First `bytes` of each blob, keyed by sha; one batch answers the whole list. A sha that is
@@ -52,17 +84,6 @@ impl GitRepo {
             let object = self.cat_file.request(&format!("{rev}:{path}"), bytes).await?;
             return Ok(object.filter(|o| o.kind == "blob").map(|o| o.body));
         }
-        let Some(abs) = inside(&self.root, path) else {
-            return Ok(None);
-        };
-        match tokio::fs::symlink_metadata(&abs).await {
-            Ok(meta) if meta.is_file() => {}
-            Ok(_) => return Ok(None),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        }
-        let mut buf = Vec::with_capacity(bytes.min(64 * 1024));
-        tokio::fs::File::open(&abs).await?.take(bytes as u64).read_to_end(&mut buf).await?;
-        Ok(Some(buf))
+        Ok(self.read_worktree_bounded(path, bytes, false).await?)
     }
 }

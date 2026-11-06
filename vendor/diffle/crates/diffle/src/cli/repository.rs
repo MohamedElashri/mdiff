@@ -3,11 +3,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::{Error, GithubError, Result};
-use crate::git::GitRepo;
+use crate::git::{GitRepo, auth::GitAuth};
 use crate::github::client::{HttpClient, no_token, resolve_token};
-use crate::github::hosts::{Github, choose_instance};
+use crate::github::hosts::{Github, choose_instance, github_repository};
 use crate::github::pulls::view_pr;
-use crate::mode::resolve::remote_slug;
 use crate::protocol::EnterRequest;
 
 pub struct Opened {
@@ -58,6 +57,12 @@ pub async fn open_review_repository_with(
         Err(e) => return Err(e),
     };
     let (github, token_source) = connect(local.as_ref()).await?;
+    let auth = github
+        .client
+        .as_ref()
+        .and_then(|c| c.git_token())
+        .map(|token| GitAuth::github(&github.instance.host, token))
+        .transpose()?;
     let opened = |repo: GitRepo, github: Github, clone| Opened {
         repo: Arc::new(repo),
         github,
@@ -65,7 +70,7 @@ pub async fn open_review_repository_with(
         clone,
     };
     let EnterRequest::Pr { pr } = req else {
-        return Ok(opened(local.expect("a repository outside pr mode"), github, None));
+        return Ok(opened(local.expect("a repository outside pr mode").with_git_auth(auth), github, None));
     };
     let Some(client) = github.client.clone() else {
         return Err(GithubError::conflict(no_token(&github.instance.host)).into());
@@ -73,13 +78,15 @@ pub async fn open_review_repository_with(
     let found = view_pr(pr.as_deref(), local.as_ref(), client.as_ref(), &github.instance, None).await?;
     if let Some(local) = local {
         let remotes = local.remotes().await?;
-        if remotes.iter().any(|r| remote_slug(&r.url) == found.repository.to_lowercase()) {
-            return Ok(opened(local, github, None));
+        if remotes.iter().any(|r| {
+            github_repository(&r.url, &github.instance).is_some_and(|name| name.eq_ignore_ascii_case(&found.repository))
+        }) {
+            return Ok(opened(local.with_git_auth(auth), github, None));
         }
     }
     let dir = tempfile::Builder::new().prefix("diffle-pr-").tempdir()?;
     let url = &found.url[..found.url.find("/pull/").unwrap_or(found.url.len())];
-    let repo = GitRepo::clone_into(url, dir.path()).await?;
+    let repo = GitRepo::clone_with_auth(url, dir.path(), auth).await?;
     *pr = Some(found.url.clone());
     Ok(opened(repo, github, Some(dir)))
 }
@@ -96,6 +103,8 @@ async fn connect_github(
     let Some((token, source)) = resolve_token(&instance.host, env).await else {
         return Ok((Github { instance, client: None }, None));
     };
+    // An endpoint override is explicitly supplied by the launching environment,
+    // never taken from a pull request URL.
     let base = env("GITHUB_API_URL").filter(|u| !u.is_empty()).unwrap_or_else(|| instance.api_base_url());
     let client = HttpClient::new(token, &base)?;
     Ok((Github { instance, client: Some(Arc::new(client)) }, Some(source)))

@@ -28,6 +28,7 @@ import { BrandMark } from "./Brand";
 import { About } from "./About";
 import { Updates } from "./Updates";
 import { OpenInEditor } from "./OpenInEditor";
+import { CodeIntelligence } from "./CodeIntelligence";
 import { GitlabPanel } from "./GitlabPanel";
 import "../vendor/diffle/src/client/styles.css";
 import "./style.css";
@@ -61,7 +62,6 @@ function App() {
     [hosts, setHosts] = useState("{}");
   const [token, setToken] = useState(""),
     [tokenHost, setTokenHost] = useState("github.com");
-  const [lsp, setLsp] = useState(() => read("mdiff.lsp", true));
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [settingsError, setSettingsError] = useState("");
   const [settingsTab, setSettingsTab] = useState("appearance");
@@ -90,7 +90,6 @@ function App() {
           gitlabHost,
           token: token || null,
           tokenHost,
-          enableLsp: lsp,
         },
       });
       bindReview(opened.id);
@@ -228,7 +227,6 @@ function App() {
         lspCommands: parseMap(commands, "Language commands"),
         githubHosts: parseMap(hosts, "Enterprise host mapping"),
       });
-      localStorage.setItem("mdiff.lsp", JSON.stringify(lsp));
       setSettingsSaved(true);
     } catch (e) {
       setSettingsError(String(e));
@@ -302,6 +300,13 @@ function App() {
         <span className="header-divider" />
         <span className="subtitle">{review ? review.root : "Code review"}</span>
         <div className="window-actions">
+          {review && (
+            <CodeIntelligence
+              key={review.id}
+              id={review.id}
+              root={review.root}
+            />
+          )}
           {review && <OpenInEditor key={review.id} id={review.id} />}
           {review && (
             <button onClick={home}>
@@ -596,17 +601,10 @@ function App() {
             {settingsTab === "tools" && (
               <>
                 <h3>Language servers</h3>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={lsp}
-                    onChange={(e) => {
-                      setLsp(e.target.checked);
-                      setSettingsSaved(false);
-                    }}
-                  />
-                  Enable code intelligence and change graphs
-                </label>
+                <p>
+                  Enable code intelligence from the review toolbar after
+                  trusting the repository. Each new review starts with it off.
+                </p>
                 <p>
                   Detected from PATH. Set commands by language; an empty value
                   disables it.

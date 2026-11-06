@@ -112,6 +112,15 @@ body {
   margin-left: auto;
   flex-shrink: 0;
 }
+.code-trust .trust-path {
+  overflow-wrap: anywhere;
+}
+.trust-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
 .open {
   border: 1px solid var(--line);
   background: var(--paper);
@@ -639,6 +648,9 @@ body {
 }
 @media (max-width: 760px) {
   .editor-button-label {
+    display: none;
+  }
+  .code-intelligence-label {
     display: none;
   }
   .reviewing .window-actions {

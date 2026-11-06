@@ -140,7 +140,11 @@ impl GitRepo {
         }
         let mut args = vec!["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options", remote];
         args.extend(refspecs.iter().map(String::as_str));
-        self.exec(&args, ExecOptions { env: &[("GIT_TERMINAL_PROMPT", "0")], ..Default::default() }).await?;
+        self.exec(
+            &args,
+            ExecOptions { env: &[("GIT_TERMINAL_PROMPT", "0")], auth: self.git_auth.as_ref(), ..Default::default() },
+        )
+        .await?;
         Ok(())
     }
 

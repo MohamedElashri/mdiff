@@ -39,6 +39,10 @@ Open mdiff, choose **Open repository**, and select a Git folder. Use **New revie
 
 Git is required. Code intelligence needs a language server. Connection tokens stay in memory until you quit. GitLab supports HTTPS hosts and custom ports; installations under URL subpaths are not supported.
 
+Code intelligence starts disabled for each review. Choose **Enable code intelligence** in the review toolbar and trust the repository before starting language servers: they can execute build scripts and other repository code. This choice is not saved for future reviews.
+
+For private GitHub reviews, a token entered in Preferences authenticates both API requests and Git downloads without being saved to Git config. Automatic environment-token discovery uses `github.com` by default; set `GH_HOST` to the exact Enterprise host to bind an Enterprise environment token, or use `gh auth login --hostname HOST` for host-specific credentials.
+
 ## Build
 
 Requires Node.js 26, Rust 1.99, and [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).

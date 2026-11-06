@@ -80,5 +80,13 @@ async fn clones_foreign_prs_into_temp_storage_and_removes_them_including_after_a
         drop(opened);
         assert!(!clone_root.exists(), "{}", clone_root.display());
     }
+    // Matching owner/repo text on another forge must also get its own clone.
+    git_in(&f.local, &["remote", "set-url", "origin", "https://gitlab.example/foreign/repo"]);
+    let mut req = EnterRequest::Pr { pr: Some("https://github.com/foreign/repo/pull/7".into()) };
+    let gh = github.clone();
+    let opened = open_review_repository_with(&mut req, &f.local, async |_| Ok((gh, None))).await.unwrap();
+    assert!(opened.clone.is_some());
+    assert_ne!(opened.repo.root, f.local);
+    drop(opened);
     unset("GIT_CONFIG_GLOBAL");
 }
