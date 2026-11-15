@@ -309,83 +309,6 @@ mod tests {
     use super::*;
     use crate::transport::dispatch;
     #[tokio::test]
-    async fn failed_repository_open_preserves_the_active_review_and_its_comments() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(std::process::Command::new("git")
-            .args(["init", "-q"])
-            .arg(dir.path())
-            .status()
-            .unwrap()
-            .success());
-        std::fs::write(dir.path().join("example.txt"), "keep this review\n").unwrap();
-        let config = dir.path().join(".git/review-settings.json");
-        let mut slot = None;
-        let opened = replace_review(&mut slot, async {
-            start(
-                config.clone(),
-                dir.path().into(),
-                EnterRequest::Working,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-        let router = slot.as_ref().unwrap().router.clone();
-        let added = dispatch(
-            router.clone(),
-            "POST",
-            "/api/threads",
-            Some(serde_json::json!({"path":"example.txt","body":"Keep this comment"}).to_string()),
-        )
-        .await
-        .unwrap();
-        assert_eq!(added.status, 201);
-        let failed = replace_review(&mut slot, async {
-            start(
-                config.clone(),
-                dir.path().join("not-a-repository"),
-                EnterRequest::Working,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|e| e.to_string())
-        })
-        .await;
-        assert!(failed.is_err());
-        let runtime = slot
-            .as_ref()
-            .expect("A failed open must keep the previous runtime");
-        assert_eq!(runtime.id, opened.id);
-        let comments = dispatch(runtime.router.clone(), "GET", "/api/threads", None)
-            .await
-            .unwrap();
-        assert_eq!(comments.status, 200);
-        assert!(String::from_utf8_lossy(&comments.body).contains("Keep this comment"));
-        let next = replace_review(&mut slot, async {
-            start(
-                config,
-                dir.path().into(),
-                EnterRequest::Working,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-        assert_ne!(next.id, opened.id);
-        assert!(slot.as_ref().unwrap().lsp.is_none());
-        slot.take().unwrap().close().await;
-    }
-    #[tokio::test]
     async fn language_servers_require_trust_again_for_each_opened_review() {
         let dir = tempfile::tempdir().unwrap();
         assert!(std::process::Command::new("git")
@@ -546,6 +469,83 @@ mod tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&comments.body).contains("Native review comment"));
         runtime.close().await;
+    }
+    #[tokio::test]
+    async fn failed_repository_open_preserves_the_active_review_and_its_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(dir.path().join("example.txt"), "keep this review\n").unwrap();
+        let config = dir.path().join(".git/review-settings.json");
+        let mut slot = None;
+        let opened = replace_review(&mut slot, async {
+            start(
+                config.clone(),
+                dir.path().into(),
+                EnterRequest::Working,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+        let router = slot.as_ref().unwrap().router.clone();
+        let added = dispatch(
+            router.clone(),
+            "POST",
+            "/api/threads",
+            Some(serde_json::json!({"path":"example.txt","body":"Keep this comment"}).to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(added.status, 201);
+        let failed = replace_review(&mut slot, async {
+            start(
+                config.clone(),
+                dir.path().join("not-a-repository"),
+                EnterRequest::Working,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+        .await;
+        assert!(failed.is_err());
+        let runtime = slot
+            .as_ref()
+            .expect("A failed open must keep the previous runtime");
+        assert_eq!(runtime.id, opened.id);
+        let comments = dispatch(runtime.router.clone(), "GET", "/api/threads", None)
+            .await
+            .unwrap();
+        assert_eq!(comments.status, 200);
+        assert!(String::from_utf8_lossy(&comments.body).contains("Keep this comment"));
+        let next = replace_review(&mut slot, async {
+            start(
+                config,
+                dir.path().into(),
+                EnterRequest::Working,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+        assert_ne!(next.id, opened.id);
+        assert!(slot.as_ref().unwrap().lsp.is_none());
+        slot.take().unwrap().close().await;
     }
 }
 
