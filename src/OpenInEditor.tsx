@@ -47,6 +47,8 @@ export function OpenInEditor({ id }: { id: string }) {
     }
   }
   useEffect(() => {
+    pending.current = false;
+    setBusy("");
     if (open) {
       setStatus("");
       void refresh();
@@ -56,11 +58,13 @@ export function OpenInEditor({ id }: { id: string }) {
     };
   }, [open, id]);
 
-  async function copyPrompt() {
+  async function copyPrompt(current: () => boolean) {
     const prompt = await api.exportComments();
+    if (!current()) return false;
     if (!prompt.trim())
       throw new Error("Add an open comment to create an agent prompt.");
     await writeText(prompt);
+    return true;
   }
   async function act(editor?: Editor) {
     if (pending.current) return;
@@ -68,32 +72,43 @@ export function OpenInEditor({ id }: { id: string }) {
     setBusy(editor?.id ?? "copy");
     setError("");
     setStatus("");
+    const request = generation.current;
+    const snapshot = useStore.getState().snapshot;
+    const current = () =>
+      request === generation.current &&
+      useStore.getState().snapshot === snapshot;
     let copied = false;
     try {
       if (!editor || (copyOnOpen && hasComments)) {
-        await copyPrompt();
-        copied = true;
+        copied = await copyPrompt(current);
+        if (!current()) return;
       }
       if (editor) {
+        if (!current()) return;
         await invoke("open_in_editor", { id, editorId: editor.id });
+        if (!current()) return;
         try {
           localStorage.setItem("mdiff.editor", editor.id);
         } catch {
           /* Optional preference. */
         }
       }
-      setStatus(
-        editor
-          ? `${editor.name} opened.${copied ? " Paste the prompt into your agent." : ""}`
-          : "Prompt copied. Paste it into your coding agent.",
-      );
+      if (current())
+        setStatus(
+          editor
+            ? `${editor.name} opened.${copied ? " Paste the prompt into your agent." : ""}`
+            : "Prompt copied. Paste it into your coding agent.",
+        );
     } catch (e) {
-      setError(
-        `${copied ? "Prompt copied, but the editor could not open. " : ""}${String(e).replace(/^Error: /, "")}`,
-      );
+      if (current())
+        setError(
+          `${copied ? "Prompt copied, but the editor could not open. " : ""}${String(e).replace(/^Error: /, "")}`,
+        );
     } finally {
-      pending.current = false;
-      setBusy("");
+      if (request === generation.current) {
+        pending.current = false;
+        setBusy("");
+      }
     }
   }
   const editors = [...data.editors].sort((a, b) =>
