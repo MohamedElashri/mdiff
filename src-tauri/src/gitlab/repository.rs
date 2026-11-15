@@ -54,21 +54,7 @@ impl Gitlab {
             })
             .unwrap_or_default();
         let key = format!("http.{}.extraHeader", self.origin);
-        let env = [
-            ("GIT_TERMINAL_PROMPT", "0"),
-            ("GIT_TRACE", "0"),
-            ("GIT_TRACE_CURL", "0"),
-            ("GIT_CURL_VERBOSE", "0"),
-            ("GIT_CONFIG_COUNT", "4"),
-            ("GIT_CONFIG_KEY_0", key.as_str()),
-            ("GIT_CONFIG_VALUE_0", auth.as_str()),
-            ("GIT_CONFIG_KEY_1", "http.followRedirects"),
-            ("GIT_CONFIG_VALUE_1", "false"),
-            ("GIT_CONFIG_KEY_2", "credential.helper"),
-            ("GIT_CONFIG_VALUE_2", ""),
-            ("GIT_CONFIG_KEY_3", "core.hooksPath"),
-            ("GIT_CONFIG_VALUE_3", "/dev/null"),
-        ];
+        let env = git_environment(&key, &auth);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(180),
             exec_git(
@@ -82,5 +68,66 @@ impl Gitlab {
         )
         .await;
         match result { Ok(Ok(_))=>Ok(()), Ok(Err(_))=>bail!("Git could not prepare the GitLab checkout. Check repository access and token read_repository permission."),Err(_)=>bail!("GitLab repository fetch timed out") }
+    }
+}
+
+fn git_environment<'a>(key: &'a str, auth: &'a str) -> Vec<(&'a str, &'a str)> {
+    vec![
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GIT_TRACE", "0"),
+        ("GIT_TRACE_CURL", "0"),
+        ("GIT_CURL_VERBOSE", "0"),
+        ("GIT_TRACE_PACKET", "0"),
+        ("GIT_TRACE2", "0"),
+        ("GIT_TRACE2_EVENT", "0"),
+        ("GIT_TRACE2_PERF", "0"),
+        ("GIT_CONFIG_COUNT", "4"),
+        ("GIT_CONFIG_KEY_0", key),
+        ("GIT_CONFIG_VALUE_0", auth),
+        ("GIT_CONFIG_KEY_1", "http.followRedirects"),
+        ("GIT_CONFIG_VALUE_1", "false"),
+        ("GIT_CONFIG_KEY_2", "credential.helper"),
+        ("GIT_CONFIG_VALUE_2", ""),
+        ("GIT_CONFIG_KEY_3", "core.hooksPath"),
+        ("GIT_CONFIG_VALUE_3", "/dev/null"),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn inherited_trace2_cannot_record_the_gitlab_authentication_header() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success());
+        let trace = dir.path().join("trace.json");
+        let auth = "Authorization: Basic mdiff-test-only-secret";
+        let output = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["status", "--porcelain"])
+            .env("GIT_TRACE2_EVENT", &trace)
+            .env("GIT_TRACE2_CONFIG_PARAMS", "*")
+            .env("GIT_TRACE2_ENV_VARS", "GIT_CONFIG_VALUE_0")
+            .envs(git_environment(
+                "http.https://gitlab.example/.extraHeader",
+                auth,
+            ))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let trace = std::fs::read_to_string(trace).unwrap_or_default();
+        assert!(
+            !trace.contains(auth),
+            "GitLab authorization was written to a Git trace"
+        );
+        assert!(
+            trace.is_empty(),
+            "Network Git operations must disable inherited diagnostic tracing"
+        );
     }
 }
