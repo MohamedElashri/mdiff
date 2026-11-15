@@ -351,12 +351,14 @@ function App() {
         <div className="window-actions">
           {review && (
             <CodeIntelligence
-              key={review.id}
+              key={`code-intelligence:${review.id}`}
               id={review.id}
               root={review.root}
             />
           )}
-          {review && <OpenInEditor key={review.id} id={review.id} />}
+          {review && (
+            <OpenInEditor key={`editor:${review.id}`} id={review.id} />
+          )}
           {review && (
             <button onClick={home}>
               <ArrowLeft size={15} />
