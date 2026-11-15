@@ -1,4 +1,4 @@
-# mdiff
+# mdiff — live test only
 
 mdiff is a native code review app for macOS and Linux. Review local changes, GitHub pull requests, and GitLab merge requests with split or unified diffs, threaded feedback, code navigation, and customizable themes and fonts.
 
