@@ -43,6 +43,12 @@ Code intelligence starts disabled for each review. Choose **Enable code intellig
 
 For private GitHub reviews, a token entered in Preferences authenticates both API requests and Git downloads without being saved to Git config. Automatic environment-token discovery uses `github.com` by default; set `GH_HOST` to the exact Enterprise host to bind an Enterprise environment token, or use `gh auth login --hostname HOST` for host-specific credentials.
 
+The review toolbar’s **GitHub** panel links to the matching PR and transfers open comments to a pending GitHub review. It reports added, updated, and skipped threads; local comments stay in mdiff. Follow **Review and submit on GitHub** to publish the review. The comparison must match the PR’s pushed revision; worktree and stale comments cannot be transferred.
+
+Use **Create a pull request** in the same panel to choose a destination repository, base branch, title, description, and draft status. Commit and push your branch with an upstream first. mdiff verifies that the pushed head matches local HEAD and returns an existing open PR for the same branches instead of creating a duplicate. For forks, set the destination to the upstream repository. PR creation uses the checked-out branch, regardless of the comparison currently displayed.
+
+Disable **Preferences → Connections → Enable GitHub integration** and save to stop GitHub review requests immediately and skip credential discovery for future reviews. Local reviews continue to work. Reopen a review after enabling the integration or changing its credentials. This switch controls review integration; app update checks have their own preferences.
+
 ## Build
 
 Requires Node.js 26, Rust 1.99, and [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).

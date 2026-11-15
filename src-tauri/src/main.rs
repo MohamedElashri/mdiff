@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod editors;
 mod engine;
+mod github;
 mod gitlab;
 mod settings;
 mod transport;

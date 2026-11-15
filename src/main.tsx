@@ -38,7 +38,13 @@ type Request =
   | { kind: "pr"; pr?: string }
   | { kind: "revspec" | "range-diff"; args: string[] };
 type Recent = { path: string; request: Request; label: string };
-type Review = { root: string; id: string; generation: number; gitlab: boolean };
+type Review = {
+  root: string;
+  id: string;
+  generation: number;
+  gitlab: boolean;
+  github_enabled: boolean;
+};
 function read<T>(key: string, fallback: T): T {
   try {
     return JSON.parse(localStorage.getItem(key) || "null") ?? fallback;
@@ -62,6 +68,11 @@ function App() {
     [hosts, setHosts] = useState("{}");
   const [token, setToken] = useState(""),
     [tokenHost, setTokenHost] = useState("github.com");
+  const [githubEnabled, setGithubEnabled] = useState(true);
+  const [githubDraft, setGithubDraft] = useState(true);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [settingsError, setSettingsError] = useState("");
   const [settingsTab, setSettingsTab] = useState("appearance");
@@ -71,6 +82,12 @@ function App() {
   const [discussions, setDiscussions] = useState(false);
   async function launch(folder: string, request: Request, label: string) {
     if (opening.current) return;
+    if (request.kind === "pr" && !githubEnabled) {
+      setError(
+        "GitHub integration is disabled. Enable it in Preferences → Connections.",
+      );
+      return;
+    }
     if (!isTauri()) {
       setError("Open the mdiff desktop app to review repositories.");
       return;
@@ -81,7 +98,11 @@ function App() {
     // Unmount the old workspace before switching the native session.
     setReview(null);
     try {
-      const opened = await invoke<{ root: string; id: string }>("open_review", {
+      const opened = await invoke<{
+        root: string;
+        id: string;
+        github_enabled: boolean;
+      }>("open_review", {
         options: {
           path: folder || ".",
           request: request.kind === "gitlab" ? { kind: "working" } : request,
@@ -189,18 +210,28 @@ function App() {
     setSettings(true);
     setSettingsSaved(false);
     setSettingsError("");
+    setSettingsLoading(true);
+    setSettingsReady(false);
     try {
       const config = await invoke<{
         lspCommands: Record<string, string>;
         githubHosts: Record<string, string>;
+        githubEnabled: boolean;
       }>("desktop_settings");
       setCommands(JSON.stringify(config.lspCommands, null, 2));
       setHosts(JSON.stringify(config.githubHosts, null, 2));
+      setGithubEnabled(config.githubEnabled);
+      setGithubDraft(config.githubEnabled);
+      setSettingsReady(true);
     } catch (e) {
       setSettingsError(String(e));
+    } finally {
+      setSettingsLoading(false);
     }
   }
   async function saveSettings() {
+    if (!settingsReady || settingsLoading || settingsSaving) return;
+    setSettingsSaving(true);
     setSettingsError("");
     setSettingsSaved(false);
     const parseMap = (text: string, label: string) => {
@@ -226,12 +257,30 @@ function App() {
       await invoke("save_desktop_settings", {
         lspCommands: parseMap(commands, "Language commands"),
         githubHosts: parseMap(hosts, "Enterprise host mapping"),
+        githubEnabled: githubDraft,
       });
+      setGithubEnabled(githubDraft);
+      setReview((r) =>
+        r ? { ...r, github_enabled: githubDraft && !r.gitlab } : r,
+      );
+      if (!githubDraft) {
+        setToken("");
+        if (mode === "pr") setMode("working");
+      }
       setSettingsSaved(true);
     } catch (e) {
       setSettingsError(String(e));
+    } finally {
+      setSettingsSaving(false);
     }
   }
+  useEffect(() => {
+    if (isTauri()) {
+      void invoke<{ githubEnabled: boolean }>("desktop_settings")
+        .then((config) => setGithubEnabled(config.githubEnabled))
+        .catch((e) => setError(String(e)));
+    }
+  }, []);
   useEffect(() => {
     Object.defineProperty(navigator.clipboard, "writeText", {
       configurable: true,
@@ -350,6 +399,11 @@ function App() {
                 key={review.id}
                 gitlab={review.gitlab}
                 onDiscussions={() => setDiscussions((v) => !v)}
+                githubEnabled={review.github_enabled}
+                onConnections={() => {
+                  setSettingsTab("connections");
+                  void showSettings();
+                }}
               />
             </Suspense>
           </div>
@@ -399,7 +453,9 @@ function App() {
                   <option value="working">All working changes</option>
                   <option value="revspec">Branch or revision range</option>
                   <option value="commit">Single commit</option>
-                  <option value="pr">GitHub pull request</option>
+                  {githubEnabled && (
+                    <option value="pr">GitHub pull request</option>
+                  )}
                   <option value="gitlab">GitLab merge request</option>
                   <option value="range-diff">Compare two commit series</option>
                 </select>
@@ -544,29 +600,51 @@ function App() {
                   changes.
                 </p>
                 <h3>GitHub connection</h3>
-                <p>Use your GitHub CLI sign-in or enter a token.</p>
-                <label>
-                  GitHub host
+                <label className="checkbox">
                   <input
-                    value={tokenHost}
-                    onChange={(e) => setTokenHost(e.target.value.trim())}
-                    placeholder="github.com"
+                    type="checkbox"
+                    checked={githubDraft}
+                    disabled={settingsLoading || settingsSaving}
+                    onChange={(e) => {
+                      setGithubDraft(e.target.checked);
+                      setSettingsSaved(false);
+                    }}
                   />
+                  Enable GitHub integration
                 </label>
-                <label>
-                  Personal access token
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    placeholder="Optional when already signed in with GitHub CLI"
-                  />
-                </label>
-                <button onClick={() => setToken("")} disabled={!token}>
-                  Clear session token
-                </button>
+                <p>
+                  Save to apply. Turning this off stops GitHub lookups, PR
+                  actions, and comment transfers immediately. Local reviews
+                  remain available. Reopen your review after enabling or
+                  changing credentials.
+                </p>
+                <fieldset
+                  disabled={!githubDraft || settingsLoading || settingsSaving}
+                >
+                  <p>Use your GitHub CLI sign-in or enter a token.</p>
+                  <label>
+                    GitHub host
+                    <input
+                      value={tokenHost}
+                      onChange={(e) => setTokenHost(e.target.value.trim())}
+                      placeholder="github.com"
+                    />
+                  </label>
+                  <label>
+                    Personal access token
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={token}
+                      onChange={(e) => setToken(e.target.value)}
+                      placeholder="Optional when already signed in with GitHub CLI"
+                    />
+                  </label>
+                  <button onClick={() => setToken("")} disabled={!token}>
+                    Clear session token
+                  </button>
+                </fieldset>
                 <h3>GitLab connection</h3>
                 <p>
                   GitLab.com or self-managed. Token scopes: api,
@@ -649,10 +727,20 @@ function App() {
             {(settingsTab === "connections" || settingsTab === "tools") && (
               <div className="settings-footer">
                 <span role="status">
-                  {settingsSaved ? "Saved. Reopen your review to apply." : ""}
+                  {settingsSaved
+                    ? "Saved. GitHub disable applies now; reopen to apply connection changes."
+                    : ""}
                 </span>
-                <button className="primary" onClick={saveSettings}>
-                  Save settings
+                <button
+                  className="primary"
+                  disabled={!settingsReady || settingsLoading || settingsSaving}
+                  onClick={saveSettings}
+                >
+                  {settingsSaving
+                    ? "Saving…"
+                    : settingsLoading
+                      ? "Loading…"
+                      : "Save settings"}
                 </button>
               </div>
             )}

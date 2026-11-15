@@ -24,7 +24,13 @@ pub async fn desktop_settings(
         Some(runtime) => runtime.config.clone(),
         None => store(&app).await?,
     };
-    serde_json::to_value(config.get()).map_err(|e| e.to_string())
+    let mut value = serde_json::to_value(config.get()).map_err(|e| e.to_string())?;
+    value["githubEnabled"] = crate::github::Connections::load(config.file())
+        .await
+        .map_err(|e| e.to_string())?
+        .github_enabled
+        .into();
+    Ok(value)
 }
 #[tauri::command]
 pub async fn save_desktop_settings(
@@ -32,6 +38,7 @@ pub async fn save_desktop_settings(
     state: State<'_, Engine>,
     lsp_commands: Value,
     github_hosts: Value,
+    github_enabled: bool,
 ) -> Result<(), String> {
     let commands = serde_json::from_value(lsp_commands)
         .map_err(|e| format!("Invalid language server settings: {e}"))?;
@@ -45,5 +52,16 @@ pub async fn save_desktop_settings(
     config
         .set_desktop_commands(commands, hosts)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::github::Connections { github_enabled }
+        .save(config.file())
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(runtime) = active.as_ref() {
+        runtime.github.enabled.store(
+            github_enabled && runtime.gitlab.is_none(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+    Ok(())
 }
