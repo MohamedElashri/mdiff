@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 type Note = {
   id: number;
@@ -22,16 +22,22 @@ export function GitlabPanel({
   id: string;
   onClose: () => void;
 }) {
+  return <GitlabReview key={id} id={id} onClose={onClose} />;
+}
+function GitlabReview({ id, onClose }: { id: string; onClose: () => void }) {
   const [data, setData] = useState<Data>();
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const mounted = useRef(true);
   const call = <T,>(action: string, payload?: unknown) =>
     invoke<T>("gitlab_action", { id, action, payload: payload ?? null });
   async function load() {
-    setData(await call<Data>("load"));
+    const data = await call<Data>("load");
+    if (mounted.current) setData(data);
   }
   useEffect(() => {
+    mounted.current = true;
     let live = true;
     void call<Data>("load")
       .then((d) => {
@@ -41,6 +47,7 @@ export function GitlabPanel({
         if (live) setError(String(e));
       });
     return () => {
+      mounted.current = false;
       live = false;
     };
   }, [id]);
@@ -54,6 +61,7 @@ export function GitlabPanel({
         skipped?: number;
         published?: number;
       }>(action, payload);
+      if (!mounted.current) return false;
       setStatus(
         action === "export"
           ? `${result.exported} drafts saved; ${result.skipped} stale or previously published threads skipped.`
@@ -64,10 +72,10 @@ export function GitlabPanel({
       await load();
       return true;
     } catch (e) {
-      setError(String(e));
+      if (mounted.current) setError(String(e));
       return false;
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   }
   return (
