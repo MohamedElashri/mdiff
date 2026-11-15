@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Create GitHub pull requests and transfer review comments from an optional desktop GitHub panel.
+
 ## [0.1.3] - 2026-11-06
 
 ### Added
