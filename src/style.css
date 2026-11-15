@@ -633,6 +633,12 @@ body {
 .review-workspace {
   position: relative;
 }
+.review-opening {
+  position: fixed;
+  inset: 38px 0 0;
+  z-index: 70;
+  background: var(--canvas);
+}
 .settings .appearance-grid label {
   display: block;
   font-size: 0.8125rem;

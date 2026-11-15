@@ -3,6 +3,7 @@ import { Dialog, DialogContent } from "../vendor/diffle/src/client/ui/dialog";
 import "./fonts.css";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -95,8 +96,6 @@ function App() {
     opening.current = true;
     setBusy(true);
     setError("");
-    // Unmount the old workspace before switching the native session.
-    setReview(null);
     try {
       const opened = await invoke<{
         root: string;
@@ -113,6 +112,8 @@ function App() {
           tokenHost,
         },
       });
+      // Retain drafts if opening fails; retire the old workspace before rebinding IPC.
+      flushSync(() => setReview(null));
       bindReview(opened.id);
       setDiscussions(request.kind === "gitlab");
       setReview({
@@ -150,6 +151,7 @@ function App() {
   const launchRef = useRef(launch);
   launchRef.current = launch;
   async function choose() {
+    if (opening.current) return;
     try {
       const folder = await open({
         directory: true,
@@ -198,6 +200,7 @@ function App() {
     void launch(path, request, label);
   }
   async function home() {
+    if (opening.current) return;
     setReview(null);
     setError("");
     try {
@@ -335,7 +338,7 @@ function App() {
     };
   }, []);
   return (
-    <div className={`app ${review ? "reviewing" : ""}`}>
+    <div className={`app ${review ? "reviewing" : ""}`} aria-busy={busy}>
       <header className="desktop-chrome">
         <button
           className="brand"
@@ -348,7 +351,7 @@ function App() {
         </button>
         <span className="header-divider" />
         <span className="subtitle">{review ? review.root : "Code review"}</span>
-        <div className="window-actions">
+        <div className="window-actions" inert={busy}>
           {review && (
             <CodeIntelligence
               key={`code-intelligence:${review.id}`}
@@ -383,14 +386,14 @@ function App() {
           </button>
         </div>
       )}
-      {busy ? (
+      {busy && !review ? (
         <main className="loading">
           <LoaderCircle size={28} className="spin" />
           <h2>Opening review…</h2>
           <p>Loading changes.</p>
         </main>
       ) : review ? (
-        <div className="review-workspace">
+        <div className="review-workspace" inert={busy}>
           <div className="review-content">
             <Suspense
               fallback={
@@ -557,6 +560,17 @@ function App() {
             </section>
           </div>
         </main>
+      )}
+      {busy && review && (
+        <div
+          className="loading review-opening"
+          role="status"
+          aria-live="polite"
+        >
+          <LoaderCircle size={28} className="spin" />
+          <h2>Opening review…</h2>
+          <p>Loading changes.</p>
+        </div>
       )}
       {settings && (
         <Dialog open onOpenChange={() => setSettings(false)}>

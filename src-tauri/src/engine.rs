@@ -129,71 +129,82 @@ pub async fn open_review(
         gitlab_host,
     } = options;
     let mut slot = state.0.lock().await;
+    replace_review(&mut slot, async move {
+        let gitlab = match gitlab_url {
+            Some(url) => Some(Arc::new(
+                crate::gitlab::Gitlab::connect(&url, gitlab_token, gitlab_host.as_deref())
+                    .await
+                    .map_err(|e| e.to_string())?,
+            )),
+            None => None,
+        };
+        let path = if let Some(gl) = &gitlab {
+            gl.prepare(
+                app.path()
+                    .app_data_dir()
+                    .map_err(|e| e.to_string())?
+                    .join("repositories"),
+            )
+            .await
+            .map_err(|e| e.to_string())?
+        } else {
+            PathBuf::from(path)
+        };
+        let request = if let Some(gl) = &gitlab {
+            gl.request()
+        } else {
+            request
+        };
+        let result = start(
+            app.path()
+                .app_config_dir()
+                .map_err(|e| e.to_string())?
+                .join("review.json"),
+            path,
+            request,
+            token,
+            token_host,
+            gitlab,
+        )
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+        let (mut runtime, opened) = result;
+        let mut messages = runtime.hub.subscribe();
+        let id = runtime.id.clone();
+        runtime.events = Some(tokio::spawn(async move {
+            loop {
+                let message = match messages.recv().await {
+                    Ok(message) => message,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => "resync".into(),
+                    Err(_) => break,
+                };
+                if app
+                    .emit(
+                        "review-update",
+                        serde_json::json!({"id":id,"message":message}),
+                    )
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        Ok((runtime, opened))
+    })
+    .await
+}
+async fn replace_review(
+    slot: &mut Option<ReviewRuntime>,
+    prepare: impl std::future::Future<Output = Result<(ReviewRuntime, OpenedReview), String>>,
+) -> Result<OpenedReview, String> {
+    let (runtime, opened) = prepare.await?;
     if let Some(previous) = slot.take() {
         previous.close().await;
     }
-    let gitlab = match gitlab_url {
-        Some(url) => Some(Arc::new(
-            crate::gitlab::Gitlab::connect(&url, gitlab_token, gitlab_host.as_deref())
-                .await
-                .map_err(|e| e.to_string())?,
-        )),
-        None => None,
-    };
-    let path = if let Some(gl) = &gitlab {
-        gl.prepare(
-            app.path()
-                .app_data_dir()
-                .map_err(|e| e.to_string())?
-                .join("repositories"),
-        )
-        .await
-        .map_err(|e| e.to_string())?
-    } else {
-        PathBuf::from(path)
-    };
-    let request = if let Some(gl) = &gitlab {
-        gl.request()
-    } else {
-        request
-    };
-    let result = start(
-        app.path()
-            .app_config_dir()
-            .map_err(|e| e.to_string())?
-            .join("review.json"),
-        path,
-        request,
-        token,
-        token_host,
-        gitlab,
-    )
-    .await
-    .map_err(|e| format!("{e:#}"))?;
-    let (mut runtime, opened) = result;
-    let mut messages = runtime.hub.subscribe();
-    let id = runtime.id.clone();
-    runtime.events = Some(tokio::spawn(async move {
-        loop {
-            let message = match messages.recv().await {
-                Ok(message) => message,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => "resync".into(),
-                Err(_) => break,
-            };
-            if app
-                .emit(
-                    "review-update",
-                    serde_json::json!({"id":id,"message":message}),
-                )
-                .is_err()
-            {
-                break;
-            }
-        }
-    }));
     *slot = Some(runtime);
     Ok(opened)
 }
+
 async fn start(
     config_path: PathBuf,
     path: PathBuf,
@@ -575,6 +586,83 @@ mod tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&comments.body).contains("Native review comment"));
         runtime.close().await;
+    }
+    #[tokio::test]
+    async fn failed_repository_open_preserves_the_active_review_and_its_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(dir.path().join("example.txt"), "keep this review\n").unwrap();
+        let config = dir.path().join(".git/review-settings.json");
+        let mut slot = None;
+        let opened = replace_review(&mut slot, async {
+            start(
+                config.clone(),
+                dir.path().into(),
+                EnterRequest::Working,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+        let router = slot.as_ref().unwrap().router.clone();
+        let added = dispatch(
+            router.clone(),
+            "POST",
+            "/api/threads",
+            Some(serde_json::json!({"path":"example.txt","body":"Keep this comment"}).to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(added.status, 201);
+        let failed = replace_review(&mut slot, async {
+            start(
+                config.clone(),
+                dir.path().join("not-a-repository"),
+                EnterRequest::Working,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+        .await;
+        assert!(failed.is_err());
+        let runtime = slot
+            .as_ref()
+            .expect("A failed open must keep the previous runtime");
+        assert_eq!(runtime.id, opened.id);
+        let comments = dispatch(runtime.router.clone(), "GET", "/api/threads", None)
+            .await
+            .unwrap();
+        assert_eq!(comments.status, 200);
+        assert!(String::from_utf8_lossy(&comments.body).contains("Keep this comment"));
+        let next = replace_review(&mut slot, async {
+            start(
+                config,
+                dir.path().into(),
+                EnterRequest::Working,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+        assert_ne!(next.id, opened.id);
+        assert!(slot.as_ref().unwrap().lsp.is_none());
+        slot.take().unwrap().close().await;
     }
 }
 
