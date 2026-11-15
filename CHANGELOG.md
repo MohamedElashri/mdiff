@@ -4,9 +4,17 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-15
+
 ### Added
 
-- Create GitHub pull requests and transfer review comments from an optional desktop GitHub panel.
+- Optional GitHub PR creation and comment transfer.
+
+### Fixed
+
+- Keep reviews and unsent comments after failed opens.
+- Fix stale GitLab discussions, editor actions, and duplicate toolbar controls.
+- Keep GitLab credentials out of Git traces.
 
 ## [0.1.3] - 2026-11-06
 
