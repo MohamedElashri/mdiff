@@ -394,6 +394,9 @@ body {
   min-width: 0;
   height: 100%;
 }
+.review-content > .review-workspace {
+  height: 100%;
+}
 .gitlab-panel {
   width: 350px;
   flex-shrink: 0;
@@ -427,6 +430,91 @@ body {
 }
 .gitlab-panel small {
   color: var(--secondary);
+}
+.github-panel {
+  width: 370px;
+  position: absolute;
+  right: 0;
+  top: 40px;
+  bottom: 0;
+  z-index: 35;
+  box-shadow: -8px 0 24px #0003;
+}
+.github-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.github-heading h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.github-panel section {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 12px;
+}
+.github-panel a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.github-panel a svg {
+  display: inline;
+  vertical-align: middle;
+}
+.github-pr-link {
+  display: block;
+  margin-bottom: 5px;
+}
+.github-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  margin: 12px 0;
+}
+.github-panel .checkbox {
+  flex-direction: row;
+  align-items: center;
+}
+.github-panel input:not([type="checkbox"]) {
+  width: 100%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 8px;
+  color: var(--ink);
+}
+.github-panel textarea {
+  color: var(--ink);
+  border-radius: 5px;
+  min-height: 120px;
+}
+.github-panel fieldset,
+.settings fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.github-panel fieldset:disabled,
+.settings fieldset:disabled {
+  opacity: 0.6;
+}
+.github-panel .github-hint {
+  padding: 8px;
+  background: var(--hover);
+  border-radius: 5px;
+}
+.github-panel .github-result {
+  margin-top: 12px;
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+}
+.github-panel .github-error {
+  color: var(--danger, #c44);
 }
 
 .reviewing .desktop-chrome {

@@ -26,6 +26,7 @@ pub struct ReviewRuntime {
     pub(crate) router: axum::Router,
     pub(crate) id: String,
     pub(crate) gitlab: Option<Arc<crate::gitlab::Gitlab>>,
+    pub(crate) github: Arc<crate::github::Integration>,
     events: Option<tokio::task::JoinHandle<()>>,
     hub: Arc<Hub>,
     session: Arc<Session>,
@@ -43,13 +44,16 @@ impl ReviewRuntime {
                 self.config.get().lsp_commands,
                 vec![],
             );
-            self.router = desktop_router(ApiDeps {
-                session: self.session.clone(),
-                config: self.config.clone(),
-                extra_auto_viewed: vec![],
-                hub: self.hub.clone(),
-                lsp: Some(pool.clone()),
-            });
+            self.router = crate::github::router(
+                desktop_router(ApiDeps {
+                    session: self.session.clone(),
+                    config: self.config.clone(),
+                    extra_auto_viewed: vec![],
+                    hub: self.hub.clone(),
+                    lsp: Some(pool.clone()),
+                }),
+                &self.github,
+            );
             self.lsp = Some(pool.clone());
             tokio::spawn(pool.track(&snapshot));
         }
@@ -64,6 +68,9 @@ impl ReviewRuntime {
     }
 
     async fn close(mut self) {
+        self.github
+            .enabled
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.hub.close();
         if let Some(events) = self.events.take() {
             events.abort();
@@ -92,6 +99,7 @@ impl Engine {
 pub struct OpenedReview {
     pub id: String,
     root: String,
+    github_enabled: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -196,7 +204,26 @@ async fn start(
 ) -> anyhow::Result<(ReviewRuntime, OpenedReview)> {
     let config = Arc::new(UserConfigStore::open(config_path).await);
     let settings = config.get();
+    let github_enabled = Arc::new(std::sync::atomic::AtomicBool::new(
+        crate::github::Connections::load(config.file())
+            .await?
+            .github_enabled
+            && gitlab.is_none(),
+    ));
+    if !github_enabled.load(std::sync::atomic::Ordering::SeqCst)
+        && matches!(request, EnterRequest::Pr { .. })
+    {
+        anyhow::bail!("GitHub integration is disabled. Enable it in Preferences → Connections to open a pull request.");
+    }
     let opened = if gitlab.is_some() {
+        diffle::cli::repository::Opened {
+            repo: Arc::new(GitRepo::open(&path).await?),
+            github: Github::tokenless(),
+            token_source: None,
+            clone: None,
+        }
+    } else if !github_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+        // Do not resolve environment credentials or invoke gh when the integration is off.
         diffle::cli::repository::Opened {
             repo: Arc::new(GitRepo::open(&path).await?),
             github: Github::tokenless(),
@@ -220,13 +247,16 @@ async fn start(
     } else {
         open_review_repository(&mut request, &path, &settings.github_hosts).await?
     };
+    let github = crate::github::guarded(opened.github, github_enabled.clone());
+    let integration =
+        crate::github::Integration::new(github.clone(), opened.repo.clone(), github_enabled);
     let hub = Hub::new();
     let session = Session::new(
         opened.repo.clone(),
         hub.clone(),
         SessionOptions {
             watch: true,
-            github: opened.github,
+            github,
             context: settings.context_lines.clamp(0, 10000) as u32,
             follow_refs: settings.follow_refs,
         },
@@ -235,13 +265,16 @@ async fn start(
     // downloaded MRs. Only the session-scoped trust action below can start them.
     let pool = None;
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let router = desktop_router(ApiDeps {
-        session: session.clone(),
-        config: config.clone(),
-        extra_auto_viewed: vec![],
-        hub: hub.clone(),
-        lsp: pool.clone(),
-    });
+    let router = crate::github::router(
+        desktop_router(ApiDeps {
+            session: session.clone(),
+            config: config.clone(),
+            extra_auto_viewed: vec![],
+            hub: hub.clone(),
+            lsp: pool.clone(),
+        }),
+        &integration,
+    );
     let runtime = ReviewRuntime {
         config: config.clone(),
         router,
@@ -249,6 +282,7 @@ async fn start(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .to_string(),
         gitlab,
+        github: integration,
         events: None,
         hub,
         session: session.clone(),
@@ -266,7 +300,18 @@ async fn start(
         Ok(()) => {
             let root = runtime.repo.root.to_string_lossy().into_owned();
             let id = runtime.id.clone();
-            Ok((runtime, OpenedReview { id, root }))
+            let github_enabled = runtime
+                .github
+                .enabled
+                .load(std::sync::atomic::Ordering::SeqCst);
+            Ok((
+                runtime,
+                OpenedReview {
+                    id,
+                    root,
+                    github_enabled,
+                },
+            ))
         }
         Err(e) => {
             runtime.close().await;
@@ -297,6 +342,78 @@ pub async fn enable_review_lsp(
 mod tests {
     use super::*;
     use crate::transport::dispatch;
+    #[tokio::test]
+    async fn disabled_github_ignores_tokens_and_survives_lsp_router_rebuild_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(dir.path().join("example.txt"), "local review\n").unwrap();
+        let config = dir.path().join("settings/review.json");
+        crate::github::Connections {
+            github_enabled: false,
+        }
+        .save(&config)
+        .await
+        .unwrap();
+        let (mut runtime, opened) = start(
+            config.clone(),
+            dir.path().into(),
+            EnterRequest::Working,
+            Some("must-not-be-used".into()),
+            Some("unrelated.example".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!opened.github_enabled);
+        assert!(runtime.lsp.is_none());
+        runtime.enable_lsp().await.unwrap();
+        assert_eq!(
+            dispatch(runtime.router.clone(), "GET", "/api/github", None)
+                .await
+                .unwrap()
+                .status,
+            403
+        );
+        assert_eq!(
+            dispatch(runtime.router.clone(), "GET", "/api/snapshot", None)
+                .await
+                .unwrap()
+                .status,
+            200
+        );
+        runtime.close().await;
+        let (runtime, opened) = start(
+            config.clone(),
+            dir.path().into(),
+            EnterRequest::Working,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!opened.github_enabled);
+        runtime.close().await;
+        let attempt = start(
+            config,
+            dir.path().into(),
+            EnterRequest::Pr {
+                pr: Some("https://github.com/user/project/pull/7".into()),
+            },
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(attempt, Err(e) if e.to_string().contains("GitHub integration is disabled"))
+        );
+    }
     #[tokio::test]
     async fn language_servers_require_trust_again_for_each_opened_review() {
         let dir = tempfile::tempdir().unwrap();
@@ -464,3 +581,7 @@ mod tests {
 #[cfg(test)]
 #[path = "desktop_performance.rs"]
 mod desktop_performance;
+
+#[cfg(test)]
+#[path = "github_live.rs"]
+mod github_live;
