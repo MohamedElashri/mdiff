@@ -631,6 +631,11 @@ export const useStore = create<ReviewState>((set, get) => {
   };
   /** Aborts every full-file request of the current transition; replaced by `begin`. */
   let aborter = new AbortController();
+  let searchRequest: AbortController | undefined;
+  const cancelSearch = () => {
+    searchRequest?.abort();
+    searchRequest = undefined;
+  };
   /**
    * Full-file loads of the current transition, in flight or finished, keyed by side and path.
    * Hydration, the file view, comment anchors and the viewer's context expansion all read
@@ -640,6 +645,7 @@ export const useStore = create<ReviewState>((set, get) => {
   const loads = new Map<string, Promise<FileResponse>>();
   const patchLoads = new Map<string, Promise<void>>();
   const begin = () => {
+    cancelSearch();
     aborter.abort();
     aborter = new AbortController();
     loads.clear();
@@ -664,6 +670,19 @@ export const useStore = create<ReviewState>((set, get) => {
     return { start: () => ++n, latest: (t: number) => t === n };
   };
   const searchSeq = sequence();
+  const invalidateSearch = () => {
+    cancelSearch();
+    return searchSeq.start();
+  };
+  const startSearch = () => {
+    const ticket = invalidateSearch();
+    const controller = new AbortController();
+    searchRequest = controller;
+    return { ticket, controller };
+  };
+  const finishSearch = (controller: AbortController) => {
+    if (searchRequest === controller) searchRequest = undefined;
+  };
   const threadsSeq = sequence();
   const viewedSeq = sequence();
   const configSeq = sequence();
@@ -1795,7 +1814,7 @@ export const useStore = create<ReviewState>((set, get) => {
       truncated: false,
     },
     openSearch(scope, prefill) {
-      searchSeq.start();
+      invalidateSearch();
       set((s) => {
         const nextScope = scope ?? s.search.scope;
         const path = nextScope === 'file' ? currentPath(s) : null;
@@ -1879,7 +1898,7 @@ export const useStore = create<ReviewState>((set, get) => {
     },
     closeSearch() {
       // Escape cancels a search in flight: its matches would move the cursor for a bar no longer shown.
-      searchSeq.start();
+      invalidateSearch();
       set((s) => ({
         search: {
           ...s.search,
@@ -1895,7 +1914,7 @@ export const useStore = create<ReviewState>((set, get) => {
     },
     async runSearch(query) {
       const g = generation;
-      const t = searchSeq.start();
+      const { ticket, controller } = startSearch();
       // Keep edits and option changes tied to the header owning the search; `/` again re-pins.
       const path = get().search.scope === 'file' ? get().search.path : null;
       set((s) => ({
@@ -1923,9 +1942,10 @@ export const useStore = create<ReviewState>((set, get) => {
           regex,
           scope,
           content: content[scope],
+          signal: controller.signal,
           ...(path ? { path } : {}),
         });
-        if (!searchOwned(g, t)) return;
+        if (!searchOwned(g, ticket)) return;
         set((s) => ({
           search: {
             ...s.search,
@@ -1943,9 +1963,11 @@ export const useStore = create<ReviewState>((set, get) => {
               : `No matches for “${query}” in ${content[scope] === 'diff' ? 'the diff + context' : 'changed files'}`,
           );
       } catch (e) {
-        if (!searchOwned(g, t)) return;
+        if (!searchOwned(g, ticket)) return;
         set((s) => ({ search: { ...s.search, loading: false } }));
         report('Search', e);
+      } finally {
+        finishSearch(controller);
       }
     },
     moveMatch(delta) {
@@ -1962,7 +1984,7 @@ export const useStore = create<ReviewState>((set, get) => {
       const word = lspTarget.get()?.text;
       if (!word) return get().flash('Focus a word first (w / b, or hover one)');
       const g = generation;
-      const t = searchSeq.start();
+      const { ticket, controller } = startSearch();
       set((s) => ({
         search: {
           ...s.search,
@@ -1981,8 +2003,9 @@ export const useStore = create<ReviewState>((set, get) => {
           word: true,
           scope: 'repo',
           content: 'full',
+          signal: controller.signal,
         });
-        if (!searchOwned(g, t)) return;
+        if (!searchOwned(g, ticket)) return;
         const matches = res.matches;
         // Start from the occurrence just past the cursor in the requested direction, wrapping like vim.
         const order = new Map(get().snapshot?.tree.map((p, i) => [p, i]) ?? []);
@@ -2006,9 +2029,11 @@ export const useStore = create<ReviewState>((set, get) => {
         if (m) void jumpToLine(m.path, m.line);
         else get().flash(`No other occurrence of “${word}”`);
       } catch (e) {
-        if (!searchOwned(g, t)) return;
+        if (!searchOwned(g, ticket)) return;
         set((s) => ({ search: { ...s.search, loading: false } }));
         report('Search', e);
+      } finally {
+        finishSearch(controller);
       }
     },
     lsp: { enabled: false, servers: [], missing: [] },

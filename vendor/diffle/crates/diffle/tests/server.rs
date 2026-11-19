@@ -388,6 +388,35 @@ async fn searches_diff_hunks_with_context_or_full_changed_files_independently_of
 }
 
 #[tokio::test]
+async fn searches_large_diffs_without_widening_the_path_allowlist() {
+    let s = TestServer::start().await;
+    let dir = "long".repeat(54);
+    for i in 0..120 {
+        s.repo.write(&format!("{dir}/file-{i}.txt"), "original\n");
+    }
+    s.repo.write("literal[hit].txt", "needle old\n");
+    s.repo.write("unchanged.txt", "needle unchanged\n");
+    s.repo.commit("large search fixture");
+    for i in 0..120 {
+        s.repo.write(&format!("{dir}/file-{i}.txt"), "modified\n");
+    }
+    s.repo.write("literal[hit].txt", "needle new\n");
+    s.session.refresh().await;
+
+    let qs = "/api/search?q=NEEDLE&i=1&scope=diff&content=both";
+    let response = s.get(qs).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let results = response.json();
+    let matches = results["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 2);
+    assert!(matches.iter().all(|m| m["path"] == "literal[hit].txt"));
+    assert_eq!(matches[0]["side"], "old");
+    assert_eq!(matches[1]["side"], "new");
+    assert_eq!(search_paths(&s, "q=needle&scope=diff&content=full").await, ["literal[hit].txt"]);
+    s.close().await;
+}
+
+#[tokio::test]
 async fn rejects_oversized_bodies_with_413() {
     let s = TestServer::start().await;
     let before = serde_json::to_value(s.config.get()).unwrap();
