@@ -1615,7 +1615,12 @@ describe('symbol navigation', () => {
 
     await useStore.getState().searchWord(1);
     await new Promise((r) => setTimeout(r, 0));
-    expect(api.search).toHaveBeenCalledWith('foo', { word: true, scope: 'repo', content: 'full' });
+    expect(api.search).toHaveBeenCalledWith('foo', {
+      word: true,
+      scope: 'repo',
+      content: 'full',
+      signal: expect.any(AbortSignal),
+    });
     let s = useStore.getState();
     expect(s.search.kind).toBe('word');
     expect(s.search.direction).toBe(1);
@@ -1655,6 +1660,7 @@ describe('symbol navigation', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(api.search).toHaveBeenCalledWith('y', {
       ignoreCase: true,
+      signal: expect.any(AbortSignal),
       regex: false,
       scope: 'file',
       content: 'diff',
@@ -1671,6 +1677,7 @@ describe('symbol navigation', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(api.search).toHaveBeenLastCalledWith('y', {
       ignoreCase: true,
+      signal: expect.any(AbortSignal),
       regex: false,
       scope: 'file',
       content: 'full',
@@ -1682,6 +1689,7 @@ describe('symbol navigation', () => {
     await useStore.getState().runSearch('y');
     expect(api.search).toHaveBeenLastCalledWith('y', {
       ignoreCase: true,
+      signal: expect.any(AbortSignal),
       regex: false,
       scope: 'diff',
       content: 'diff',
@@ -1690,6 +1698,7 @@ describe('symbol navigation', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(api.search).toHaveBeenLastCalledWith('y', {
       ignoreCase: true,
+      signal: expect.any(AbortSignal),
       regex: false,
       scope: 'diff',
       content: 'full',
@@ -1811,6 +1820,7 @@ describe('request ownership', () => {
     const run = useStore.getState().runSearch('foo');
     expect(useStore.getState().search.loading).toBe(true);
     useStore.getState().closeSearch();
+    expect(api.search.mock.lastCall?.[1]?.signal?.aborted).toBe(true);
     slow.resolve(hit('b.py', 2));
     await run;
     await new Promise((r) => setTimeout(r, 0));
@@ -1827,7 +1837,10 @@ describe('request ownership', () => {
     const second = deferred<SearchResponse>();
     api.search.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const a = useStore.getState().runSearch('foo');
+    const aSignal = api.search.mock.lastCall?.[1]?.signal;
     const b = useStore.getState().runSearch('bar');
+    expect(aSignal?.aborted).toBe(true);
+    expect(api.search.mock.lastCall?.[1]?.signal?.aborted).toBe(false);
     second.resolve(hit('b.py', 2));
     await b;
     await new Promise((r) => setTimeout(r, 0));
@@ -1866,9 +1879,11 @@ describe('request ownership', () => {
     const slow = deferred<SearchResponse>();
     api.search.mockReturnValueOnce(slow.promise);
     const run = useStore.getState().searchWord(1);
+    const signal = api.search.mock.lastCall?.[1]?.signal;
     lspTarget.focus(null);
     api.enter.mockResolvedValueOnce(snap(2, 'pr:abc', ['b.py']));
     await useStore.getState().enter({ kind: 'pr' });
+    expect(signal?.aborted).toBe(true);
     slow.resolve(hit('b.py', 2));
     await run;
     await new Promise((r) => setTimeout(r, 0));

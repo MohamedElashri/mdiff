@@ -3,7 +3,18 @@ use discovery::Locations;
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
 
 fn executable(path: &Path, script: &str) {
-    fs::write(path, script).unwrap();
+    // A child writes the fixture so concurrent launches cannot inherit its writable handle.
+    let status = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "printf '%s' \"$1\" > \"$2\"",
+            "write-test-editor",
+            script,
+        ])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success());
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 fn locations(root: &Path) -> Locations {

@@ -97,8 +97,20 @@ impl GitRepo {
     }
 
     pub async fn clone_with_auth(url: &str, dir: &Path, auth: Option<auth::GitAuth>) -> Result<Self> {
+        Self::clone_repository(url, dir, auth, &[]).await
+    }
+
+    /// Keep the default checkout and its history. PR resolution fetches the base and head explicitly.
+    pub(crate) async fn clone_for_pr(url: &str, dir: &Path, auth: Option<auth::GitAuth>) -> Result<Self> {
+        Self::clone_repository(url, dir, auth, &["--single-branch"]).await
+    }
+
+    async fn clone_repository(url: &str, dir: &Path, auth: Option<auth::GitAuth>, options: &[&str]) -> Result<Self> {
         let opts = ExecOptions { env: &[("GIT_TERMINAL_PROMPT", "0")], auth: auth.as_ref(), ..Default::default() };
-        exec_git(dir, &["clone", "--quiet", "--no-tags", "--", url, "."], opts).await?;
+        let mut args = vec!["clone", "--quiet", "--no-tags"];
+        args.extend_from_slice(options);
+        args.extend(["--", url, "."]);
+        exec_git(dir, &args, opts).await?;
         Ok(Self::open(dir).await?.with_git_auth(auth))
     }
 
