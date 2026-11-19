@@ -1,7 +1,7 @@
 //! Indexed review storage. Legacy JSON is read once and retained unchanged for recovery.
 use super::anchor::anchor_path;
 use super::store::{SetData, StoreFile};
-use crate::protocol::CommentThread;
+use crate::protocol::{CommentThread, ViewedEntry};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
@@ -54,13 +54,14 @@ pub(super) fn connect(file: &Path) -> anyhow::Result<Connection> {
     Ok(db)
 }
 
-pub(super) fn read(db: &Connection, key: &str) -> anyhow::Result<SetData> {
+pub(super) fn viewed(db: &Connection, key: &str) -> anyhow::Result<Vec<ViewedEntry>> {
     let viewed: Option<String> =
         db.query_row("SELECT viewed FROM reviews WHERE key=?1", [key], |r| r.get(0)).optional()?;
-    let mut set = SetData::default();
-    if let Some(viewed) = viewed {
-        set.viewed = serde_json::from_str(&viewed)?;
-    }
+    Ok(viewed.as_deref().map(serde_json::from_str).transpose()?.unwrap_or_default())
+}
+
+pub(super) fn read(db: &Connection, key: &str) -> anyhow::Result<SetData> {
+    let mut set = SetData { viewed: viewed(db, key)?, ..SetData::default() };
     let mut stmt = db.prepare("SELECT id,data,context FROM threads WHERE review=?1 ORDER BY rowid")?;
     for row in
         stmt.query_map([key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))?
@@ -74,8 +75,13 @@ pub(super) fn read(db: &Connection, key: &str) -> anyhow::Result<SetData> {
     Ok(set)
 }
 
+pub(super) fn write_viewed(db: &Connection, key: &str, viewed: &[ViewedEntry]) -> anyhow::Result<()> {
+    db.execute("INSERT INTO reviews(key,viewed) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET viewed=excluded.viewed WHERE viewed!=excluded.viewed", params![key,serde_json::to_string(viewed)?])?;
+    Ok(())
+}
+
 pub(super) fn write(db: &Connection, key: &str, set: &SetData) -> anyhow::Result<()> {
-    db.execute("INSERT INTO reviews(key,viewed) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET viewed=excluded.viewed WHERE viewed!=excluded.viewed", params![key,serde_json::to_string(&set.viewed)?])?;
+    write_viewed(db, key, &set.viewed)?;
     let ids: std::collections::HashSet<&str> = set.threads.iter().map(|t| t.id.as_str()).collect();
     let previous: Vec<String> = db
         .prepare("SELECT id FROM threads WHERE review=?1")?
