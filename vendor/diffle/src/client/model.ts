@@ -50,6 +50,11 @@ export const PATCH_BATCH_FILES = 12;
 export const PATCH_BATCH_LINES = 4000;
 /** A diff past this many changed lines is not loaded until asked for: parsing it would stall the review. */
 export const OVERSIZED_LINES = 10_000;
+/** Large reviews initially need only enough patches to fill the pane and its immediate surroundings. */
+export const PATCH_WINDOW_FILES = 24;
+export function usesViewportPatches(snapshot: Snapshot | null): boolean {
+  return (snapshot?.changed.length ?? 0) > 120;
+}
 
 export const linesOf = (f: ChangedFile): number => f.additions + f.deletions;
 
