@@ -560,6 +560,28 @@ describe('client transitions', () => {
     api.patch.mockReset();
   });
 
+  it('shares an in-flight oversized patch request and lets a failed patch be retried', async () => {
+    const path = 'huge.txt';
+    const changed = [file({ path, additions: OVERSIZED_LINES + 1 })];
+    api.snapshot.mockResolvedValueOnce({ ...snap(1, 'working', [path]), changed });
+    await useStore.getState().refreshSnapshot();
+
+    const pending = deferred<string>();
+    api.patchPages.mockReturnValueOnce(pending.promise);
+    const first = useStore.getState().loadPatch(path);
+    const second = useStore.getState().loadPatch(path);
+    expect(api.patchPages).toHaveBeenCalledTimes(1);
+    pending.reject(new Error('temporary failure'));
+    await Promise.all([first, second]);
+    expect(useStore.getState().loaded[path]).toEqual({ kind: 'error', message: 'Error: temporary failure' });
+
+    api.patchPages.mockResolvedValueOnce(patchesFor([path]));
+    api.file.mockResolvedValue({ contents: 'y\n', binary: false });
+    await useStore.getState().loadPatch(path);
+    expect(api.patchPages).toHaveBeenCalledTimes(2);
+    expect(useStore.getState().loaded[path]?.kind).toBe('diff');
+  });
+
   it('hydration and the file view opening at once share one request per side; a failed load is retried by the next consumer', async () => {
     const changed = [file({ path: 'a.txt', blob: 'b1' })];
     api.patch.mockResolvedValue('diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-x\n+y\n');

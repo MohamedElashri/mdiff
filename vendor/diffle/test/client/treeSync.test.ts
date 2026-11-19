@@ -2,11 +2,11 @@ import type { FileTreeDirectoryHandle } from '@pierre/trees';
 import { FileTree } from '@pierre/trees';
 import { describe, expect, it } from 'vitest';
 import type { ReviewState } from '@/client/store.js';
-import type { ChangedFile } from '@/shared/protocol.js';
+import type { ChangedFile, ViewedEntry } from '@/shared/protocol.js';
 import { DEFAULT_USER_CONFIG } from '@/shared/protocol.js';
 import type { SyncKeys } from '@/client/tree/sync.js';
 import {
-  decorationKey,
+  treeDecorations,
   directoriesOf,
   expandedAfterReset,
   statusKey,
@@ -85,6 +85,8 @@ describe('expandedAfterReset', () => {
 
 describe('row keys', () => {
   const state = { viewed: [], config: DEFAULT_USER_CONFIG };
+  const decorationKey = (s: { viewed: ViewedEntry[]; config: ReviewState['config'] }, changed: ChangedFile[]) =>
+    treeDecorations(s, changed).key;
 
   it('statusKey hashes the mapped lane, so it moves exactly when setGitStatus would redraw', () => {
     // The tree folds M/T/U into 'modified' and R/C into 'renamed'; a key over the raw status
@@ -127,6 +129,25 @@ describe('row keys', () => {
     );
     expect(decorationKey(state, [file('x.ts', { deletions: 3 }), file('y.lock')])).not.toBe(base);
   });
+
+  it('indexes each ancestor with current viewed marks, including auto-viewed files', () => {
+    const changed = [file('src/a.ts'), file('src/nested/b.ts'), file('src/nested/c.lock'), file('src2/d.ts')];
+    const result = treeDecorations(
+      {
+        viewed: [
+          { path: 'src/a.ts', blob: 'b1', viewed: true },
+          { path: 'src/nested/b.ts', blob: 'old', viewed: true },
+        ],
+        config: { ...DEFAULT_USER_CONFIG, autoViewed: ['*.lock'] },
+      },
+      changed,
+    );
+    expect(result.viewedCount).toBe(2);
+    expect(result.directories.get('src/')).toEqual({ total: 3, viewed: 2 });
+    expect(result.directories.get('src/nested/')).toEqual({ total: 2, viewed: 1 });
+    expect(result.directories.get('src2/')).toEqual({ total: 1, viewed: 0 });
+    expect(result.files.get('src/nested/b.ts')).toBe('restale');
+  });
 });
 
 describe('syncStep', () => {
@@ -134,7 +155,7 @@ describe('syncStep', () => {
   const keysOf = (changed: ChangedFile[], s = state): SyncKeys => ({
     paths: changed.map((f) => f.path).join('\n'),
     status: statusKey(changed),
-    decoration: decorationKey(s, changed),
+    decoration: treeDecorations(s, changed).key,
   });
 
   it('does nothing before the first snapshot and for an equal one built from fresh arrays', () => {

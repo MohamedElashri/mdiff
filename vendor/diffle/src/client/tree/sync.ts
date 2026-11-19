@@ -1,5 +1,5 @@
 import type { FileTree, FileTreeDirectoryHandle, GitStatusEntry } from '@pierre/trees';
-import type { ChangedFile } from '@/shared/protocol.js';
+import type { ChangedFile, ViewedState } from '@/shared/protocol.js';
 import type { ReviewState } from '@/client/store.js';
 import { viewedState } from '@/client/model.js';
 
@@ -49,14 +49,32 @@ export function statusKey(changed: readonly ChangedFile[]): string {
 }
 
 /**
- * Signature of everything the decoration lane shows (counts, viewed marks). Rows read live
- * state when drawn, so the tree only needs a redraw when this changes; a viewed-list refresh
- * or a config save that leaves the marks alone must not redraw the tree.
+ * Index the decoration lane once per change list or viewed state. Drawing a directory row
+ * then reads its totals directly, even while scrolling through the full repository.
+ * The key lets a refresh with identical marks skip a tree redraw.
  */
-export function decorationKey(state: Pick<ReviewState, 'viewed' | 'config'>, changed: readonly ChangedFile[]): string {
-  return changed
-    .map((f) => `${f.path}\0${f.additions}\0${f.deletions}\0${f.binary ? 1 : 0}\0${viewedState(state, f)}`)
-    .join('\n');
+export function treeDecorations(state: Pick<ReviewState, 'viewed' | 'config'>, changed: readonly ChangedFile[]) {
+  const files = new Map<string, ViewedState>();
+  const directories = new Map<string, { total: number; viewed: number }>();
+  const keys: string[] = [];
+  let viewedCount = 0;
+  for (const file of changed) {
+    const { path, additions, deletions, binary } = file;
+    const mark = viewedState(state, file);
+    const viewed = Number(mark === 'viewed');
+    files.set(path, mark);
+    keys.push(`${path}\0${additions}\0${deletions}\0${binary ? 1 : 0}\0${mark}`);
+    viewedCount += viewed;
+    for (let slash = path.indexOf('/'); slash !== -1; slash = path.indexOf('/', slash + 1)) {
+      const directory = path.slice(0, slash + 1);
+      const counts = directories.get(directory);
+      if (counts) {
+        counts.total++;
+        counts.viewed += viewed;
+      } else directories.set(directory, { total: 1, viewed });
+    }
+  }
+  return { files, directories, viewedCount, key: keys.join('\n') };
 }
 
 /** Content signatures of the three things the tree shows; compared across renders by `syncStep`. */

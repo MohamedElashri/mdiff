@@ -1,5 +1,5 @@
 import { completePatchPrefix } from './patchPages.js';
-import { request, reviewTransport } from './transport.js';
+import { request, reviewTransport, type ReviewResponse } from './transport.js';
 import { z } from 'zod';
 import {
   ConfigUpdateSchema,
@@ -81,7 +81,7 @@ async function text(input: string, init?: RequestInit): Promise<string> {
   return res.text();
 }
 
-async function safeMessage(res: Response): Promise<string> {
+async function safeMessage(res: ReviewResponse): Promise<string> {
   try {
     const result = ApiErrorSchema.safeParse(await res.json());
     return result.success ? result.data.error : res.statusText;

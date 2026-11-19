@@ -98,10 +98,11 @@ fn executable(path: &Path) -> bool {
         .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-pub fn discover(locations: &Locations) -> Vec<InstalledEditor> {
+pub fn discover(locations: &Locations, id: Option<&str>) -> Vec<InstalledEditor> {
     let gio = locations.executable("gio");
     EDITORS
         .iter()
+        .filter(|editor| id.is_none_or(|id| id == editor.id))
         .filter_map(|editor| {
             let app = locations
                 .applications

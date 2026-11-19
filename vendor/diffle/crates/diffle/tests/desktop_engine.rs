@@ -94,6 +94,49 @@ async fn pages_preserve_utf8_reject_mixed_versions_and_have_bounded_payloads() {
 }
 
 #[tokio::test]
+async fn immutable_pages_reuse_the_single_file_cache() {
+    let t = TestRepo::new();
+    t.write("large.txt", "base\n");
+    t.commit("base");
+    t.write("large.txt", "revised content\n".repeat(12_000));
+    t.commit("edit");
+    let repo = Arc::new(t.open().await);
+    let (s, snap) = snapshot(&repo, revspec(&["HEAD~1..HEAD"])).await;
+    let patch = s.patch("large.txt").await.unwrap().unwrap();
+    let (bytes, hits) = repo.patch_cache_stats();
+    let first = s.patch_page("large.txt", snap.version, 0, None).await.unwrap();
+    let next = first["next"].as_u64().unwrap() as usize;
+    let digest = first["digest"].as_str().unwrap();
+    let second = s.patch_page("large.txt", snap.version, next, Some(digest)).await.unwrap();
+    assert_eq!(second["digest"], first["digest"]);
+    assert!(patch.starts_with(first["patch"].as_str().unwrap()));
+    assert!(patch[next..].starts_with(second["patch"].as_str().unwrap()));
+    assert_eq!(repo.patch_cache_stats(), (bytes, hits + 2));
+}
+
+#[tokio::test]
+async fn live_batches_reuse_patches_and_drop_changed_files_on_refresh() {
+    let t = TestRepo::new();
+    let names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
+    for name in names {
+        t.write(name, "base\n");
+    }
+    t.commit("base");
+    for name in names {
+        t.write(name, "batch\n");
+    }
+    let repo = Arc::new(t.open().await);
+    let (s, _) = snapshot(&repo, EnterRequest::Working).await;
+    let batch = s.patch_many(&["d.txt".into(), "e.txt".into()]).await.unwrap();
+    t.write("d.txt", "saved\n");
+    assert!(batch.contains(&s.patch("d.txt").await.unwrap().unwrap()));
+    let dirty = HashSet::from(["d.txt".into()]);
+    assert!(s.refresh_paths(&dirty, 100).await.unwrap().is_some());
+    assert!(s.patch("d.txt").await.unwrap().unwrap().contains("+saved"));
+    assert!(batch.contains(&s.patch("e.txt").await.unwrap().unwrap()));
+}
+
+#[tokio::test]
 async fn invalidation_cancels_obsolete_reads_without_waiting_for_the_job() {
     let t = TestRepo::new();
     t.write("a", "a\n");

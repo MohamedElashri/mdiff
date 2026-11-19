@@ -20,7 +20,7 @@ fn finds_apps_without_cli_and_deduplicates_command_installations() {
     fs::create_dir_all(&app).unwrap();
     fs::write(app.join("Info.plist"), "plist").unwrap();
     executable(&dir.path().join("cursor"), "#!/bin/sh\nexit 0\n");
-    let editors = discover(&locations(dir.path()));
+    let editors = discover(&locations(dir.path()), None);
     assert_eq!(editors.len(), 1);
     assert_eq!(editors[0].id, "cursor");
     assert!(matches!(editors[0].launcher, Launcher::MacApp(_)));
@@ -30,7 +30,7 @@ fn ignores_non_executable_and_broken_commands() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("code"), "not executable").unwrap();
     std::os::unix::fs::symlink(dir.path().join("missing"), dir.path().join("cursor")).unwrap();
-    assert!(discover(&locations(dir.path())).is_empty());
+    assert!(discover(&locations(dir.path()), None).is_empty());
 }
 #[test]
 fn discovers_linux_desktop_entries_without_a_cli_and_ignores_hidden_entries() {
@@ -46,10 +46,12 @@ fn discovers_linux_desktop_entries_without_a_cli_and_ignores_hidden_entries() {
         "[Desktop Entry]\nType=Application\nHidden=true\n",
     )
     .unwrap();
-    let editors = discover(&locations(dir.path()));
+    let editors = discover(&locations(dir.path()), None);
     assert_eq!(editors.len(), 1);
     assert_eq!(editors[0].id, "rustrover");
     assert!(matches!(editors[0].launcher, Launcher::Desktop { .. }));
+    assert!(discover(&locations(dir.path()), Some("vscode")).is_empty());
+    assert_eq!(discover(&locations(dir.path()), Some("rustrover")).len(), 1);
 }
 #[test]
 fn launcher_arguments_preserve_repository_paths() {
@@ -95,13 +97,18 @@ async fn launches_the_actual_folder_as_one_argument_and_reports_failures() {
         name: "VS Code".into(),
         launcher: Launcher::Command(binary.clone()),
     };
-    launch(&editor, &root).await.unwrap();
+    check_launch(&editor, launch(&editor, &root).unwrap())
+        .await
+        .unwrap();
     assert_eq!(
         fs::read_to_string(root.join("launched.txt")).unwrap(),
         format!("{}\n", root.display())
     );
     executable(&binary, "#!/bin/sh\nexit 42\n");
-    assert!(launch(&editor, &root).await.unwrap_err().contains("42"));
+    assert!(check_launch(&editor, launch(&editor, &root).unwrap())
+        .await
+        .unwrap_err()
+        .contains("42"));
     fs::remove_file(binary).unwrap();
-    assert!(launch(&editor, &PathBuf::from("/missing")).await.is_err());
+    assert!(launch(&editor, &PathBuf::from("/missing")).is_err());
 }

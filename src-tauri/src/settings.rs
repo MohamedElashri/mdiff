@@ -4,7 +4,17 @@ use std::sync::Arc;
 use tauri::{Manager, State};
 async fn store(
     app: &tauri::AppHandle,
+    state: &Engine,
 ) -> Result<Arc<diffle::user_config::UserConfigStore>, String> {
+    let config = state
+        .active
+        .lock()
+        .await
+        .as_ref()
+        .map(|runtime| runtime.config.clone());
+    if let Some(config) = config {
+        return Ok(config);
+    }
     let path = app
         .path()
         .app_config_dir()
@@ -19,11 +29,7 @@ pub async fn desktop_settings(
     app: tauri::AppHandle,
     state: State<'_, Engine>,
 ) -> Result<Value, String> {
-    let active = state.0.lock().await;
-    let config = match active.as_ref() {
-        Some(runtime) => runtime.config.clone(),
-        None => store(&app).await?,
-    };
+    let config = store(&app, &state).await?;
     let mut value = serde_json::to_value(config.get()).map_err(|e| e.to_string())?;
     value["githubEnabled"] = crate::github::Connections::load(config.file())
         .await
@@ -44,11 +50,8 @@ pub async fn save_desktop_settings(
         .map_err(|e| format!("Invalid language server settings: {e}"))?;
     let hosts =
         serde_json::from_value(github_hosts).map_err(|e| format!("Invalid GitHub hosts: {e}"))?;
-    let active = state.0.lock().await;
-    let config = match active.as_ref() {
-        Some(runtime) => runtime.config.clone(),
-        None => store(&app).await?,
-    };
+    let _transition = state.lifecycle.lock().await;
+    let config = store(&app, &state).await?;
     config
         .set_desktop_commands(commands, hosts)
         .await
@@ -57,7 +60,7 @@ pub async fn save_desktop_settings(
         .save(config.file())
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(runtime) = active.as_ref() {
+    if let Some(runtime) = state.active.lock().await.as_ref() {
         runtime.github.enabled.store(
             github_enabled && runtime.gitlab.is_none(),
             std::sync::atomic::Ordering::SeqCst,

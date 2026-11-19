@@ -6,8 +6,9 @@ struct Line {
     old: Option<u64>,
     new: Option<u64>,
 }
-fn at(patch: &str, side: &str, wanted: u64) -> Option<Line> {
+fn range_at(patch: &str, side: &str, first: u64, last: u64) -> Option<(Line, Line)> {
     let (mut old, mut new) = (0, 0);
+    let (mut start, mut end) = (None, None);
     let mut hunk = false;
     for line in patch.lines() {
         if line.starts_with("@@ ") {
@@ -60,18 +61,21 @@ fn at(patch: &str, side: &str, wanted: u64) -> Option<Line> {
             }
             _ => continue,
         };
-        if (if side == "old" { pos.old } else { pos.new }) == Some(wanted) {
-            return Some(pos);
+        let line = if side == "old" { pos.old } else { pos.new };
+        if line == Some(first) {
+            start.get_or_insert(pos);
+        }
+        if line == Some(last) {
+            end.get_or_insert(pos);
+        }
+        if let (Some(start), Some(end)) = (start, end) {
+            return Some((start, end));
         }
     }
     None
 }
-fn range_line(line: Line, path: &str) -> Value {
-    let hash = Sha1::digest(path)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    let mut value = json!({"line_code":format!("{hash}_{}_{}",line.old.unwrap_or(0),line.new.unwrap_or(0)),"type":if line.old.is_none(){"new"}else{"old"}});
+fn range_line(line: Line, path_hash: &str) -> Value {
+    let mut value = json!({"line_code":format!("{path_hash}_{}_{}",line.old.unwrap_or(0),line.new.unwrap_or(0)),"type":if line.old.is_none(){"new"}else{"old"}});
     if let Some(n) = line.old {
         value["old_line"] = n.into();
     }
@@ -80,9 +84,8 @@ fn range_line(line: Line, path: &str) -> Value {
     }
     value
 }
-pub fn position(anchor: &Value, changed: &Value, refs: &Value, patch: &str) -> Option<Value> {
+pub fn position(anchor: &Value, file: &Value, refs: &Value, patch: &str) -> Option<Value> {
     let path = anchor["path"].as_str()?;
-    let file = changed.as_array()?.iter().find(|f| f["path"] == path)?;
     let mut pos = refs.clone();
     pos["old_path"] = file["oldPath"].as_str().unwrap_or(path).into();
     pos["new_path"] = path.into();
@@ -91,8 +94,9 @@ pub fn position(anchor: &Value, changed: &Value, refs: &Value, patch: &str) -> O
         return Some(pos);
     }
     let side = anchor["side"].as_str()?;
-    let start = at(patch, side, anchor["startLine"].as_u64()?)?;
-    let end = at(patch, side, anchor["endLine"].as_u64()?)?;
+    let first = anchor["startLine"].as_u64()?;
+    let last = anchor["endLine"].as_u64()?;
+    let (start, end) = range_at(patch, side, first, last)?;
     pos["position_type"] = "text".into();
     if let Some(n) = end.old {
         pos["old_line"] = n.into();
@@ -100,8 +104,13 @@ pub fn position(anchor: &Value, changed: &Value, refs: &Value, patch: &str) -> O
     if let Some(n) = end.new {
         pos["new_line"] = n.into();
     }
-    if anchor["startLine"] != anchor["endLine"] {
-        pos["line_range"] = json!({"start":range_line(start,path),"end":range_line(end,path)});
+    if first != last {
+        let path_hash: String = Sha1::digest(path)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        pos["line_range"] =
+            json!({"start":range_line(start,&path_hash),"end":range_line(end,&path_hash)});
     }
     Some(pos)
 }
@@ -110,12 +119,12 @@ mod tests {
     use super::*;
     #[test]
     fn renamed_added_deleted_context_and_range() {
-        let changed = json!([{"path":"new.rs","oldPath":"old.rs"}]);
+        let file = json!({"path":"new.rs","oldPath":"old.rs"});
         let refs = json!({"base_sha":"base","head_sha":"head","start_sha":"start"});
         let patch =
             "--- a/old.rs\n+++ b/new.rs\n@@ -1,3 +1,4 @@\n same\n-old\n+new\n+more\n last\n";
         let mut a = json!({"kind":"line","path":"new.rs","side":"new","startLine":2,"endLine":3});
-        let pos = position(&a, &changed, &refs, patch).unwrap();
+        let pos = position(&a, &file, &refs, patch).unwrap();
         assert_eq!(pos["old_path"], "old.rs");
         assert_eq!(pos["new_line"], 3);
         assert!(pos.get("old_line").is_none());
@@ -126,16 +135,16 @@ mod tests {
             .ends_with("_0_3"));
         a["startLine"] = 4.into();
         a["endLine"] = 4.into();
-        let pos = position(&a, &changed, &refs, patch).unwrap();
+        let pos = position(&a, &file, &refs, patch).unwrap();
         assert_eq!(pos["old_line"], 3);
         assert_eq!(pos["new_line"], 4);
         a["side"] = "old".into();
         a["startLine"] = 2.into();
         a["endLine"] = 2.into();
-        let pos = position(&a, &changed, &refs, patch).unwrap();
+        let pos = position(&a, &file, &refs, patch).unwrap();
         assert_eq!(pos["old_line"], 2);
         assert!(pos.get("new_line").is_none());
         a["endLine"] = 500.into();
-        assert!(position(&a, &changed, &refs, patch).is_none());
+        assert!(position(&a, &file, &refs, patch).is_none());
     }
 }

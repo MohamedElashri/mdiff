@@ -1,7 +1,15 @@
 import { AppearancePanel } from "../vendor/diffle/src/client/appearance/AppearancePanel";
 import { Dialog, DialogContent } from "../vendor/diffle/src/client/ui/dialog";
 import "./fonts.css";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -19,20 +27,26 @@ import {
   History,
   LoaderCircle,
 } from "lucide-react";
-const ReviewWorkspace = lazy(() =>
-  import("./ReviewWorkspace").then((m) => ({ default: m.ReviewWorkspace })),
-);
 import { applyTheme, readTheme } from "../vendor/diffle/src/client/theme";
 applyTheme(readTheme());
 import { bindReview } from "./transport";
 import { BrandMark } from "./Brand";
 import { About } from "./About";
 import { Updates } from "./Updates";
-import { OpenInEditor } from "./OpenInEditor";
-import { CodeIntelligence } from "./CodeIntelligence";
 import { GitlabPanel } from "./GitlabPanel";
 import "../vendor/diffle/src/client/styles.css";
 import "./style.css";
+
+const loadReviewWorkspace = () =>
+  import("./ReviewWorkspace").then((m) => ({ default: m.ReviewWorkspace }));
+const ReviewWorkspace = memo(lazy(loadReviewWorkspace));
+const OpenInEditor = lazy(() =>
+  import("./OpenInEditor").then((m) => ({ default: m.OpenInEditor })),
+);
+const CodeIntelligence = lazy(() =>
+  import("./CodeIntelligence").then((m) => ({ default: m.CodeIntelligence })),
+);
+
 type Request =
   | { kind: "gitlab"; url: string }
   | { kind: "working" }
@@ -42,7 +56,6 @@ type Recent = { path: string; request: Request; label: string };
 type Review = {
   root: string;
   id: string;
-  generation: number;
   gitlab: boolean;
   github_enabled: boolean;
 };
@@ -81,6 +94,7 @@ function App() {
   const [gitlabToken, setGitlabToken] = useState("");
   const [gitlabHost, setGitlabHost] = useState("gitlab.com");
   const [discussions, setDiscussions] = useState(false);
+  const toggleDiscussions = useCallback(() => setDiscussions((v) => !v), []);
   async function launch(folder: string, request: Request, label: string) {
     if (opening.current) return;
     if (request.kind === "pr" && !githubEnabled) {
@@ -97,6 +111,8 @@ function App() {
     setBusy(true);
     setError("");
     try {
+      // Load the workspace alongside Git preparation on the first open.
+      void loadReviewWorkspace().catch(() => {});
       const opened = await invoke<{
         root: string;
         id: string;
@@ -118,7 +134,6 @@ function App() {
       setDiscussions(request.kind === "gitlab");
       setReview({
         ...opened,
-        generation: Date.now(),
         gitlab: request.kind === "gitlab",
       });
       const entry = {
@@ -129,18 +144,16 @@ function App() {
         request,
         label,
       };
-      setRecent((prev) => {
-        const next = [
+      const requestKey = JSON.stringify(request);
+      setRecent((prev) =>
+        [
           entry,
           ...prev.filter(
             (r) =>
-              r.path !== entry.path ||
-              JSON.stringify(r.request) !== JSON.stringify(request),
+              r.path !== entry.path || JSON.stringify(r.request) !== requestKey,
           ),
-        ].slice(0, 12);
-        localStorage.setItem("mdiff.reviews", JSON.stringify(next));
-        return next;
-      });
+        ].slice(0, 12),
+      );
     } catch (e) {
       setError(String(e));
     } finally {
@@ -209,7 +222,7 @@ function App() {
       setError(String(e));
     }
   }
-  async function showSettings() {
+  const showSettings = useCallback(async () => {
     setSettings(true);
     setSettingsSaved(false);
     setSettingsError("");
@@ -231,7 +244,11 @@ function App() {
     } finally {
       setSettingsLoading(false);
     }
-  }
+  }, []);
+  const showConnections = useCallback(() => {
+    setSettingsTab("connections");
+    void showSettings();
+  }, [showSettings]);
   async function saveSettings() {
     if (!settingsReady || settingsLoading || settingsSaving) return;
     setSettingsSaving(true);
@@ -284,6 +301,13 @@ function App() {
         .catch((e) => setError(String(e)));
     }
   }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("mdiff.reviews", JSON.stringify(recent));
+    } catch {
+      // Recent reviews remain available for this session.
+    }
+  }, [recent]);
   useEffect(() => {
     Object.defineProperty(navigator.clipboard, "writeText", {
       configurable: true,
@@ -353,14 +377,14 @@ function App() {
         <span className="subtitle">{review ? review.root : "Code review"}</span>
         <div className="window-actions" inert={busy}>
           {review && (
-            <CodeIntelligence
-              key={`code-intelligence:${review.id}`}
-              id={review.id}
-              root={review.root}
-            />
-          )}
-          {review && (
-            <OpenInEditor key={`editor:${review.id}`} id={review.id} />
+            <Suspense fallback={null}>
+              <CodeIntelligence
+                key={`code-intelligence:${review.id}`}
+                id={review.id}
+                root={review.root}
+              />
+              <OpenInEditor key={`editor:${review.id}`} id={review.id} />
+            </Suspense>
           )}
           {review && (
             <button onClick={home}>
@@ -403,12 +427,9 @@ function App() {
               <ReviewWorkspace
                 key={review.id}
                 gitlab={review.gitlab}
-                onDiscussions={() => setDiscussions((v) => !v)}
+                onDiscussions={toggleDiscussions}
                 githubEnabled={review.github_enabled}
-                onConnections={() => {
-                  setSettingsTab("connections");
-                  void showSettings();
-                }}
+                onConnections={showConnections}
               />
             </Suspense>
           </div>

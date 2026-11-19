@@ -1,7 +1,7 @@
 import type { CodeViewHandle } from '@pierre/diffs/react';
 import type { LineAnchor } from '@/shared/protocol.js';
 import type { ResolvedRange } from '@/client/comments/anchor.js';
-import { draftRange, pathFromItemId, visibleThreads } from '@/client/model.js';
+import { draftRange, pathFromItemId, threadsForPath } from '@/client/model.js';
 import { useStore, type ReviewState } from '@/client/store.js';
 import { isDeletionRow, watchRenderedRows } from './rows.js';
 
@@ -46,9 +46,9 @@ export function tintedRanges(
   state: Pick<ReviewState, 'threads' | 'showResolved' | 'draft' | 'loaded'>,
   path: string,
 ): ResolvedRange[] {
-  const ranges: ResolvedRange[] = visibleThreads(state)
+  const ranges: ResolvedRange[] = threadsForPath(state, path)
     .map((t) => t.anchor)
-    .filter((a): a is LineAnchor => a.kind === 'line' && a.path === path);
+    .filter((a): a is LineAnchor => a.kind === 'line');
   const draft = state.draft?.path === path ? draftRange(state) : null;
   if (draft) ranges.push(draft);
   return ranges;

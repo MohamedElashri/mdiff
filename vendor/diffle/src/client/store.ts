@@ -51,6 +51,8 @@ import {
   composerKey,
   canJumpBack,
   canJumpForward,
+  changedFile,
+  changedFilesByPath,
   currentPath,
   filterSymbols,
   isCollapsed,
@@ -61,11 +63,12 @@ import {
   MODE_PANES,
   OVERSIZED_LINES,
   patchBatches,
+  PATCH_BATCH_LINES,
   pathFromItemId,
   rangeStep,
   reuseThreads,
   selectionRange,
-  visibleThreads,
+  threadsForPath,
   commentsOff,
   iterationPick,
   iterationStep,
@@ -554,7 +557,7 @@ export interface ReviewState {
   openFile(path: string, line?: number, side?: Side): Promise<void>;
   /** Full contents of one side, one request per side and path per transition, shared with hydration and the file view. */
   loadFile(path: string, side: Side): Promise<FileResponse>;
-  /** Fetch the diff of a file that loaded as oversized. No-op for anything else. */
+  /** Fetch an oversized patch on demand or retry a failed patch. */
   loadPatch(path: string): Promise<void>;
   /**
    * Show a path's whole new side in the file view, with the cursor on `line` or the top. No-op for
@@ -635,10 +638,12 @@ export const useStore = create<ReviewState>((set, get) => {
    * next consumer retries; the map is cleared with its transition.
    */
   const loads = new Map<string, Promise<FileResponse>>();
+  const patchLoads = new Map<string, Promise<void>>();
   const begin = () => {
     aborter.abort();
     aborter = new AbortController();
     loads.clear();
+    patchLoads.clear();
     return ++generation;
   };
   /**
@@ -829,7 +834,7 @@ export const useStore = create<ReviewState>((set, get) => {
    * rest downloads. Binary files and oversized diffs commit at once without a request.
    */
   const loadPatches = async (snap: Snapshot, paths: string[], g: number) => {
-    const byPath = new Map(snap.changed.map((f) => [f.path, f]));
+    const byPath = changedFilesByPath(snap.changed);
     const wanted = paths.filter((p) => byPath.has(p));
     if (wanted.length === 0) return;
     const immediate: Record<string, Loaded> = {};
@@ -861,9 +866,34 @@ export const useStore = create<ReviewState>((set, get) => {
     );
   };
 
-  /** One patch request for `paths` (non-binary changed files), committed on arrival and queued for hydration. */
+  /** Share work when a manual load or retry overlaps another request for the same snapshot and file. */
   const loadBatch = async (snap: Snapshot, paths: string[], g: number) => {
-    const byPath = new Map(snap.changed.map((f) => [f.path, f]));
+    if (!current(g)) return;
+    const pending = new Set<Promise<void>>();
+    const wanted: string[] = [];
+    const keys: string[] = [];
+    for (const path of paths) {
+      const key = `${snap.version}\0${path}`;
+      const active = patchLoads.get(key);
+      if (active) pending.add(active);
+      else {
+        wanted.push(path);
+        keys.push(key);
+      }
+    }
+    if (wanted.length > 0) {
+      const request = fetchBatch(snap, wanted, g).finally(() => {
+        for (const key of keys) if (patchLoads.get(key) === request) patchLoads.delete(key);
+      });
+      for (const key of keys) patchLoads.set(key, request);
+      pending.add(request);
+    }
+    await Promise.all(pending);
+  };
+
+  /** One patch request for `paths` (non-binary changed files), committed on arrival and queued for hydration. */
+  const fetchBatch = async (snap: Snapshot, paths: string[], g: number) => {
+    const byPath = changedFilesByPath(snap.changed);
     const loaded: Record<string, Loaded> = {};
     const files = new Map<string, FileDiffMetadata>();
     try {
@@ -880,7 +910,7 @@ export const useStore = create<ReviewState>((set, get) => {
       };
       const patch =
         paths.length === 1
-          ? linesOf(byPath.get(paths[0]!)!) > 4000
+          ? linesOf(byPath.get(paths[0]!)!) > PATCH_BATCH_LINES
             ? await api.patchPages(paths[0]!, snap.version, signal, preview)
             : await api.patch(paths[0]!, snap.version, signal)
           : await api.patches(paths, snap.version, signal);
@@ -1064,8 +1094,8 @@ export const useStore = create<ReviewState>((set, get) => {
     // keeps blob, status and counts and still changes every patch, so it invalidates like context does.
     const oldMoved = prev != null && (prev.oldSha === 'worktree' || prev.oldSha !== next.oldSha);
     const sidesMoved = oldMoved || (prev != null && prev.newSha !== next.newSha);
-    const prevChanged = new Map(prev?.changed.map((f) => [f.path, f]) ?? []);
-    const nextChanged = new Map(next.changed.map((f) => [f.path, f]));
+    const prevChanged = changedFilesByPath(prev?.changed ?? []);
+    const nextChanged = changedFilesByPath(next.changed);
 
     const loaded: Record<string, Loaded> = modeChanged ? {} : { ...get().loaded };
     // Cached sides of any path are stale once either side moved.
@@ -1577,13 +1607,9 @@ export const useStore = create<ReviewState>((set, get) => {
     const path = pathFromItemId(sel.id);
     const side = sideOf(sel);
     const line = sel.range.end;
-    return visibleThreads(s).find(
+    return threadsForPath(s, path).find(
       (t) =>
-        t.anchor.kind === 'line' &&
-        t.anchor.path === path &&
-        t.anchor.side === side &&
-        line >= t.anchor.startLine &&
-        line <= t.anchor.endLine,
+        t.anchor.kind === 'line' && t.anchor.side === side && line >= t.anchor.startLine && line <= t.anchor.endLine,
     );
   };
 
@@ -2473,7 +2499,7 @@ export const useStore = create<ReviewState>((set, get) => {
     },
     async toggleViewedAtCursor() {
       const path = get().activePath;
-      const f = path ? get().snapshot?.changed.find((x) => x.path === path) : undefined;
+      const f = path ? changedFile(get().snapshot, path) : undefined;
       if (!path || !f) return;
       const viewed = !isViewed(get(), f);
       // setViewed flips the mark before its first await, so the cursor moves on without
@@ -2486,7 +2512,7 @@ export const useStore = create<ReviewState>((set, get) => {
       const items = nav();
       const at = items.findIndex((i) => i.path === get().activePath);
       const above = at > 0 ? items[at - 1]!.path : undefined;
-      const f = above ? get().snapshot?.changed.find((x) => x.path === above) : undefined;
+      const f = above ? changedFile(get().snapshot, above) : undefined;
       if (!f) return get().flash('No file above');
       const persisted = get().setViewed(f.path, !isViewed(get(), f));
       // The file above folds or unfolds; pin the cursor at eye level, where `]` left it, so the text read stays put.
@@ -2768,7 +2794,7 @@ export const useStore = create<ReviewState>((set, get) => {
     async openFile(path, line, side) {
       const snap = get().snapshot;
       if (!snap) return;
-      const changed = snap.changed.some((f) => f.path === path);
+      const changed = changedFile(snap, path) != null;
       // The file view stays for a new-side line of the file it shows; old-side lines exist only in the diff.
       if (!changed || (get().fileView?.path === path && side !== 'old')) {
         await get().openFullFile(path, line);
@@ -2790,7 +2816,8 @@ export const useStore = create<ReviewState>((set, get) => {
 
     async loadPatch(path) {
       const snap = get().snapshot;
-      if (!snap || get().loaded[path]?.kind !== 'oversized') return;
+      const kind = get().loaded[path]?.kind;
+      if (!snap || !changedFile(snap, path) || (kind !== 'oversized' && kind !== 'error')) return;
       await loadBatch(snap, [path], generation);
     },
 
@@ -2997,7 +3024,7 @@ export const useStore = create<ReviewState>((set, get) => {
     },
 
     async setViewed(path, viewed) {
-      const f = get().snapshot?.changed.find((x) => x.path === path);
+      const f = changedFile(get().snapshot, path);
       if (!f) return;
       // Optimistic: flip locally, then persist. Older marks for the path stay so
       // `restale` can still be derived until the server answers.

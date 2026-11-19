@@ -6,13 +6,7 @@ import { useStore } from "../vendor/diffle/src/client/store";
 import DiffsWorker from "@pierre/diffs/worker/worker.js?worker";
 import { WorkerPoolContextProvider, useWorkerPool } from "@pierre/diffs/react";
 import { App } from "../vendor/diffle/src/client/App";
-import {
-  applyTheme,
-  readTheme,
-  HIGHLIGHTER,
-  CODE_THEMES,
-} from "../vendor/diffle/src/client/theme";
-applyTheme(readTheme());
+import { HIGHLIGHTER, CODE_THEMES } from "../vendor/diffle/src/client/theme";
 const poolOptions = {
   poolSize: Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1)),
   workerFactory: () => new DiffsWorker(),
@@ -35,7 +29,9 @@ export function ReviewWorkspace({
 }) {
   const githubOpen = useStore((s) => s.githubMenuOpen);
   const setGithubOpen = useStore((s) => s.setGithubMenuOpen);
-  const githubState = useStore((s) => s.github);
+  const disabledGithubStatus = useStore((s) =>
+    githubEnabled ? "idle" : s.github.status,
+  );
   const githubTrigger = useRef<HTMLButtonElement>(null);
   const closeGithub = () => {
     setGithubOpen(false);
@@ -45,10 +41,10 @@ export function ReviewWorkspace({
   useEffect(() => {
     if (!githubEnabled) {
       setGithubOpen(false);
-      if (githubState.status !== "idle")
+      if (disabledGithubStatus !== "idle")
         useStore.setState({ github: { status: "idle" } });
     }
-  }, [githubEnabled, githubState, setGithubOpen]);
+  }, [githubEnabled, disabledGithubStatus, setGithubOpen]);
   return (
     <WorkerPoolContextProvider
       poolOptions={poolOptions}

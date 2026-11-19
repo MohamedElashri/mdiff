@@ -14,6 +14,17 @@ impl GitRepo {
         Ok(split_z(&self.exec(&["ls-files", "-z"], ExecOptions::default()).await?))
     }
 
+    /// Index entries for a small set of literal worktree paths.
+    pub(crate) async fn tracked_paths(&self, paths: &[String]) -> Result<HashSet<String>, GitError> {
+        if paths.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let literal: Vec<String> = paths.iter().map(|path| format!(":(literal){path}")).collect();
+        let mut args = vec!["ls-files", "-z", "--"];
+        args.extend(literal.iter().map(String::as_str));
+        Ok(split_z(&self.exec(&args, ExecOptions::default()).await?).into_iter().collect())
+    }
+
     /// Every path in a commit's tree.
     pub async fn ls_tree(&self, rev: &str) -> Result<Vec<String>, GitError> {
         Ok(split_z(&self.exec(&["ls-tree", "-r", "-z", "--name-only", rev], ExecOptions::default()).await?))
@@ -88,17 +99,18 @@ impl GitRepo {
             args.extend(paths.iter().map(String::as_str));
         }
         let live = old == WORKTREE || new == WORKTREE;
-        let (diff, untracked) = tokio::join!(self.exec(&args, ExecOptions::default()), async {
+        let (diff, untracked) = tokio::try_join!(self.exec(&args, ExecOptions::default()), async {
             if live && paths.is_none() { self.untracked().await } else { Ok(Vec::new()) }
-        });
-        let mut files = parse_raw_numstat(&diff?);
-        let known: HashSet<&str> =
-            files.iter().flat_map(|f| [Some(f.path.as_str()), f.old_path.as_deref()]).flatten().collect();
-        // `ls-files --others` lists a nested repository as `dir/`; git has no diff for it.
-        let extra: Vec<String> =
-            untracked?.into_iter().filter(|p| !known.contains(p.as_str()) && !p.ends_with('/')).collect();
-        let extra = map_limit(extra, READ_CONCURRENCY, |path| self.untracked_file(path, reverse)).await;
-        files.extend(extra);
+        })?;
+        let mut files = parse_raw_numstat(&diff);
+        if !untracked.is_empty() {
+            let known: HashSet<&str> =
+                files.iter().flat_map(|f| [Some(f.path.as_str()), f.old_path.as_deref()]).flatten().collect();
+            // `ls-files --others` lists a nested repository as `dir/`; git has no diff for it.
+            let extra = untracked.into_iter().filter(|p| !known.contains(p.as_str()) && !p.ends_with('/'));
+            let extra = map_limit(extra, READ_CONCURRENCY, |path| self.untracked_file(path, reverse)).await;
+            files.extend(extra);
+        }
         files.sort_by(|a, b| a.path.cmp(&b.path));
         if new == WORKTREE {
             let present: Vec<usize> = (0..files.len()).filter(|&i| files[i].status != ChangeStatus::D).collect();
@@ -245,16 +257,18 @@ fn blank(path: String, status: ChangeStatus) -> ChangedFile {
 /// count as "-\t-". The shas are each side's blob against a commit; against the worktree, or where
 /// a side is absent, zeros. Mode 160000 on either side marks a gitlink.
 fn parse_raw_numstat(buf: &[u8]) -> Vec<ChangedFile> {
-    let parts = split_z(buf);
+    let text = String::from_utf8_lossy(buf);
+    let mut parts = text.split_terminator('\0').peekable();
     let mut files: Vec<ChangedFile> = Vec::new();
-    let mut by_path: HashMap<String, usize> = HashMap::new();
-    let mut i = 0;
+    let mut by_path = HashMap::new();
     let blob = |sha: &str| {
         if sha.bytes().all(|b| b == b'0') { String::new() } else { sha.to_owned() }
     };
-    while i < parts.len() && parts[i].starts_with(':') {
-        let fields: Vec<&str> = parts[i].split(' ').collect();
-        let [src_mode, dst_mode, src_sha, dst_sha, code] = fields[..] else {
+    while let Some(record) = parts.next_if(|p| p.starts_with(':')) {
+        let mut fields = record.split(' ');
+        let [Some(src_mode), Some(dst_mode), Some(src_sha), Some(dst_sha), Some(code)] =
+            std::array::from_fn(|_| fields.next())
+        else {
             break;
         };
         let status = match code.chars().next() {
@@ -266,34 +280,26 @@ fn parse_raw_numstat(buf: &[u8]) -> Vec<ChangedFile> {
             Some('U') => ChangeStatus::U,
             _ => ChangeStatus::M,
         };
-        let old_path = matches!(status, ChangeStatus::R | ChangeStatus::C).then(|| {
-            i += 1;
-            parts[i].clone()
-        });
-        i += 1;
-        let mut file = blank(parts[i].clone(), status);
-        file.old_path = old_path;
+        let old_path = if matches!(status, ChangeStatus::R | ChangeStatus::C) { parts.next() } else { None };
+        let Some(path) = parts.next() else { break };
+        let mut file = blank(path.to_owned(), status);
+        file.old_path = old_path.map(str::to_owned);
         file.blob = blob(dst_sha);
         file.old_blob = blob(src_sha);
         if dst_mode == "160000" || (status == ChangeStatus::D && src_mode.get(1..) == Some("160000")) {
             file.submodule = Some(true);
         }
-        by_path.insert(file.path.clone(), files.len());
+        by_path.insert(path, files.len());
         files.push(file);
-        i += 1;
     }
-    while i < parts.len() {
-        let mut fields = parts[i].splitn(3, '\t');
+    while let Some(record) = parts.next() {
+        let mut fields = record.splitn(3, '\t');
         let (add, del) = (fields.next().unwrap_or_default(), fields.next().unwrap_or_default());
         let path = match fields.next() {
-            Some(inline) if !inline.is_empty() => inline.to_owned(),
-            _ => {
-                i += 2;
-                parts.get(i).cloned().unwrap_or_default()
-            }
+            Some("") => parts.nth(1),
+            inline => inline,
         };
-        i += 1;
-        let Some(&at) = by_path.get(&path) else { continue };
+        let Some(&at) = path.and_then(|path| by_path.get(path)) else { continue };
         let file = &mut files[at];
         file.binary = add == "-";
         if !file.binary {

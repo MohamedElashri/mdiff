@@ -20,8 +20,8 @@ export function OpenInEditor({ id }: { id: string }) {
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [copyOnOpen, setCopyOnOpen] = useState(false);
-  const hasComments = useStore((s) =>
-    s.threads.some((thread) => !thread.resolved),
+  const hasComments = useStore(
+    (s) => open && s.threads.some((thread) => !thread.resolved),
   );
   const generation = useRef(0);
   const pending = useRef(false);

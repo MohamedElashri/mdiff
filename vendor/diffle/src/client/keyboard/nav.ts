@@ -236,19 +236,35 @@ export function stepFile(nav: NavItem[], cur: Cursor | null, delta: 1 | -1): Cur
   return { itemIndex, rowIndex: nav[itemIndex]!.collapsed ? -1 : 0 };
 }
 
-/** Next/previous hunk start across items. */
+const hunkStarts = new WeakMap<Row[], number[]>();
+
+function hunkRows(rows: Row[]): number[] {
+  let starts = hunkStarts.get(rows);
+  if (!starts) {
+    starts = [];
+    for (let i = 0; i < rows.length; i++) if (rows[i]!.hunkStart) starts.push(i);
+    hunkStarts.set(rows, starts);
+  }
+  return starts;
+}
+
+/** Walk toward the nearest hunk, reusing the hunk positions for each rendered row list. */
 export function stepHunk(nav: NavItem[], cur: Cursor | null, delta: 1 | -1): Cursor | null {
-  const flat: Cursor[] = [];
-  nav.forEach((item, itemIndex) => {
-    if (item.collapsed) return;
-    item.rows.forEach((r, rowIndex) => r.hunkStart && flat.push({ itemIndex, rowIndex }));
-  });
-  if (flat.length === 0) return cur;
-  if (!cur) return delta === 1 ? flat[0]! : flat[flat.length - 1]!;
-  const key = (c: Cursor) => c.itemIndex * 1e7 + c.rowIndex;
-  const k = key(cur);
-  if (delta === 1) return flat.find((c) => key(c) > k) ?? cur;
-  return [...flat].reverse().find((c) => key(c) < k) ?? cur;
+  const start = cur?.itemIndex ?? (delta === 1 ? 0 : nav.length - 1);
+  for (let itemIndex = start; itemIndex >= 0 && itemIndex < nav.length; itemIndex += delta) {
+    const item = nav[itemIndex]!;
+    if (item.collapsed || item.rows.length === 0) continue;
+    const starts = hunkRows(item.rows);
+    const currentRow = cur?.itemIndex === itemIndex ? cur.rowIndex : undefined;
+    const rowIndex =
+      currentRow === undefined
+        ? starts.at(delta === 1 ? 0 : -1)
+        : delta === 1
+          ? starts.find((row) => row > currentRow)
+          : starts.findLast((row) => row < currentRow);
+    if (rowIndex !== undefined) return { itemIndex, rowIndex };
+  }
+  return cur;
 }
 
 export function selectionFor(nav: NavItem[], cur: Cursor, anchor?: Cursor | null): CodeViewLineSelection | null {
