@@ -71,12 +71,30 @@ pub async fn with_file_lock<R, Fut>(file: &Path, f: impl FnOnce() -> Fut) -> any
 where
     Fut: Future<Output = anyhow::Result<R>>,
 {
-    let lock = lock_path(file);
-    create_private_dir(lock.parent().context("lock has no directory")?).await?;
-    let held = acquire(&lock).await?;
+    let held = lock_file(file).await?;
     let result = f().await;
     drop(held);
     result
+}
+
+/// Holds the file lock in the blocking task so dropping the caller cannot release it early.
+pub(crate) async fn with_file_lock_blocking<R: Send + 'static>(
+    file: &Path,
+    f: impl FnOnce() -> anyhow::Result<R> + Send + 'static,
+) -> anyhow::Result<R> {
+    let held = lock_file(file).await?;
+    tokio::task::spawn_blocking(move || {
+        let result = f();
+        drop(held);
+        result
+    })
+    .await?
+}
+
+async fn lock_file(file: &Path) -> anyhow::Result<File> {
+    let lock = lock_path(file);
+    create_private_dir(lock.parent().context("lock has no directory")?).await?;
+    acquire(&lock).await
 }
 
 fn lock_path(file: &Path) -> PathBuf {
@@ -110,6 +128,33 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn blocking_operation_holds_its_lock_after_caller_cancels() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state.json");
+        let (started, ready) = oneshot::channel();
+        let (finish, release) = oneshot::channel();
+        let caller = tokio::spawn({
+            let file = file.clone();
+            async move {
+                with_file_lock_blocking(&file, move || {
+                    started.send(()).unwrap();
+                    release.blocking_recv()?;
+                    Ok(())
+                })
+                .await
+            }
+        });
+        ready.await.unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let competing = OpenOptions::new().write(true).open(lock_path(&file)).unwrap();
+        assert!(matches!(competing.try_lock(), Err(TryLockError::WouldBlock)));
+        finish.send(()).unwrap();
+        with_file_lock(&file, || async { Ok(()) }).await.unwrap();
+    }
 
     #[tokio::test]
     async fn serializes_holders_and_writes_atomically() {
