@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use super::exec::{ExecOptions, RecordOptions, exec_records, split_z};
 use super::{GitRepo, WORKTREE};
+use crate::concurrency::map_limit;
 use crate::error::GitError;
 
 /// A search that runs this long is a runaway regex, not a slow repository.
@@ -35,9 +36,25 @@ pub struct GrepResult {
     pub truncated: bool,
 }
 
-fn pathspecs(paths: &[String]) -> Option<Vec<String>> {
-    let bytes = paths.iter().map(|path| path.len() + 11).sum::<usize>();
-    (bytes <= MAX_PATHSPEC_BYTES).then(|| paths.iter().map(|path| format!(":(literal){path}")).collect())
+fn pathspec_batches(paths: &[String]) -> Vec<Vec<String>> {
+    let mut paths: Vec<_> = paths.iter().collect();
+    paths.sort_unstable();
+    paths.dedup();
+    let mut batches = Vec::new();
+    let mut batch = Vec::new();
+    let mut bytes = 0;
+    for path in paths {
+        let literal = format!(":(literal){path}");
+        let size = literal.len() + 1;
+        if !batch.is_empty() && bytes + size > MAX_PATHSPEC_BYTES {
+            batches.push(std::mem::take(&mut batch));
+            bytes = 0;
+        }
+        batch.push(literal);
+        bytes += size;
+    }
+    batches.push(batch);
+    batches
 }
 
 fn search_args<'a>(mut args: Vec<&'a str>, query: &'a str, rev: &'a str, opts: GrepOptions<'_>) -> Vec<&'a str> {
@@ -68,20 +85,21 @@ impl GitRepo {
         if query.is_empty() || paths.is_empty() {
             return Ok(HashSet::new());
         }
-        let literals = pathspecs(paths);
-        let allowed = literals.is_none().then(|| paths.iter().map(String::as_str).collect::<HashSet<_>>());
-        let mut args = search_args(vec!["grep", "--name-only"], query, rev, opts);
-        args.extend(literals.iter().flatten().map(String::as_str));
-        let options = ExecOptions { ok_codes: &[1], ..Default::default() };
-        let out = tokio::time::timeout(GREP_TIMEOUT, self.exec(&args, options))
-            .await
-            .map_err(|_| GitError::refused("Search timed out", &args))??;
-        Ok(split_z(&out)
-            .iter()
-            .filter_map(|path| strip_revision(path, rev))
-            .filter(|path| allowed.as_ref().is_none_or(|allowed| allowed.contains(path)))
-            .map(str::to_owned)
-            .collect())
+        let results = map_limit(pathspec_batches(paths), 2, |batch| async move {
+            let mut args = search_args(vec!["grep", "--name-only", "--threads=2"], query, rev, opts);
+            args.extend(batch.iter().map(String::as_str));
+            let options = ExecOptions { ok_codes: &[1], ..Default::default() };
+            let out = tokio::time::timeout(GREP_TIMEOUT, self.exec(&args, options))
+                .await
+                .map_err(|_| GitError::refused("Search timed out", &args))??;
+            Ok::<_, GitError>(split_z(&out))
+        })
+        .await;
+        let mut hits = HashSet::new();
+        for result in results {
+            hits.extend(result?.iter().filter_map(|path| strip_revision(path, rev)).map(str::to_owned));
+        }
+        Ok(hits)
     }
 
     /// Search the new side, case-sensitive unless asked otherwise. Worktree searches include
@@ -108,30 +126,33 @@ impl GitRepo {
         if opts.ranges.is_none() {
             command.push(&max_count);
         }
-        let mut args = search_args(command, query, rev, opts);
-        let paths = opts.paths.unwrap_or_default();
-        let literals = pathspecs(paths);
-        // Large allowlists are filtered during the scan so they do not exceed Git's argv limit.
-        let allowed = literals.is_none().then(|| paths.iter().map(String::as_str).collect::<HashSet<_>>());
-        args.extend(literals.iter().flatten().map(String::as_str));
+        let args = search_args(command, query, rev, opts);
         let parse = |record: &str| parse_record(record, rev != WORKTREE);
-        let accept = |record: &str| {
-            let m = parse(record);
-            allowed.as_ref().is_none_or(|allowed| allowed.contains(m.path.as_str()))
-                && opts.ranges.is_none_or(|ranges| {
-                    ranges.get(&m.path).is_some_and(|r| r.iter().any(|&(start, end)| m.line >= start && m.line <= end))
-                })
-        };
-        let filter = (allowed.is_some() || opts.ranges.is_some()).then_some(&accept as &(dyn Fn(&str) -> bool + Sync));
-        let records = exec_records(
-            &self.root,
-            &args,
-            limit + 1,
-            RecordOptions { ok_codes: &[0, 1], timeout: GREP_TIMEOUT, accept: filter },
-        )
-        .await?;
-        let truncated = records.len() > limit;
-        Ok(GrepResult { matches: records.iter().take(limit).map(|r| parse(r)).collect(), truncated })
+        let accept = opts.ranges.map(|ranges| {
+            move |record: &str| {
+                let m = parse(record);
+                ranges.get(&m.path).is_some_and(|r| r.iter().any(|&(start, end)| m.line >= start && m.line <= end))
+            }
+        });
+        let filter = accept.as_ref().map(|f| f as &(dyn Fn(&str) -> bool + Sync));
+        let mut matches = Vec::new();
+        for batch in pathspec_batches(opts.paths.unwrap_or_default()) {
+            let mut args = args.clone();
+            args.extend(batch.iter().map(String::as_str));
+            let remaining = limit - matches.len();
+            let records = exec_records(
+                &self.root,
+                &args,
+                remaining + 1,
+                RecordOptions { ok_codes: &[0, 1], timeout: GREP_TIMEOUT, accept: filter },
+            )
+            .await?;
+            matches.extend(records.iter().take(remaining).map(|r| parse(r)));
+            if records.len() > remaining {
+                return Ok(GrepResult { matches, truncated: true });
+            }
+        }
+        Ok(GrepResult { matches, truncated: false })
     }
 }
 
