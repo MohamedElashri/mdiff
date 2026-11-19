@@ -560,6 +560,102 @@ describe('client transitions', () => {
     api.patch.mockReset();
   });
 
+  it('shares an in-flight oversized patch request and lets a failed patch be retried', async () => {
+    const path = 'huge.txt';
+    const changed = [file({ path, additions: OVERSIZED_LINES + 1 })];
+    api.snapshot.mockResolvedValueOnce({ ...snap(1, 'working', [path]), changed });
+    await useStore.getState().refreshSnapshot();
+
+    const pending = deferred<string>();
+    api.patchPages.mockReturnValueOnce(pending.promise);
+    const first = useStore.getState().loadPatch(path);
+    const second = useStore.getState().loadPatch(path);
+    expect(api.patchPages).toHaveBeenCalledTimes(1);
+    pending.reject(new Error('temporary failure'));
+    await Promise.all([first, second]);
+    expect(useStore.getState().loaded[path]).toEqual({ kind: 'error', message: 'Error: temporary failure' });
+
+    api.patchPages.mockResolvedValueOnce(patchesFor([path]));
+    api.file.mockResolvedValue({ contents: 'y\n', binary: false });
+    await useStore.getState().loadPatch(path);
+    expect(api.patchPages).toHaveBeenCalledTimes(2);
+    expect(useStore.getState().loaded[path]?.kind).toBe('diff');
+  });
+
+  it('loads only a window of a large review, and fetches a distant file when keyboard navigation reaches it', async () => {
+    const paths = Array.from({ length: 180 }, (_, i) => `file-${i}.txt`);
+    const changed = paths.map((path) => file({ path }));
+    changed[170] = file({ path: paths[170], additions: OVERSIZED_LINES + 1 });
+    changed[171] = file({ path: paths[171], binary: true });
+    api.patch.mockImplementation(async (path: string) => patchesFor([path]));
+    api.patches.mockImplementation(async (batch: string[]) => patchesFor(batch));
+    api.snapshot.mockResolvedValueOnce({ ...snap(1, 'working', paths), changed });
+
+    await useStore.getState().refreshSnapshot();
+    const requested = () => [
+      ...api.patch.mock.calls.map(([path]) => path),
+      ...api.patches.mock.calls.flatMap(([paths]) => paths),
+    ];
+    expect(requested()).toHaveLength(24);
+    expect(api.file).not.toHaveBeenCalled();
+    expect(useStore.getState().loaded[paths[170]!]?.kind).toBe('oversized');
+    expect(useStore.getState().loaded[paths[171]!]?.kind).toBe('binary');
+
+    useStore.getState().loadViewportPatches(paths.slice(100, 104));
+    await vi.waitFor(() => expect(useStore.getState().loaded[paths[103]!]?.kind).toBe('diff'));
+    expect(requested()).toHaveLength(28);
+    expect(api.file).not.toHaveBeenCalled();
+
+    const last = paths.at(-1)!;
+    useStore.getState().moveFile('last');
+    expect(useStore.getState().activePath).toBe(last);
+    await vi.waitFor(() => expect(useStore.getState().loaded[last]?.kind).toBe('diff'));
+    useStore.getState().moveHunk(1);
+    expect(useStore.getState().selection?.id).toBe(itemIdOf(useStore.getState(), last));
+    expect(requested()).toHaveLength(29);
+    api.patch.mockReset();
+    api.patches.mockReset();
+  });
+
+  it('keeps an offscreen change pending across repeated snapshots until the file is opened', async () => {
+    const paths = Array.from({ length: 180 }, (_, i) => `file-${i}.txt`);
+    const far = paths.at(-1)!;
+    const changed = paths.map((path) => file({ path }));
+    api.patch.mockImplementation(async (path: string) => patchesFor([path]));
+    api.patches.mockImplementation(async (batch: string[]) => patchesFor(batch));
+    api.snapshot.mockResolvedValueOnce({ ...snap(1, 'working', paths), changed });
+    await useStore.getState().refreshSnapshot();
+    useStore.getState().loadViewportPatches([far]);
+    await vi.waitFor(() => expect(useStore.getState().loaded[far]?.kind).toBe('diff'));
+    const cached = useStore.getState().loaded[far];
+
+    const edited = changed.map((f) => (f.path === far ? { ...f, blob: 'new' } : f));
+    for (const version of [2, 3]) {
+      api.snapshot.mockResolvedValueOnce({ ...snap(version, 'working', paths), changed: edited });
+      await useStore.getState().refreshSnapshot();
+    }
+    expect(api.patch.mock.calls.filter(([path]) => path === far)).toHaveLength(1);
+    await useStore.getState().openFile(far);
+    expect(api.patch.mock.calls.filter(([path]) => path === far)).toHaveLength(2);
+    expect(useStore.getState().loaded[far]).not.toBe(cached);
+    expect(useStore.getState().selection?.id).toBe(itemIdOf(useStore.getState(), far));
+    api.patch.mockReset();
+    api.patches.mockReset();
+  });
+
+  it('shares completed file reads within the full-file cache byte budget', async () => {
+    const contents = 'x'.repeat(6 * 1024 * 1024);
+    api.file.mockResolvedValue({ contents, binary: false });
+    const { loadFile } = useStore.getState();
+    await loadFile('cache-first.txt', 'new');
+    await loadFile('cache-first.txt', 'new');
+    expect(api.file).toHaveBeenCalledTimes(1);
+    await loadFile('cache-second.txt', 'new');
+    await loadFile('cache-first.txt', 'new');
+    expect(api.file).toHaveBeenCalledTimes(3);
+    api.file.mockReset();
+  });
+
   it('hydration and the file view opening at once share one request per side; a failed load is retried by the next consumer', async () => {
     const changed = [file({ path: 'a.txt', blob: 'b1' })];
     api.patch.mockResolvedValue('diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-x\n+y\n');
@@ -1519,7 +1615,12 @@ describe('symbol navigation', () => {
 
     await useStore.getState().searchWord(1);
     await new Promise((r) => setTimeout(r, 0));
-    expect(api.search).toHaveBeenCalledWith('foo', { word: true, scope: 'repo', content: 'full' });
+    expect(api.search).toHaveBeenCalledWith('foo', {
+      word: true,
+      scope: 'repo',
+      content: 'full',
+      signal: expect.any(AbortSignal),
+    });
     let s = useStore.getState();
     expect(s.search.kind).toBe('word');
     expect(s.search.direction).toBe(1);
@@ -1559,6 +1660,7 @@ describe('symbol navigation', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(api.search).toHaveBeenCalledWith('y', {
       ignoreCase: true,
+      signal: expect.any(AbortSignal),
       regex: false,
       scope: 'file',
       content: 'diff',
@@ -1575,6 +1677,7 @@ describe('symbol navigation', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(api.search).toHaveBeenLastCalledWith('y', {
       ignoreCase: true,
+      signal: expect.any(AbortSignal),
       regex: false,
       scope: 'file',
       content: 'full',
@@ -1586,6 +1689,7 @@ describe('symbol navigation', () => {
     await useStore.getState().runSearch('y');
     expect(api.search).toHaveBeenLastCalledWith('y', {
       ignoreCase: true,
+      signal: expect.any(AbortSignal),
       regex: false,
       scope: 'diff',
       content: 'diff',
@@ -1594,6 +1698,7 @@ describe('symbol navigation', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(api.search).toHaveBeenLastCalledWith('y', {
       ignoreCase: true,
+      signal: expect.any(AbortSignal),
       regex: false,
       scope: 'diff',
       content: 'full',
@@ -1715,6 +1820,7 @@ describe('request ownership', () => {
     const run = useStore.getState().runSearch('foo');
     expect(useStore.getState().search.loading).toBe(true);
     useStore.getState().closeSearch();
+    expect(api.search.mock.lastCall?.[1]?.signal?.aborted).toBe(true);
     slow.resolve(hit('b.py', 2));
     await run;
     await new Promise((r) => setTimeout(r, 0));
@@ -1731,7 +1837,10 @@ describe('request ownership', () => {
     const second = deferred<SearchResponse>();
     api.search.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const a = useStore.getState().runSearch('foo');
+    const aSignal = api.search.mock.lastCall?.[1]?.signal;
     const b = useStore.getState().runSearch('bar');
+    expect(aSignal?.aborted).toBe(true);
+    expect(api.search.mock.lastCall?.[1]?.signal?.aborted).toBe(false);
     second.resolve(hit('b.py', 2));
     await b;
     await new Promise((r) => setTimeout(r, 0));
@@ -1770,9 +1879,11 @@ describe('request ownership', () => {
     const slow = deferred<SearchResponse>();
     api.search.mockReturnValueOnce(slow.promise);
     const run = useStore.getState().searchWord(1);
+    const signal = api.search.mock.lastCall?.[1]?.signal;
     lspTarget.focus(null);
     api.enter.mockResolvedValueOnce(snap(2, 'pr:abc', ['b.py']));
     await useStore.getState().enter({ kind: 'pr' });
+    expect(signal?.aborted).toBe(true);
     slow.resolve(hit('b.py', 2));
     await run;
     await new Promise((r) => setTimeout(r, 0));

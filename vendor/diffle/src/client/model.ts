@@ -15,6 +15,7 @@ import {
   type Side,
   type Snapshot,
   type UserConfig,
+  type ViewedEntry,
   type ViewedState,
 } from '@/shared/protocol.js';
 import { fuzzyFilter } from '@/shared/fuzzy.js';
@@ -39,7 +40,7 @@ export function pathFromItemId(id: string): string {
 
 /** The id of the item that shows `path` right now: its whole-file item while the file view is open on it, else its diff. */
 export function itemIdOf(state: Pick<ReviewState, 'snapshot' | 'gens' | 'fileView'>, path: string): string {
-  const changed = state.fileView?.path !== path && (state.snapshot?.changed.some((f) => f.path === path) ?? false);
+  const changed = state.fileView?.path !== path && changedFile(state.snapshot, path) != null;
   return itemId(changed, path, state.gens[path] ?? 0);
 }
 
@@ -49,6 +50,11 @@ export const PATCH_BATCH_FILES = 12;
 export const PATCH_BATCH_LINES = 4000;
 /** A diff past this many changed lines is not loaded until asked for: parsing it would stall the review. */
 export const OVERSIZED_LINES = 10_000;
+/** Large reviews initially need only enough patches to fill the pane and its immediate surroundings. */
+export const PATCH_WINDOW_FILES = 24;
+export function usesViewportPatches(snapshot: Snapshot | null): boolean {
+  return (snapshot?.changed.length ?? 0) > 120;
+}
 
 export const linesOf = (f: ChangedFile): number => f.additions + f.deletions;
 
@@ -66,41 +72,63 @@ export function patchBatches(
 ): string[][] {
   const byPath = new Map(files.map((f) => [f.path, f]));
   const priority = new Set(first);
-  const rank = (p: string) =>
-    priority.has(p) ? 0 : (isCollapsed(p) ? 4 : 2) + (linesOf(byPath.get(p)!) > PATCH_BATCH_LINES ? 1 : 0);
-  const order = orderedPaths(snapshot)
-    .filter((p) => byPath.has(p))
-    .sort((a, b) => rank(a) - rank(b));
+  const tiers: ChangedFile[][] = [[], [], [], [], []];
+  for (const path of orderedPaths(snapshot)) {
+    const file = byPath.get(path);
+    if (!file) continue;
+    const tier = priority.has(path) ? 0 : (isCollapsed(path) ? 3 : 1) + Number(linesOf(file) > PATCH_BATCH_LINES);
+    tiers[tier]!.push(file);
+  }
   const batches: string[][] = [];
   let batch: string[] = [];
   let lines = 0;
-  for (const p of order) {
+  for (const { path, additions, deletions } of tiers.flat()) {
     // An explicitly selected file gets an interactive request, independent of bulk loading.
-    if (priority.has(p)) {
-      if (batch.length) {
-        batches.push(batch);
-        batch = [];
-        lines = 0;
-      }
-      batches.push([p]);
+    if (priority.has(path)) {
+      batches.push([path]);
       continue;
     }
-    const n = linesOf(byPath.get(p)!);
+    const n = additions + deletions;
     if (batch.length > 0 && (batch.length >= PATCH_BATCH_FILES || lines + n > PATCH_BATCH_LINES)) {
       batches.push(batch);
       batch = [];
       lines = 0;
     }
-    batch.push(p);
+    batch.push(path);
     lines += n;
   }
   if (batch.length > 0) batches.push(batch);
   return batches;
 }
 
+const changedIndexes = new WeakMap<readonly ChangedFile[], ReadonlyMap<string, ChangedFile>>();
+
+/** The snapshot's change list is immutable and shared by patch loading, navigation, and both panes. */
+export function changedFilesByPath(changed: readonly ChangedFile[]): ReadonlyMap<string, ChangedFile> {
+  let index = changedIndexes.get(changed);
+  if (!index) {
+    index = new Map(changed.map((f) => [f.path, f]));
+    changedIndexes.set(changed, index);
+  }
+  return index;
+}
+
+export function changedFile(snapshot: Snapshot | null, path: string): ChangedFile | undefined {
+  return snapshot ? changedFilesByPath(snapshot.changed).get(path) : undefined;
+}
+
+const pathOrders = new WeakMap<readonly ChangedFile[], readonly string[]>();
+
 /** Changed files in the order the file tree pane shows them: the order the review pane and the cursor share. */
-export function orderedPaths(snapshot: Snapshot): string[] {
-  return snapshot.changed.map((f) => f.path).sort(compareTreeOrder);
+export function orderedPaths(snapshot: Snapshot): readonly string[] {
+  let order = pathOrders.get(snapshot.changed);
+  if (!order) {
+    const entries = snapshot.changed.map(({ path }) => ({ path, names: path.split('/').map(treeName) }));
+    entries.sort((a, b) => compareTreeNames(a.names, b.names));
+    order = entries.map(({ path }) => path);
+    pathOrders.set(snapshot.changed, order);
+  }
+  return order;
 }
 
 /** The first changed file after `path` in tree order that `accept` admits, or null when none follows. */
@@ -109,12 +137,12 @@ export function nextFileAfter(
   path: string,
   accept: (file: ChangedFile) => boolean,
 ): ChangedFile | null {
-  const byPath = new Map(snapshot.changed.map((f) => [f.path, f]));
+  const byPath = changedFilesByPath(snapshot.changed);
   const paths = orderedPaths(snapshot);
   const at = paths.indexOf(path);
   if (at === -1) return null;
-  for (const p of paths.slice(at + 1)) {
-    const f = byPath.get(p)!;
+  for (let i = at + 1; i < paths.length; i++) {
+    const f = byPath.get(paths[i]!)!;
     if (accept(f)) return f;
   }
   return null;
@@ -146,41 +174,44 @@ export function canJumpForward(state: Pick<ReviewState, 'jumps' | 'jumpIndex'>):
  * is a folder when it is not the path's last one, so the answer depends only on the two paths.
  */
 export function compareTreeOrder(a: string, b: string): number {
-  const sa = a.split('/');
-  const sb = b.split('/');
-  const n = Math.min(sa.length, sb.length);
+  return compareTreeNames(a.split('/').map(treeName), b.split('/').map(treeName));
+}
+
+function treeName(raw: string) {
+  const lower = raw.toLowerCase();
+  return { raw, lower, tokens: naturalTokens(lower) };
+}
+
+function compareTreeNames(a: ReturnType<typeof treeName>[], b: ReturnType<typeof treeName>[]): number {
+  const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) {
-    const x = sa[i]!;
-    const y = sb[i]!;
-    if (x === y) continue;
-    const aDir = i < sa.length - 1;
-    const bDir = i < sb.length - 1;
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.raw === y.raw) continue;
+    const aDir = i < a.length - 1;
+    const bDir = i < b.length - 1;
     if (aDir !== bDir) return aDir ? -1 : 1;
-    const lx = x.toLowerCase();
-    const ly = y.toLowerCase();
-    const natural = compareNatural(lx, ly);
+    const natural = compareNatural(x.tokens, y.tokens);
     if (natural !== 0) return natural;
-    if (lx !== ly) return lx < ly ? -1 : 1;
-    return x < y ? -1 : 1;
+    if (x.lower !== y.lower) return x.lower < y.lower ? -1 : 1;
+    return x.raw < y.raw ? -1 : 1;
   }
-  return sa.length - sb.length;
+  return a.length - b.length;
 }
 
 /** Digit runs compare as numbers, everything else by code unit; fewer tokens first on a shared prefix. */
-function compareNatural(a: string, b: string): number {
-  const ta = naturalTokens(a);
-  const tb = naturalTokens(b);
-  const n = Math.min(ta.length, tb.length);
+function compareNatural(a: (string | number)[], b: (string | number)[]): number {
+  const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) {
-    const x = ta[i]!;
-    const y = tb[i]!;
+    const x = a[i]!;
+    const y = b[i]!;
     if (x === y) continue;
     if (typeof x === 'number' && typeof y === 'number') return x < y ? -1 : 1;
     const sx = String(x);
     const sy = String(y);
     if (sx !== sy) return sx < sy ? -1 : 1;
   }
-  return ta.length - tb.length;
+  return a.length - b.length;
 }
 
 function naturalTokens(value: string): (string | number)[] {
@@ -191,15 +222,37 @@ function naturalTokens(value: string): (string | number)[] {
   return tokens;
 }
 
+type PathMarks = { blobs: Map<string, boolean>; everViewed: boolean };
+const viewedIndexes = new WeakMap<readonly ViewedEntry[], Map<string, PathMarks>>();
+
+function viewedByPath(entries: readonly ViewedEntry[]): Map<string, PathMarks> {
+  let index = viewedIndexes.get(entries);
+  if (index) return index;
+  index = new Map();
+  for (const entry of entries) {
+    let marks = index.get(entry.path);
+    if (!marks) {
+      marks = { blobs: new Map(), everViewed: false };
+      index.set(entry.path, marks);
+    }
+    // Use the first explicit mark, as a linear lookup would, even if old data has duplicates.
+    if (!marks.blobs.has(entry.blob)) marks.blobs.set(entry.blob, entry.viewed);
+    marks.everViewed ||= entry.viewed;
+  }
+  viewedIndexes.set(entries, index);
+  return index;
+}
+
 /**
  * Explicit mark at the current blob wins. Otherwise a viewed mark at an older
  * blob means the file changed after sign-off ('restale'); else the auto-viewed
  * patterns decide.
  */
 export function viewedState(state: Pick<ReviewState, 'viewed' | 'config'>, file: ChangedFile): ViewedState {
-  const explicit = state.viewed.find((v) => v.path === file.path && v.blob === file.blob);
-  if (explicit) return explicit.viewed ? 'viewed' : 'unviewed';
-  if (state.viewed.some((v) => v.path === file.path && v.viewed && v.blob !== file.blob)) return 'restale';
+  const marks = viewedByPath(state.viewed).get(file.path);
+  const explicit = marks?.blobs.get(file.blob);
+  if (explicit !== undefined) return explicit ? 'viewed' : 'unviewed';
+  if (marks?.everViewed) return 'restale';
   return matchesAutoViewed(state.config, file.path) ? 'viewed' : 'unviewed';
 }
 
@@ -227,13 +280,41 @@ export function isCollapsed(
 ): boolean {
   const explicit = state.collapsed[path];
   if (explicit != null) return explicit;
-  const f = state.snapshot?.changed.find((x) => x.path === path);
+  const f = changedFile(state.snapshot, path);
   return f ? isViewed(state, f) || f.generated : false;
 }
 
 /** Threads the UI shows: open ones, plus resolved when the user asked for them. */
 export function visibleThreads(state: Pick<ReviewState, 'threads' | 'showResolved'>): CommentThread[] {
   return state.showResolved ? state.threads : state.threads.filter((t) => !t.resolved);
+}
+
+type PathThreads = { all: CommentThread[]; open: CommentThread[] };
+const threadIndexes = new WeakMap<readonly CommentThread[], Map<string, PathThreads>>();
+const NO_THREADS: readonly CommentThread[] = [];
+
+/** Share the same groups between line highlights, comment cards, headers, and cursor actions. */
+export function threadsForPath(
+  state: Pick<ReviewState, 'threads' | 'showResolved'>,
+  path: string,
+): readonly CommentThread[] {
+  let index = threadIndexes.get(state.threads);
+  if (!index) {
+    index = new Map();
+    for (const thread of state.threads) {
+      const path = thread.anchor.path;
+      let group = index.get(path);
+      if (!group) {
+        group = { all: [], open: [] };
+        index.set(path, group);
+      }
+      group.all.push(thread);
+      if (!thread.resolved) group.open.push(thread);
+    }
+    threadIndexes.set(state.threads, index);
+  }
+  const group = index.get(path);
+  return (state.showResolved ? group?.all : group?.open) ?? NO_THREADS;
 }
 
 /** The header label of a thread: its line range and side, or the whole file. */
@@ -291,7 +372,7 @@ export function composerKey(
   return `${review}\0draft\0${state.draft.path}\0${at}`;
 }
 
-export function threadOfMessage(threads: CommentThread[], messageId: string): CommentThread | undefined {
+export function threadOfMessage(threads: readonly CommentThread[], messageId: string): CommentThread | undefined {
   return threads.find((t) => t.messages.some((m) => m.id === messageId));
 }
 
@@ -316,7 +397,7 @@ export function reuseThreads(prev: CommentThread[], next: CommentThread[]): Comm
 export function itemDeps(
   state: Pick<ReviewState, 'draft' | 'replyTo' | 'editingId'>,
   path: string,
-  mine: CommentThread[],
+  mine: readonly CommentThread[],
   collapsed: boolean,
 ): unknown[] {
   const reply = state.replyTo != null && mine.some((t) => t.id === state.replyTo) ? state.replyTo : null;
@@ -338,9 +419,9 @@ export function itemVersion(prev: ItemVersion | undefined, deps: unknown[]): Ite
   return { deps, version: (prev?.version ?? 0) + 1 };
 }
 
-const matcherCache = new Map<string, (p: string) => boolean>();
+const matcherCache = new WeakMap<readonly string[], (p: string) => boolean>();
 function matchesAutoViewed(config: UserConfig, path: string): boolean {
-  const key = config.autoViewed.join('\n');
+  const key = config.autoViewed;
   let m = matcherCache.get(key);
   if (!m) {
     const patterns = config.autoViewed.filter(Boolean);

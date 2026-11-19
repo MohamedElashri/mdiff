@@ -7,24 +7,40 @@ use futures::future::{BoxFuture, Shared};
 
 use crate::error::{Error, Result};
 use crate::generated::GeneratedFlags;
+use crate::git::patch_cache::PatchText;
 use crate::git::{GitRepo, WORKTREE};
 use crate::iterations::IterationStore;
-use crate::mode::view::{Shown, resolve_shown};
+use crate::mode::resolve::Endpoints;
+use crate::mode::view::{Shown, resolve_shown_with_endpoints};
 use crate::protocol::{
     ChangeStatus, ChangedFile, Iteration, MAX_RANGE_COMMITS, RangeCommits, RangeEnds, Review, ReviewedCommit, Snapshot,
 };
 
 /// Patches computed ahead for the first changed files, which the viewer asks for first.
 const PREWARM: usize = 3;
+const LIVE_PATCH_COUNT: usize = 64;
+const LIVE_PATCH_BYTES: usize = 512 * 1024;
 
 type Task<T> = Shared<BoxFuture<'static, Result<T>>>;
+type Patch = Arc<PatchText>;
 
 struct State {
     version: i64,
     context: u32,
     snapshot: Option<Task<Arc<Snapshot>>>,
-    patches: HashMap<String, Task<String>>,
+    patches: HashMap<String, Task<Patch>>,
+    live_patches: HashMap<String, Patch>,
     all: Option<Task<String>>,
+}
+
+impl State {
+    fn reset(&mut self, version: i64) {
+        self.version = version;
+        self.snapshot = None;
+        self.patches.clear();
+        self.live_patches.clear();
+        self.all = None;
+    }
 }
 
 /// One review's snapshots, cached until `invalidate`. A failed computation is dropped from the cache,
@@ -56,7 +72,14 @@ impl Snapshotter {
             review,
             range_key,
             iterations,
-            state: Mutex::new(State { version, context, snapshot: None, patches: HashMap::new(), all: None }),
+            state: Mutex::new(State {
+                version,
+                context,
+                snapshot: None,
+                patches: HashMap::new(),
+                live_patches: HashMap::new(),
+                all: None,
+            }),
             generated: GeneratedFlags::default(),
             cancelled: tokio::sync::watch::channel(0).0,
             identity: uuid::Uuid::new_v4().to_string(),
@@ -68,18 +91,15 @@ impl Snapshotter {
         let mut state = self.state.lock().unwrap();
         if state.context != context {
             state.context = context;
-            drop(state);
-            self.invalidate(version);
+            self.cancel_pending();
+            state.reset(version);
         }
     }
 
     pub fn invalidate(&self, version: i64) {
-        self.cancel_pending();
         let mut state = self.state.lock().unwrap();
-        state.version = version;
-        state.snapshot = None;
-        state.patches.clear();
-        state.all = None;
+        self.cancel_pending();
+        state.reset(version);
     }
 
     pub fn cancel_pending(&self) {
@@ -104,7 +124,8 @@ impl Snapshotter {
     }
 
     /// Fast path for content edits to known tracked regular files. All ambiguous changes
-    /// return None, asking the session to perform its normal full recomputation.
+    /// return None, asking the session to perform its normal full recomputation. Renames and
+    /// submodules already in the diff only require that fallback when an affected path is dirty.
     pub async fn refresh_paths(
         self: &Arc<Self>,
         paths: &HashSet<String>,
@@ -114,21 +135,28 @@ impl Snapshotter {
         if previous.new_sha != WORKTREE
             || previous.old_sha == WORKTREE
             || paths.is_empty()
-            || previous.changed.iter().any(|f| f.old_path.is_some() || f.submodule.is_some())
-            || self.repo.resolve("HEAD").await.unwrap_or_default() != previous.head_sha
+            || paths.iter().map(|path| path.len() + 16).sum::<usize>() > 64 * 1024
+            || previous.changed.iter().any(|f| {
+                f.old_path.as_ref().is_some_and(|old| paths.contains(old) || paths.contains(&f.path))
+                    || f.submodule.is_some() && paths.contains(&f.path)
+            })
         {
             return Ok(None);
         }
-        let tracked: HashSet<_> = self.repo.ls_files().await?.into_iter().collect();
+        let selected: Vec<String> = paths.iter().cloned().collect();
+        let (head, tracked) = tokio::join!(self.repo.resolve("HEAD"), self.repo.tracked_paths(&selected));
+        if head.unwrap_or_default() != previous.head_sha {
+            return Ok(None);
+        }
+        let tracked = tracked?;
         for path in paths {
             if !tracked.contains(path)
-                || !previous.tree.contains(path)
+                || previous.tree.binary_search(path).is_err()
                 || !tokio::fs::symlink_metadata(self.repo.root.join(path)).await.is_ok_and(|m| m.is_file())
             {
                 return Ok(None);
             }
         }
-        let selected: Vec<String> = paths.iter().cloned().collect();
         let mut changed = self.repo.numstat_paths(&previous.old_sha, &previous.new_sha, Some(&selected)).await?;
         if changed.iter().any(|f| f.status != ChangeStatus::M || f.old_path.is_some()) {
             return Ok(None);
@@ -140,10 +168,14 @@ impl Snapshotter {
         snap.changed.extend(changed);
         snap.changed.sort_by(|a, b| a.path.cmp(&b.path));
         let snap = Arc::new(snap);
-        self.cancel_pending();
         let mut state = self.state.lock().unwrap();
+        if state.version != previous.version {
+            return Ok(None);
+        }
+        self.cancel_pending();
         state.version = version;
-        state.patches.retain(|path, task| !paths.contains(path) && task.peek().is_some_and(Result::is_ok));
+        state.patches.clear();
+        state.live_patches.retain(|path, _| !paths.contains(path));
         state.all = None;
         let ready = snap.clone();
         state.snapshot = Some(async move { Ok(ready) }.boxed().shared());
@@ -151,17 +183,25 @@ impl Snapshotter {
     }
 
     pub async fn current(self: &Arc<Self>) -> Result<Arc<Snapshot>> {
-        let (task, version) = {
+        self.current_with_endpoints(None).await
+    }
+
+    pub(crate) async fn current_with_endpoints(self: &Arc<Self>, initial: Option<Endpoints>) -> Result<Arc<Snapshot>> {
+        let task = {
             let mut state = self.state.lock().unwrap();
             let version = state.version;
             let this = self.clone();
-            let task =
-                state.snapshot.get_or_insert_with(|| async move { this.compute(version).await }.boxed().shared());
-            (task.clone(), version)
+            state
+                .snapshot
+                .get_or_insert_with(|| async move { this.compute(version, initial).await }.boxed().shared())
+                .clone()
         };
-        let result = task.await;
+        let result = task.clone().await;
         if result.is_err() {
-            self.forget(|state| state.version == version, |state| state.snapshot = None);
+            self.forget(
+                |state| state.snapshot.as_ref().is_some_and(|t| t.ptr_eq(&task)),
+                |state| state.snapshot = None,
+            );
         }
         result
     }
@@ -175,8 +215,12 @@ impl Snapshotter {
     }
 
     pub async fn patch(self: &Arc<Self>, path: &str) -> Result<Option<String>> {
+        Ok(self.patch_text(path).await?.map(|patch| patch.to_string()))
+    }
+
+    async fn patch_text(self: &Arc<Self>, path: &str) -> Result<Option<Patch>> {
         let snap = self.current().await?;
-        let Some(file) = snap.changed.iter().find(|f| f.path == path) else {
+        let Some(file) = changed_file(&snap, path) else {
             return Ok(None);
         };
         self.patch_for(&snap, file).await.map(Some)
@@ -184,9 +228,10 @@ impl Snapshotter {
 
     /// Parsed hunks are shared by graph passes and bounded by the same repository budget.
     pub async fn changes(self: &Arc<Self>, path: &str) -> Result<crate::comments::hunks::NewSideChanges> {
-        use sha1::{Digest, Sha1};
-        let patch = self.patch(path).await?.unwrap_or_default();
-        let key = format!("hunks:{}", hex::encode(Sha1::digest(patch.as_bytes())));
+        let Some(patch) = self.patch_text(path).await? else {
+            return Ok(crate::comments::hunks::NewSideChanges::default());
+        };
+        let key = format!("hunks:{}", patch.digest());
         if let Some(cached) = self.repo.patches.get(&key)
             && let Ok(changes) = serde_json::from_str(&cached)
         {
@@ -204,9 +249,8 @@ impl Snapshotter {
         side: crate::protocol::Side,
         context: bool,
     ) -> Result<Vec<(i64, i64)>> {
-        use sha1::{Digest, Sha1};
-        let patch = self.patch(path).await?.unwrap_or_default();
-        let key = format!("search:{side:?}:{context}:{}", hex::encode(Sha1::digest(patch.as_bytes())));
+        let Some(patch) = self.patch_text(path).await? else { return Ok(Vec::new()) };
+        let key = format!("search:{side:?}:{context}:{}", patch.digest());
         if let Some(cached) = self.repo.patches.get(&key)
             && let Ok(ranges) = serde_json::from_str(&cached)
         {
@@ -230,30 +274,26 @@ impl Snapshotter {
         offset: usize,
         digest: Option<&str>,
     ) -> Result<serde_json::Value> {
-        use sha1::{Digest, Sha1};
         let snap = self.current().await?;
         if snap.version != version {
             return Err(Error::revspec("review changed; reload the patch"));
         }
-        let file = snap.changed.iter().find(|f| f.path == path).ok_or_else(|| Error::revspec("not a changed file"))?;
-        let key = format!("page:{}:{version}:{path}", self.identity);
-        let hash_key = format!("digest:{key}");
-        let cached = self.repo.patches.get(&key);
-        let cached_hash = cached.as_ref().and_then(|_| self.repo.patches.get(&hash_key));
-        let patch: Arc<str> = match cached {
-            Some(patch) => patch,
-            None => {
+        let file = changed_file(&snap, path).ok_or_else(|| Error::revspec("not a changed file"))?;
+        let patch = if is_live(&snap) {
+            // Retain larger live patches in the repository budget for continuations.
+            let key = format!("page:{}:{version}:{path}", self.identity);
+            if let Some(cached) = self.repo.patches.get(&key) {
+                cached
+            } else {
                 let patch = self.patch_for(&snap, file).await?;
-                self.repo.patches.insert(key, patch.clone());
-                Arc::from(patch)
+                self.repo.patches.insert_shared(key, patch.clone());
+                patch
             }
+        } else {
+            self.patch_for(&snap, file).await?
         };
-        let hash = cached_hash.map(|hash| hash.to_string()).unwrap_or_else(|| {
-            let hash = hex::encode(Sha1::digest(patch.as_bytes()));
-            self.repo.patches.insert(hash_key, hash.clone());
-            hash
-        });
-        if offset > patch.len() || !patch.is_char_boundary(offset) || (offset > 0 && digest != Some(hash.as_str())) {
+        let hash = patch.digest();
+        if !patch.is_char_boundary(offset) || (offset > 0 && digest != Some(hash)) {
             return Err(Error::revspec("patch changed; reload the file"));
         }
         let mut end = (offset + 64 * 1024).min(patch.len());
@@ -297,89 +337,135 @@ impl Snapshotter {
     /// Cached files are reused; uncached files still share one Git process.
     pub async fn patch_many(self: &Arc<Self>, paths: &[String]) -> Result<String> {
         let snap = self.current().await?;
-        let by_path: HashMap<&str, &ChangedFile> = snap.changed.iter().map(|f| (f.path.as_str(), f)).collect();
-        let mut seen = BTreeSet::new();
-        let mut cached = Vec::new();
+        let mut seen = HashSet::new();
+        let mut output = String::new();
         let mut rest = Vec::new();
         for path in paths.iter().filter(|p| seen.insert(p.as_str())) {
-            let Some(file) = by_path.get(path.as_str()) else { continue };
-            if let Some(value) = patch_key(&snap, file).and_then(|key| self.repo.patches.get(&key)) {
-                cached.push(value.to_string());
+            let Some(file) = changed_file(&snap, path) else { continue };
+            let cached = if let Some(key) = patch_key(&snap, file) {
+                self.repo.patches.get(&key)
             } else {
-                rest.push((*file).clone());
+                self.state.lock().unwrap().live_patches.get(path).cloned()
+            };
+            if let Some(value) = cached {
+                output.push_str(&value);
+            } else {
+                rest.push(file.clone());
             }
         }
-        let batch = match rest.as_slice() {
-            [] => String::new(),
-            [file] => self.patch_for(&snap, file).await?,
+        match rest.as_slice() {
+            [] => (),
+            [file] => {
+                let patch = self.patch_for(&snap, file).await?;
+                output.push_str(&patch);
+            }
             _ => {
                 let patch = self
                     .read(snap.version, async {
                         Ok(self.repo.patch_many(&snap.old_sha, &snap.new_sha, &rest, snap.context as u32).await?)
                     })
                     .await?;
-                // Match full headers against known paths, never split a filename on spaces.
-                let headers: HashMap<String, &ChangedFile> =
-                    rest.iter().map(|file| (patch_header(file), file)).collect();
-                for part in patch_parts(&patch) {
-                    if let Some(file) = part.lines().next().and_then(|header| headers.get(header))
-                        && let Some(key) = patch_key(&snap, file)
-                    {
-                        self.repo.patches.insert(key, part.to_owned());
-                    }
+                self.cache_batch(&snap, &rest, &patch);
+                if output.is_empty() {
+                    output = patch;
+                } else {
+                    output.push_str(&patch);
                 }
-                patch
             }
-        };
+        }
         if self.state.lock().unwrap().version != snap.version {
             return Err(Error::revspec("review changed; retry"));
         }
-        Ok(cached.concat() + &batch)
+        Ok(output)
+    }
+
+    fn cache_batch(&self, snap: &Snapshot, files: &[ChangedFile], patch: &str) {
+        let live_slots = is_live(snap).then(|| LIVE_PATCH_COUNT - self.state.lock().unwrap().live_patches.len());
+        if live_slots == Some(0) {
+            return;
+        }
+        // Match full headers against known paths, never split a filename on spaces.
+        let headers: HashMap<_, _> = files.iter().map(|file| (patch_header(file), file)).collect();
+        let parts = patch_parts(patch).into_iter().filter_map(|part| {
+            let file = headers.get(part.lines().next()?)?;
+            Some((*file, part))
+        });
+        if let Some(slots) = live_slots {
+            // Keep scanning and allocating patch text outside the snapshot lock.
+            let entries = parts
+                .filter(|(_, part)| part.len() <= LIVE_PATCH_BYTES)
+                .take(slots)
+                .map(|(file, part)| (file.path.clone(), Arc::new(PatchText::new(part.to_owned()))))
+                .collect::<Vec<_>>();
+            let mut state = self.state.lock().unwrap();
+            if state.version == snap.version {
+                for (path, patch) in entries {
+                    if state.live_patches.len() == LIVE_PATCH_COUNT {
+                        break;
+                    }
+                    state.live_patches.entry(path).or_insert(patch);
+                }
+            }
+        } else {
+            for (file, part) in parts {
+                if let Some(key) = patch_key(snap, file) {
+                    self.repo.patches.insert(key, part.to_owned());
+                }
+            }
+        }
     }
 
     fn patch_for(
         self: &Arc<Self>,
         snap: &Arc<Snapshot>,
         file: &ChangedFile,
-    ) -> impl Future<Output = Result<String>> + use<> {
+    ) -> impl Future<Output = Result<Patch>> + use<> {
         let (this, snap, file) = (self.clone(), snap.clone(), file.clone());
         async move {
             // Immutable comparisons can safely outlive the snapshot and survive navigation.
             // Live files remain generation-scoped until their contents have been verified.
             let key = patch_key(&snap, &file);
-            if let Some(value) = key.as_ref().and_then(|key| this.repo.patches.get(key)) {
-                return Ok(value.to_string());
-            }
             let task = {
                 let mut state = this.state.lock().unwrap();
                 if state.version != snap.version {
                     return Err(Error::revspec("review changed; reload the patch"));
                 }
-                let (repo, snap, file) = (this.repo.clone(), snap.clone(), file.clone());
-                let mut cancelled = this.cancelled.subscribe();
-                state.patches.entry(file.path.clone()).or_insert_with(|| async move {
-                    tokio::select! {
-                        biased;
-                        _ = cancelled.changed() => Err(Error::revspec("review changed; retry")),
-                        result = repo.patch(&snap.old_sha, &snap.new_sha, &file, snap.context as u32, None) => Ok(result?),
-                    }
-                }.boxed().shared()).clone()
+                if let Some(value) = key.as_ref().and_then(|key| this.repo.patches.get(key)) {
+                    return Ok(value);
+                }
+                if let Some(value) = state.live_patches.get(&file.path) {
+                    return Ok(value.clone());
+                }
+                state.patches.entry(file.path.clone()).or_insert_with(|| {
+                    let (repo, snap, file) = (this.repo.clone(), snap.clone(), file.clone());
+                    let mut cancelled = this.cancelled.subscribe();
+                    async move {
+                        let text = tokio::select! {
+                            biased;
+                            _ = cancelled.changed() => return Err(Error::revspec("review changed; retry")),
+                            result = repo.patch(&snap.old_sha, &snap.new_sha, &file, snap.context as u32, None) => result?,
+                        };
+                        let patch = Arc::new(PatchText::new(text));
+                        if let Some(key) = key {
+                            repo.patches.insert_shared(key, patch.clone());
+                        }
+                        Ok(patch)
+                    }.boxed().shared()
+                }).clone()
             };
             let result = task.clone().await;
-            if let (Some(key), Ok(value)) = (key, &result) {
-                this.repo.patches.insert(key, value.clone());
-            }
             // Completed immutable patches live only in the bounded repository cache. Failed
             // jobs are always retryable; live results are bounded to a small working set.
             this.forget(
                 |state| state.patches.get(&file.path).is_some_and(|t| t.ptr_eq(&task)),
                 |state| {
-                    if result.is_err()
-                        || snap.new_sha != WORKTREE && snap.old_sha != WORKTREE
-                        || state.patches.len() > 64
-                        || result.as_ref().is_ok_and(|p| p.len() > 512 * 1024)
+                    state.patches.remove(&file.path);
+                    if is_live(&snap)
+                        && state.live_patches.len() < LIVE_PATCH_COUNT
+                        && let Ok(patch) = &result
+                        && patch.len() <= LIVE_PATCH_BYTES
                     {
-                        state.patches.remove(&file.path);
+                        state.live_patches.entry(file.path.clone()).or_insert_with(|| patch.clone());
                     }
                 },
             );
@@ -390,18 +476,27 @@ impl Snapshotter {
         }
     }
 
-    async fn compute(self: Arc<Self>, version: i64) -> Result<Arc<Snapshot>> {
+    async fn compute(self: Arc<Self>, version: i64, initial: Option<Endpoints>) -> Result<Arc<Snapshot>> {
         let repo = &self.repo;
-        let shown = resolve_shown(repo, &self.review, self.iterations.as_ref(), self.range_key.as_deref());
+        let shown = resolve_shown_with_endpoints(
+            repo,
+            &self.review,
+            self.iterations.as_ref(),
+            self.range_key.as_deref(),
+            initial,
+        );
         let (shown, head_sha) = tokio::join!(shown, repo.resolve("HEAD"));
         let (shown, head_sha) = (shown?, head_sha.unwrap_or_default());
         let Shown { old_sha, new_sha, follows, range, interdiff, commit, comment_key } = shown;
         // The tree belongs to the selected new side: a commit's own listing, or the index plus
         // untracked files (added below via `changed`) for the worktree.
         let tracked = async {
-            if new_sha == WORKTREE {
+            if new_sha == WORKTREE && old_sha == WORKTREE {
+                // The empty comparison does not enumerate untracked changes via numstat.
                 let (files, untracked) = tokio::try_join!(repo.ls_files(), repo.untracked())?;
                 Ok::<_, Error>(files.into_iter().chain(untracked).filter(|p| !p.ends_with('/')).collect::<Vec<_>>())
+            } else if new_sha == WORKTREE {
+                Ok(repo.ls_files().await?)
             } else {
                 Ok(repo.ls_tree(&new_sha).await?)
             }
@@ -502,8 +597,18 @@ impl Snapshotter {
     }
 }
 
+fn changed_file<'a>(snap: &'a Snapshot, path: &str) -> Option<&'a ChangedFile> {
+    // Both numstat and selective refresh publish changed paths in sorted order.
+    let index = snap.changed.binary_search_by(|file| file.path.as_str().cmp(path)).ok()?;
+    snap.changed.get(index)
+}
+
+fn is_live(snap: &Snapshot) -> bool {
+    snap.old_sha == WORKTREE || snap.new_sha == WORKTREE
+}
+
 fn patch_key(snap: &Snapshot, file: &ChangedFile) -> Option<String> {
-    (snap.old_sha != WORKTREE && snap.new_sha != WORKTREE)
+    (!is_live(snap))
         .then(|| serde_json::to_string(&(&snap.old_sha, &snap.new_sha, snap.context, file)).expect("patch key"))
 }
 

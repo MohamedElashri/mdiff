@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, GitPullRequest, RefreshCw, X } from "lucide-react";
 import { api } from "../vendor/diffle/src/client/api";
 import { request } from "../vendor/diffle/src/client/transport";
@@ -58,8 +58,16 @@ export function GithubPanel({
   const previousSnapshot = useRef(snapshot);
   const metadata = github.data;
   const pr = metadata?.pullRequest;
-  const open = threads.filter((t) => !t.resolved);
-  const eligible = open.filter((t) => !t.stale);
+  const { eligible, stale } = useMemo(() => {
+    let eligible = 0;
+    let stale = 0;
+    for (const thread of threads) {
+      if (thread.resolved) continue;
+      if (thread.stale) stale++;
+      else eligible++;
+    }
+    return { eligible, stale };
+  }, [threads]);
   const canExport = metadata?.reason === null;
   const reason =
     context && !context.connected
@@ -199,12 +207,8 @@ export function GithubPanel({
       <section>
         <h3>Transfer comments</h3>
         <p>
-          {eligible.length} open {eligible.length === 1 ? "thread" : "threads"}{" "}
-          ready
-          {open.length > eligible.length
-            ? ` · ${open.length - eligible.length} stale skipped`
-            : ""}
-          .
+          {eligible} open {eligible === 1 ? "thread" : "threads"} ready
+          {stale > 0 ? ` · ${stale} stale skipped` : ""}.
         </p>
         <p>
           Save comments to a pending GitHub review. Review and submit them on
@@ -217,7 +221,7 @@ export function GithubPanel({
         )}
         <button
           className="primary"
-          disabled={!!busy || !canExport || !eligible.length}
+          disabled={!!busy || !canExport || !eligible}
           onClick={() =>
             void act("export", async () => {
               const target = useStore.getState().snapshot;

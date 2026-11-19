@@ -17,10 +17,14 @@ use diffle::{
 use serde::Serialize;
 use std::{path::PathBuf, sync::Arc};
 use tauri::{Emitter, Manager, State};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, MappedMutexGuard, Mutex, MutexGuard};
 
 #[derive(Default)]
-pub struct Engine(pub Mutex<Option<ReviewRuntime>>);
+pub struct Engine {
+    pub(crate) active: Mutex<Option<ReviewRuntime>>,
+    // Serialize replacement, teardown, and settings writes without blocking active review reads.
+    pub(crate) lifecycle: Mutex<()>,
+}
 pub struct ReviewRuntime {
     pub(crate) config: Arc<UserConfigStore>,
     pub(crate) router: axum::Router,
@@ -28,11 +32,12 @@ pub struct ReviewRuntime {
     pub(crate) gitlab: Option<Arc<crate::gitlab::Gitlab>>,
     pub(crate) github: Arc<crate::github::Integration>,
     events: Option<tokio::task::JoinHandle<()>>,
+    closing: watch::Sender<bool>,
     hub: Arc<Hub>,
     session: Arc<Session>,
     repo: Arc<GitRepo>,
     lsp: Option<Arc<LspPool>>,
-    _clone: Option<tempfile::TempDir>,
+    temporary: Option<Arc<tempfile::TempDir>>,
 }
 impl ReviewRuntime {
     async fn enable_lsp(&mut self) -> anyhow::Result<diffle::protocol::LspStatus> {
@@ -64,10 +69,17 @@ impl ReviewRuntime {
         &self.repo.root
     }
     pub(crate) fn temporary_repository(&self) -> bool {
-        self._clone.is_some()
+        self.temporary.is_some()
+    }
+    pub(crate) fn temporary_checkout(&self) -> Option<Arc<tempfile::TempDir>> {
+        self.temporary.clone()
+    }
+    pub(crate) fn closing(&self) -> watch::Receiver<bool> {
+        self.closing.subscribe()
     }
 
     async fn close(mut self) {
+        self.closing.send_replace(true);
         self.github
             .enabled
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -89,10 +101,51 @@ impl ReviewRuntime {
     }
 }
 impl Engine {
+    pub(crate) async fn runtime(
+        &self,
+        id: &str,
+    ) -> Result<MappedMutexGuard<'_, ReviewRuntime>, String> {
+        MutexGuard::try_map(self.active.lock().await, |active| {
+            active.as_mut().filter(|runtime| runtime.id == id)
+        })
+        .map_err(|_| "This review has closed".into())
+    }
+
     pub async fn close(&self) {
-        if let Some(runtime) = self.0.lock().await.take() {
+        let _transition = self.lifecycle.lock().await;
+        let runtime = self.active.lock().await.take();
+        if let Some(runtime) = runtime {
             runtime.close().await;
         }
+    }
+
+    async fn replace_review(
+        &self,
+        gitlab_url: Option<&str>,
+        prepare: impl std::future::Future<Output = Result<(ReviewRuntime, OpenedReview), String>>,
+    ) -> Result<OpenedReview, String> {
+        let _transition = self.lifecycle.lock().await;
+        // Reopening the same MR may rewrite the checkout the current review is using.
+        let shared_checkout = if let Some(url) = gitlab_url {
+            let active = self.active.lock().await;
+            let shared = active
+                .as_ref()
+                .and_then(|runtime| runtime.gitlab.as_ref())
+                .is_some_and(|gitlab| gitlab.shares_checkout(url));
+            shared.then_some(active)
+        } else {
+            None
+        };
+        let (runtime, opened) = prepare.await?;
+        let previous = match shared_checkout {
+            Some(mut active) => active.take(),
+            None => self.active.lock().await.take(),
+        };
+        if let Some(previous) = previous {
+            previous.close().await;
+        }
+        *self.active.lock().await = Some(runtime);
+        Ok(opened)
     }
 }
 #[derive(Serialize)]
@@ -128,8 +181,8 @@ pub async fn open_review(
         gitlab_token,
         gitlab_host,
     } = options;
-    let mut slot = state.0.lock().await;
-    replace_review(&mut slot, async move {
+    let target = gitlab_url.clone();
+    let prepare = async move {
         let gitlab = match gitlab_url {
             Some(url) => Some(Arc::new(
                 crate::gitlab::Gitlab::connect(&url, gitlab_token, gitlab_host.as_deref())
@@ -190,19 +243,8 @@ pub async fn open_review(
             }
         }));
         Ok((runtime, opened))
-    })
-    .await
-}
-async fn replace_review(
-    slot: &mut Option<ReviewRuntime>,
-    prepare: impl std::future::Future<Output = Result<(ReviewRuntime, OpenedReview), String>>,
-) -> Result<OpenedReview, String> {
-    let (runtime, opened) = prepare.await?;
-    if let Some(previous) = slot.take() {
-        previous.close().await;
-    }
-    *slot = Some(runtime);
-    Ok(opened)
+    };
+    state.replace_review(target.as_deref(), prepare).await
 }
 
 async fn start(
@@ -213,27 +255,21 @@ async fn start(
     token_host: Option<String>,
     gitlab: Option<Arc<crate::gitlab::Gitlab>>,
 ) -> anyhow::Result<(ReviewRuntime, OpenedReview)> {
-    let config = Arc::new(UserConfigStore::open(config_path).await);
+    let (config, connections) = tokio::join!(
+        UserConfigStore::open(config_path.clone()),
+        crate::github::Connections::load(&config_path),
+    );
+    let config = Arc::new(config);
     let settings = config.get();
     let github_enabled = Arc::new(std::sync::atomic::AtomicBool::new(
-        crate::github::Connections::load(config.file())
-            .await?
-            .github_enabled
-            && gitlab.is_none(),
+        connections?.github_enabled && gitlab.is_none(),
     ));
     if !github_enabled.load(std::sync::atomic::Ordering::SeqCst)
         && matches!(request, EnterRequest::Pr { .. })
     {
         anyhow::bail!("GitHub integration is disabled. Enable it in Preferences → Connections to open a pull request.");
     }
-    let opened = if gitlab.is_some() {
-        diffle::cli::repository::Opened {
-            repo: Arc::new(GitRepo::open(&path).await?),
-            github: Github::tokenless(),
-            token_source: None,
-            clone: None,
-        }
-    } else if !github_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+    let opened = if !github_enabled.load(std::sync::atomic::Ordering::SeqCst) {
         // Do not resolve environment credentials or invoke gh when the integration is off.
         diffle::cli::repository::Opened {
             repo: Arc::new(GitRepo::open(&path).await?),
@@ -295,11 +331,12 @@ async fn start(
         gitlab,
         github: integration,
         events: None,
+        closing: watch::channel(false).0,
         hub,
         session: session.clone(),
         repo: opened.repo,
         lsp: pool.clone(),
-        _clone: opened.clone,
+        temporary: opened.clone.map(Arc::new),
     };
     let launch = async {
         let review = session.resolve(request).await?;
@@ -341,12 +378,12 @@ pub async fn enable_review_lsp(
     state: State<'_, Engine>,
     id: String,
 ) -> Result<diffle::protocol::LspStatus, String> {
-    let mut slot = state.0.lock().await;
-    let runtime = slot
-        .as_mut()
-        .filter(|r| r.id == id)
-        .ok_or("This review has closed")?;
-    runtime.enable_lsp().await.map_err(|e| format!("{e:#}"))
+    state
+        .runtime(&id)
+        .await?
+        .enable_lsp()
+        .await
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(test)]
@@ -598,22 +635,23 @@ mod tests {
             .success());
         std::fs::write(dir.path().join("example.txt"), "keep this review\n").unwrap();
         let config = dir.path().join(".git/review-settings.json");
-        let mut slot = None;
-        let opened = replace_review(&mut slot, async {
-            start(
-                config.clone(),
-                dir.path().into(),
-                EnterRequest::Working,
-                None,
-                None,
-                None,
-            )
+        let engine = Engine::default();
+        let start_worktree = |path| {
+            let config = config.clone();
+            async move {
+                start(config, path, EnterRequest::Working, None, None, None)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        };
+        let opened = engine
+            .replace_review(None, start_worktree(dir.path().into()))
             .await
-            .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-        let router = slot.as_ref().unwrap().router.clone();
+            .unwrap();
+        let (router, closing) = {
+            let runtime = engine.runtime(&opened.id).await.unwrap();
+            (runtime.router.clone(), runtime.closing())
+        };
         let added = dispatch(
             router.clone(),
             "POST",
@@ -623,46 +661,44 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(added.status, 201);
-        let failed = replace_review(&mut slot, async {
-            start(
-                config.clone(),
-                dir.path().join("not-a-repository"),
-                EnterRequest::Working,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|e| e.to_string())
-        })
-        .await;
+        let (preparing, started) = tokio::sync::oneshot::channel();
+        let (read, resume) = tokio::sync::oneshot::channel();
+        let (failed, ()) = tokio::join!(
+            engine.replace_review(None, async {
+                preparing.send(()).unwrap();
+                resume.await.unwrap();
+                start_worktree(dir.path().join("not-a-repository")).await
+            }),
+            async {
+                started.await.unwrap();
+                let router = {
+                    let runtime = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        engine.runtime(&opened.id),
+                    )
+                    .await
+                    .expect("preparing a replacement must not lock the active review")
+                    .unwrap();
+                    runtime.router.clone()
+                };
+                let response = dispatch(router, "GET", "/api/threads", None).await.unwrap();
+                assert_eq!(response.status, 200);
+                assert!(String::from_utf8_lossy(&response.body).contains("Keep this comment"));
+                read.send(()).unwrap();
+            },
+        );
         assert!(failed.is_err());
-        let runtime = slot
-            .as_ref()
-            .expect("A failed open must keep the previous runtime");
-        assert_eq!(runtime.id, opened.id);
-        let comments = dispatch(runtime.router.clone(), "GET", "/api/threads", None)
+        assert!(engine.runtime(&opened.id).await.is_ok());
+        assert!(!*closing.borrow());
+        let next = engine
+            .replace_review(None, start_worktree(dir.path().into()))
             .await
             .unwrap();
-        assert_eq!(comments.status, 200);
-        assert!(String::from_utf8_lossy(&comments.body).contains("Keep this comment"));
-        let next = replace_review(&mut slot, async {
-            start(
-                config,
-                dir.path().into(),
-                EnterRequest::Working,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
         assert_ne!(next.id, opened.id);
-        assert!(slot.as_ref().unwrap().lsp.is_none());
-        slot.take().unwrap().close().await;
+        assert!(*closing.borrow());
+        assert!(engine.runtime(&opened.id).await.is_err());
+        assert!(engine.runtime(&next.id).await.unwrap().lsp.is_none());
+        engine.close().await;
     }
 }
 

@@ -5,7 +5,7 @@ import { FileTree, useFileTree, useFileTreeSearch } from '@pierre/trees/react';
 import { EyeOff } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { focusReview } from '@/client/keyboard/useKeymap.js';
-import { countViewed, filesUnder, isCollapsed, isViewed, viewedState } from '@/client/model.js';
+import { changedFile, isCollapsed, isViewed } from '@/client/model.js';
 import { remPx } from '@/client/scale.js';
 import { useStore } from '@/client/store.js';
 import { ButtonLabel } from '@/client/ui/ButtonLabel.js';
@@ -14,7 +14,7 @@ import { activeView } from '@/client/views/state.js';
 import { useCutNameTitles } from './cutNames.js';
 import { directoryDecoration, rowDecoration } from './decoration.js';
 import type { SyncKeys } from './sync.js';
-import { decorationKey, directoriesOf, expandedAfterReset, statusKey, syncStep, toGitStatus } from './sync.js';
+import { directoriesOf, expandedAfterReset, statusKey, syncStep, toGitStatus, treeDecorations } from './sync.js';
 import { pinLanes, TREE_CSS } from './treeCss.js';
 import { toggleDirectoryViewed, trackMenuPointer, TreeMenu } from './TreeMenu.js';
 
@@ -27,11 +27,9 @@ export function FileTreePane() {
   const setViewedMany = useStore((s) => s.setViewedMany);
   const viewed = useStore((s) => s.viewed);
   const config = useStore((s) => s.config);
-  // Memoised: a raw selector would rescan every changed file on each store update, including cursor moves.
-  const viewedCount = useMemo(
-    () => (snapshot ? countViewed({ viewed, config }, snapshot.changed) : 0),
-    [snapshot, viewed, config],
-  );
+  const changed = snapshot?.changed;
+  const decorations = useMemo(() => treeDecorations({ viewed, config }, changed ?? []), [changed, viewed, config]);
+  const { viewedCount } = decorations;
   const unview = useConfirm(() => void setViewedMany(snapshot?.changed.map((f) => f.path) ?? [], false));
 
   const paths = useMemo(() => {
@@ -39,10 +37,15 @@ export function FileTreePane() {
     return scope === 'changed' ? snapshot.changed.map((f) => f.path) : snapshot.tree;
   }, [snapshot, scope]);
 
-  const gitStatus = useMemo<GitStatusEntry[]>(() => snapshot?.changed.map(toGitStatus) ?? [], [snapshot]);
+  const gitStatus = useMemo<GitStatusEntry[]>(() => changed?.map(toGitStatus) ?? [], [changed]);
+  const pathSignature = useMemo(() => paths.join('\0'), [paths]);
+  const statusSignature = useMemo(() => statusKey(changed ?? []), [changed]);
+  const [initialExpandedPaths] = useState(() => directoriesOf(paths));
 
   const openRef = useRef(openFile);
   openRef.current = openFile;
+  const decorationRef = useRef({ snapshot, decorations });
+  decorationRef.current = { snapshot, decorations };
 
   const { model } = useFileTree({
     paths,
@@ -50,7 +53,7 @@ export function FileTreePane() {
     // Explicit expansion, not 'open': the library ignores `initialExpandedPaths` under 'open',
     // and the sync effect below needs it to carry collapsed folders across `resetPaths`.
     initialExpansion: 'closed',
-    initialExpandedPaths: directoriesOf(paths),
+    initialExpandedPaths,
     search: true,
     // The tree sizes rows and paddings in px; derive both from the root font size so it follows the app's scale.
     itemHeight: Math.round(1.875 * remPx()),
@@ -62,17 +65,17 @@ export function FileTreePane() {
       // The active file is mirrored into the selection below; only a change of file is a request to open one.
       if (path && !path.endsWith('/') && path !== useStore.getState().activePath) void openRef.current(path);
     },
-    // Counts and viewed mark in the decoration lane; reads live state at render time.
+    // Counts and viewed mark in the lane; the model retains this callback from construction.
     // Clicks are handled below, since decorations are plain text.
     renderRowDecoration: ({ item }) => {
-      const s = useStore.getState();
-      const changed = s.snapshot?.changed ?? [];
+      const { snapshot, decorations } = decorationRef.current;
       if (item.kind === 'directory') {
-        const files = filesUnder(changed, item.path);
-        return files.length ? directoryDecoration(countViewed(s, files), files.length) : null;
+        const counts = decorations.directories.get(item.path);
+        return counts ? directoryDecoration(counts.viewed, counts.total) : null;
       }
-      const f = changed.find((x) => x.path === item.path);
-      return f ? rowDecoration(f, viewedState(s, f)) : null;
+      const file = changedFile(snapshot, item.path);
+      const mark = decorations.files.get(item.path);
+      return file && mark ? rowDecoration(file, mark) : null;
     },
   });
 
@@ -174,7 +177,7 @@ export function FileTreePane() {
       e.stopPropagation();
       if (hit.directory) return toggleDirectoryViewed(hit.path);
       const s = useStore.getState();
-      const f = s.snapshot?.changed.find((x) => x.path === hit.path);
+      const f = changedFile(s.snapshot, hit.path);
       if (f) void s.setViewed(hit.path, !isViewed(s, f));
     };
     el.addEventListener('pointerdown', onPointerDown, true);
@@ -205,11 +208,11 @@ export function FileTreePane() {
   // `syncStep` picks the update by content, so a save that leaves the rows alone redraws nothing.
   const keys = useMemo<SyncKeys>(
     () => ({
-      paths: paths.join('\n'),
-      status: statusKey(snapshot?.changed ?? []),
-      decoration: snapshot ? decorationKey({ viewed, config }, snapshot.changed) : '',
+      paths: pathSignature,
+      status: statusSignature,
+      decoration: decorations.key,
     }),
-    [paths, snapshot, viewed, config],
+    [pathSignature, statusSignature, decorations.key],
   );
   const synced = useRef<SyncKeys | null>(null);
   const syncedScope = useRef(scope);

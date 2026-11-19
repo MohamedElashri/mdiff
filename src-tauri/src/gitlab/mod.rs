@@ -18,6 +18,12 @@ pub struct Gitlab {
     writes: tokio::sync::Mutex<()>,
 }
 impl Gitlab {
+    pub fn shares_checkout(&self, input: &str) -> bool {
+        parse(input).is_ok_and(|(origin, project, iid)| {
+            origin == self.origin && project == self.project && iid == self.iid
+        })
+    }
+
     pub async fn connect(input: &str, token: Option<String>, host: Option<&str>) -> Result<Self> {
         let (origin, project, iid) = parse(input)?;
         let token = token.filter(|s| !s.trim().is_empty());
@@ -109,13 +115,10 @@ impl Gitlab {
                 .append_pair("per_page", "100")
                 .append_pair("page", &page.to_string());
             let (items, next) = self.send(Method::GET, url, None).await?;
-            result.extend(
-                items
-                    .as_array()
-                    .context("Unexpected GitLab response")?
-                    .iter()
-                    .cloned(),
-            );
+            let Value::Array(items) = items else {
+                bail!("Unexpected GitLab response");
+            };
+            result.extend(items);
             match next {
                 Some(next) => {
                     let n: u64 = next.parse()?;
@@ -172,11 +175,7 @@ pub async fn gitlab_action(
     payload: Option<Value>,
 ) -> Result<Value, String> {
     let (gitlab, router) = {
-        let slot = state.0.lock().await;
-        let runtime = slot
-            .as_ref()
-            .filter(|r| r.id == id)
-            .ok_or("This review has closed")?;
+        let runtime = state.runtime(&id).await?;
         (
             runtime
                 .gitlab
@@ -187,7 +186,12 @@ pub async fn gitlab_action(
     };
     let result = async {
         match action.as_str() {
-            "load" => Ok(json!({"mergeRequest":gitlab.metadata,"discussions":gitlab.list("/discussions").await?,"drafts":if gitlab.token.is_some() {gitlab.list("/draft_notes").await?} else {vec![]}})),
+            "load" => {
+                let (discussions, drafts) = tokio::try_join!(gitlab.list("/discussions"), async {
+                    if gitlab.token.is_some() { gitlab.list("/draft_notes").await } else { Ok(vec![]) }
+                })?;
+                Ok(json!({"mergeRequest":gitlab.metadata,"discussions":discussions,"drafts":drafts}))
+            },
             "export" => { let _guard=gitlab.writes.lock().await; gitlab.export(router).await },
             "publish" => { let _guard=gitlab.writes.lock().await; gitlab.publish().await },
             "reply" => {
@@ -279,6 +283,7 @@ mod integration_tests {
     #[tokio::test]
     async fn export_updates_owned_draft_and_refuses_changed_reviews() {
         use axum::routing::get;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let state = Arc::new(Mock::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
@@ -298,25 +303,37 @@ mod integration_tests {
             client: Client::new(),
             writes: tokio::sync::Mutex::new(()),
         };
+        let patch_reads = Arc::new(AtomicUsize::new(0));
         let router=Router::new()
-            .route("/api/snapshot",get(||async {axum::Json(json!({"newSha":"abc","changed":[{"path":"file.rs"}]}))}))
+            .route("/api/snapshot",get(||async {axum::Json(json!({"newSha":"abc","changed":[{"path":"file.rs"},{"path":"other.rs"}]}))}))
             .route("/api/threads",get(||async {axum::Json(json!([
                 {"id":"owned","anchor":{"kind":"line","path":"file.rs","side":"new","startLine":2,"endLine":2,"quoted":"new"},"messages":[{"body":"Please handle empty input."}],"stale":false},
+                {"id":"another","anchor":{"kind":"line","path":"file.rs","side":"new","startLine":3,"endLine":3},"messages":[{"body":"This is also new."}],"stale":false},
+                {"id":"file-note","anchor":{"kind":"file","path":"other.rs"},"messages":[{"body":"Comment on the whole file."}],"stale":false},
                 {"id":"stale","stale":true}
             ]))}))
-            .route("/api/patch",get(||async {"@@ -1 +1,2 @@\n same\n+new\n"}));
+            .route("/api/patch",get({
+                let patch_reads = patch_reads.clone();
+                move || async move {
+                    patch_reads.fetch_add(1, Ordering::Relaxed);
+                    "@@ -1 +1,3 @@\n same\n+new\n+also new\n"
+                }
+            }));
         let result = gitlab.export(router.clone()).await.unwrap();
-        assert_eq!(result["exported"], 1);
+        assert_eq!(result["exported"], 3);
         assert_eq!(result["skipped"], 1);
+        assert_eq!(patch_reads.load(Ordering::Relaxed), 1);
         {
             let calls = state.calls.lock().unwrap();
             let writes: Vec<_> = calls
                 .iter()
                 .filter(|(m, _, _)| m == "PUT" || m == "POST")
                 .collect();
-            assert_eq!(writes.len(), 1);
+            assert_eq!(writes.len(), 3);
             assert!(writes[0].1.ends_with("/draft_notes/1"));
             assert_eq!(writes[0].2["position"]["new_line"], 2);
+            assert_eq!(writes[1].2["position"]["new_line"], 3);
+            assert_eq!(writes[2].2["position"]["position_type"], "file");
             assert!(writes[0].2["note"]
                 .as_str()
                 .unwrap()

@@ -64,6 +64,27 @@ async fn selective_refresh_matches_full_recomputation_and_falls_back_for_members
 }
 
 #[tokio::test]
+async fn selective_refresh_remains_available_with_an_unrelated_rename() {
+    let t = TestRepo::new();
+    t.write("old.txt", "renamed content\n");
+    t.write("edited.txt", "base\n");
+    t.commit("base");
+    t.git(&["mv", "old.txt", "new.txt"]);
+    let repo = Arc::new(t.open().await);
+    let (s, snap) = snapshot(&repo, EnterRequest::Working).await;
+    assert_eq!(snap.changed[0].old_path.as_deref(), Some("old.txt"));
+
+    t.write("edited.txt", "updated\n");
+    let incremental = s.refresh_paths(&HashSet::from(["edited.txt".into()]), 200).await.unwrap().unwrap();
+    let (_, full) = snapshot(&repo, EnterRequest::Working).await;
+    assert_eq!(serde_json::to_value(&incremental.changed).unwrap(), serde_json::to_value(&full.changed).unwrap());
+    assert_eq!(incremental.tree, full.tree);
+
+    t.write("new.txt", "rename target updated\n");
+    assert!(s.refresh_paths(&HashSet::from(["new.txt".into()]), 201).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn pages_preserve_utf8_reject_mixed_versions_and_have_bounded_payloads() {
     let t = TestRepo::new();
     t.write("large.txt", "base\n");
@@ -91,6 +112,49 @@ async fn pages_preserve_utf8_reject_mixed_versions_and_have_bounded_payloads() {
     s.invalidate(snap.version + 1);
     assert!(s.patch_page("large.txt", snap.version, offset, digest.as_deref()).await.is_err());
     assert!(s.patch_page("../secret", snap.version + 1, 0, None).await.is_err());
+}
+
+#[tokio::test]
+async fn immutable_pages_reuse_the_single_file_cache() {
+    let t = TestRepo::new();
+    t.write("large.txt", "base\n");
+    t.commit("base");
+    t.write("large.txt", "revised content\n".repeat(12_000));
+    t.commit("edit");
+    let repo = Arc::new(t.open().await);
+    let (s, snap) = snapshot(&repo, revspec(&["HEAD~1..HEAD"])).await;
+    let patch = s.patch("large.txt").await.unwrap().unwrap();
+    let (bytes, hits) = repo.patch_cache_stats();
+    let first = s.patch_page("large.txt", snap.version, 0, None).await.unwrap();
+    let next = first["next"].as_u64().unwrap() as usize;
+    let digest = first["digest"].as_str().unwrap();
+    let second = s.patch_page("large.txt", snap.version, next, Some(digest)).await.unwrap();
+    assert_eq!(second["digest"], first["digest"]);
+    assert!(patch.starts_with(first["patch"].as_str().unwrap()));
+    assert!(patch[next..].starts_with(second["patch"].as_str().unwrap()));
+    assert_eq!(repo.patch_cache_stats(), (bytes, hits + 2));
+}
+
+#[tokio::test]
+async fn live_batches_reuse_patches_and_drop_changed_files_on_refresh() {
+    let t = TestRepo::new();
+    let names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
+    for name in names {
+        t.write(name, "base\n");
+    }
+    t.commit("base");
+    for name in names {
+        t.write(name, "batch\n");
+    }
+    let repo = Arc::new(t.open().await);
+    let (s, _) = snapshot(&repo, EnterRequest::Working).await;
+    let batch = s.patch_many(&["d.txt".into(), "e.txt".into()]).await.unwrap();
+    t.write("d.txt", "saved\n");
+    assert!(batch.contains(&s.patch("d.txt").await.unwrap().unwrap()));
+    let dirty = HashSet::from(["d.txt".into()]);
+    assert!(s.refresh_paths(&dirty, 100).await.unwrap().is_some());
+    assert!(s.patch("d.txt").await.unwrap().unwrap().contains("+saved"));
+    assert!(batch.contains(&s.patch("e.txt").await.unwrap().unwrap()));
 }
 
 #[tokio::test]

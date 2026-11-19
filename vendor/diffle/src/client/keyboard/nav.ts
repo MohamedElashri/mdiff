@@ -18,6 +18,7 @@ export interface NavItem {
   id: string;
   path: string;
   collapsed: boolean;
+  pending?: boolean;
   rows: Row[];
 }
 
@@ -129,6 +130,7 @@ export function buildNav(
   revealed: Record<string, LineRange[]> = {},
   style: DiffStyle = 'unified',
   fileView: FileView | null = null,
+  pending?: ReadonlySet<string>,
 ): NavItem[] {
   if (fileView) {
     if (!fileView.item) return [];
@@ -141,7 +143,8 @@ export function buildNav(
   for (const path of orderedPaths(snapshot)) {
     const l = loaded[path];
     const id = itemId(true, path, gens[path] ?? 0);
-    out.push({ id, path, collapsed: isCollapsed(path), rows: l ? rowsOf(l, revealed[id], style) : [] });
+    const item = { id, path, collapsed: isCollapsed(path), rows: l ? rowsOf(l, revealed[id], style) : [] };
+    out.push(!l && pending?.has(path) ? { ...item, pending: true } : item);
   }
   return out;
 }
@@ -201,6 +204,7 @@ export function step(nav: NavItem[], cur: Cursor | null, delta: 1 | -1): Cursor 
   if (!cur) return firstStop(nav, delta === 1 ? 0 : nav.length - 1, delta);
   if (cur.rowIndex === -1) {
     const item = nav[cur.itemIndex];
+    if (item?.pending && !item.collapsed) return cur;
     if (item && !item.collapsed && item.rows.length > 0)
       return { itemIndex: cur.itemIndex, rowIndex: delta === 1 ? 0 : item.rows.length - 1 };
     return firstStop(nav, cur.itemIndex + delta, delta) ?? cur;
@@ -211,7 +215,7 @@ export function step(nav: NavItem[], cur: Cursor | null, delta: 1 | -1): Cursor 
     itemIndex += delta;
     if (itemIndex < 0 || itemIndex >= nav.length) return cur;
     const item = nav[itemIndex]!;
-    if (item.collapsed) return { itemIndex, rowIndex: -1 };
+    if (item.collapsed || item.pending) return { itemIndex, rowIndex: -1 };
     if (item.rows.length === 0) continue;
     rowIndex = delta === 1 ? 0 : item.rows.length - 1;
   }
@@ -222,7 +226,7 @@ export function step(nav: NavItem[], cur: Cursor | null, delta: 1 | -1): Cursor 
 function firstStop(nav: NavItem[], itemIndex: number, delta: 1 | -1): Cursor | null {
   for (let i = itemIndex; i >= 0 && i < nav.length; i += delta) {
     const item = nav[i]!;
-    if (item.collapsed) return { itemIndex: i, rowIndex: -1 };
+    if (item.collapsed || item.pending) return { itemIndex: i, rowIndex: -1 };
     if (item.rows.length > 0) return { itemIndex: i, rowIndex: delta === 1 ? 0 : item.rows.length - 1 };
   }
   return null;
@@ -236,19 +240,37 @@ export function stepFile(nav: NavItem[], cur: Cursor | null, delta: 1 | -1): Cur
   return { itemIndex, rowIndex: nav[itemIndex]!.collapsed ? -1 : 0 };
 }
 
-/** Next/previous hunk start across items. */
+const hunkStarts = new WeakMap<Row[], number[]>();
+
+function hunkRows(rows: Row[]): number[] {
+  let starts = hunkStarts.get(rows);
+  if (!starts) {
+    starts = [];
+    for (let i = 0; i < rows.length; i++) if (rows[i]!.hunkStart) starts.push(i);
+    hunkStarts.set(rows, starts);
+  }
+  return starts;
+}
+
+/** Walk toward the nearest hunk, reusing the hunk positions for each rendered row list. */
 export function stepHunk(nav: NavItem[], cur: Cursor | null, delta: 1 | -1): Cursor | null {
-  const flat: Cursor[] = [];
-  nav.forEach((item, itemIndex) => {
-    if (item.collapsed) return;
-    item.rows.forEach((r, rowIndex) => r.hunkStart && flat.push({ itemIndex, rowIndex }));
-  });
-  if (flat.length === 0) return cur;
-  if (!cur) return delta === 1 ? flat[0]! : flat[flat.length - 1]!;
-  const key = (c: Cursor) => c.itemIndex * 1e7 + c.rowIndex;
-  const k = key(cur);
-  if (delta === 1) return flat.find((c) => key(c) > k) ?? cur;
-  return [...flat].reverse().find((c) => key(c) < k) ?? cur;
+  const start = cur?.itemIndex ?? (delta === 1 ? 0 : nav.length - 1);
+  for (let itemIndex = start; itemIndex >= 0 && itemIndex < nav.length; itemIndex += delta) {
+    const item = nav[itemIndex]!;
+    if (item.collapsed) continue;
+    if (item.pending) return { itemIndex, rowIndex: -1 };
+    if (item.rows.length === 0) continue;
+    const starts = hunkRows(item.rows);
+    const currentRow = cur?.itemIndex === itemIndex ? cur.rowIndex : undefined;
+    const rowIndex =
+      currentRow === undefined
+        ? starts.at(delta === 1 ? 0 : -1)
+        : delta === 1
+          ? starts.find((row) => row > currentRow)
+          : starts.findLast((row) => row < currentRow);
+    if (rowIndex !== undefined) return { itemIndex, rowIndex };
+  }
+  return cur;
 }
 
 export function selectionFor(nav: NavItem[], cur: Cursor, anchor?: Cursor | null): CodeViewLineSelection | null {

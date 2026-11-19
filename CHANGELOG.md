@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-19
+
+### Changed
+
+- Faster startup and less background loading in large reviews.
+- Faster worktree refreshes, searches, and viewed-mark updates.
+- Smaller downloads for pull requests from other repositories.
+
 ## [0.2.0] - 2026-11-15
 
 ### Added

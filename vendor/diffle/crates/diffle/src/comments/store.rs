@@ -1,17 +1,16 @@
 //! Indexed, transactional threads and viewed marks in `<gitDir>/diffle/comments.sqlite`.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use super::anchor::compare_threads;
+use super::database;
 use crate::error::{Error, Result};
 use crate::iterations::now_ms;
-use crate::persist::with_file_lock;
+use crate::persist::{with_file_lock, with_file_lock_blocking};
 use crate::protocol::{CommentAnchor, CommentMessage, CommentThread, ThreadQuery, ThreadState, ViewedEntry};
-
-/// Viewed marks kept per path: the current one plus the newest previous, so `restale` is derivable.
-const VIEWED_HISTORY: usize = 2;
 
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct SetData {
@@ -67,21 +66,7 @@ impl CommentStore {
         resolved: Option<bool>,
         id: Option<String>,
     ) -> Result<Vec<CommentThread>> {
-        let (file, key) = (self.file.clone(), self.key.clone());
-        with_file_lock(&self.file, || async move {
-            tokio::task::spawn_blocking(move || {
-                super::database::threads(
-                    &super::database::connect(&file)?,
-                    &key,
-                    path.as_deref(),
-                    resolved,
-                    id.as_deref(),
-                )
-            })
-            .await?
-        })
-        .await
-        .map_err(Into::into)
+        self.with_database(move |db, key| database::threads(db, key, path.as_deref(), resolved, id.as_deref())).await
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<CommentThread>> {
@@ -178,50 +163,59 @@ impl CommentStore {
     }
 
     pub async fn viewed(&self) -> Result<Vec<ViewedEntry>> {
-        Ok(self.read().await?.viewed)
+        self.with_database(|db, key| database::viewed(db, key)).await
     }
 
     /// Marks or unmarks a path as viewed at a given new-side blob. The newest previous entry for the
     /// path is kept so a later blob can be recognised as re-touched.
     pub async fn set_viewed(&self, path: &str, blob: &str, viewed: bool) -> Result<Vec<ViewedEntry>> {
-        self.mutate(|set| {
-            let (mine, others): (Vec<ViewedEntry>, Vec<ViewedEntry>) =
-                set.viewed.drain(..).partition(|v| v.path == path);
-            let history: Vec<ViewedEntry> = mine.into_iter().filter(|v| v.blob != blob).collect();
-            let keep = history.len().saturating_sub(VIEWED_HISTORY - 1);
-            set.viewed = others;
-            set.viewed.extend(history.into_iter().skip(keep));
-            set.viewed.push(ViewedEntry { path: path.into(), blob: blob.into(), viewed });
-            Ok((set.viewed.clone(), true))
+        let entry = ViewedEntry { path: path.into(), blob: blob.into(), viewed };
+        self.update_viewed(move |marks| {
+            let previous = marks.iter().rfind(|mark| mark.path == entry.path && mark.blob != entry.blob).cloned();
+            marks.retain(|mark| mark.path != entry.path);
+            marks.extend(previous);
+            marks.push(entry);
         })
         .await
     }
 
     /// Replaces the marks for many paths at once; their history is dropped.
     pub async fn set_viewed_many(&self, entries: Vec<ViewedEntry>) -> Result<Vec<ViewedEntry>> {
-        self.mutate(|set| {
-            set.viewed.retain(|v| !entries.iter().any(|e| e.path == v.path));
-            set.viewed.extend(entries);
-            Ok((set.viewed.clone(), true))
+        self.update_viewed(move |marks| {
+            let paths: HashSet<_> = entries.iter().map(|entry| entry.path.as_str()).collect();
+            marks.retain(|mark| !paths.contains(mark.path.as_str()));
+            marks.extend(entries);
         })
         .await
     }
 
-    /// Read one review under the same lock used by writers and legacy migration.
-    pub(super) async fn read(&self) -> Result<SetData> {
-        with_file_lock(&self.file, || async { read_set(&self.file, &self.key).await }).await.map_err(Into::into)
+    async fn update_viewed(
+        &self,
+        change: impl FnOnce(&mut Vec<ViewedEntry>) + Send + 'static,
+    ) -> Result<Vec<ViewedEntry>> {
+        self.with_database(move |db, key| {
+            let transaction = db.transaction()?;
+            let mut marks = database::viewed(&transaction, key)?;
+            change(&mut marks);
+            database::write_viewed(&transaction, key, &marks)?;
+            transaction.commit()?;
+            Ok(marks)
+        })
+        .await
+    }
+
+    async fn with_database<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection, &str) -> anyhow::Result<R> + Send + 'static,
+    ) -> Result<R> {
+        let (file, key) = (self.file.clone(), self.key.clone());
+        with_file_lock_blocking(&self.file, move || f(&mut database::connect(&file)?, &key)).await.map_err(Into::into)
     }
 
     /// Search discussions across saved reviews; each result retains its review key for resuming.
     pub async fn search_history(&self, query: &str) -> Result<Vec<(String, CommentThread)>> {
-        let file = self.file.clone();
         let query = query.to_owned();
-        with_file_lock(&self.file, || async move {
-            tokio::task::spawn_blocking(move || super::database::search(&super::database::connect(&file)?, &query))
-                .await?
-        })
-        .await
-        .map_err(Into::into)
+        self.with_database(move |db, _| database::search(db, &query)).await
     }
 
     /// Locked read-modify-write: `f` edits this key's set as read from disk under the lock, other

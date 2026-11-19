@@ -4,39 +4,57 @@ use axum::{
     body::{to_bytes, Body},
     http::Request,
 };
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use tauri::State;
+use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 type RequestKey = (String, String);
-type RequestEntry = (std::time::Instant, Option<tokio::sync::oneshot::Sender<()>>);
-/// Cancellation ids are scoped to a review. Short-lived tombstones cover an abort that
-/// reaches Rust before its request; the registry is bounded and never stores payloads.
+const MAX_ACTIVE_REQUESTS: usize = 256;
+const MAX_EARLY_CANCELLATIONS: usize = 128;
+const CANCELLATION_TTL: Duration = Duration::from_secs(60);
+
 #[derive(Default)]
-pub struct Requests(std::sync::Mutex<std::collections::HashMap<RequestKey, RequestEntry>>);
+struct RequestEntries {
+    active: HashMap<RequestKey, Option<oneshot::Sender<()>>>,
+    early: HashMap<RequestKey, Instant>,
+}
+
+/// Cancellation ids are scoped to a review. Short-lived tombstones cover an abort that
+/// reaches Rust before its request. Tombstones and running requests have separate limits.
+#[derive(Default)]
+pub struct Requests(Mutex<RequestEntries>);
 struct RequestGuard<'a> {
     requests: &'a Requests,
-    key: (String, String),
+    key: RequestKey,
 }
 impl Drop for RequestGuard<'_> {
     fn drop(&mut self) {
-        self.requests.0.lock().unwrap().remove(&self.key);
+        self.requests.0.lock().unwrap().active.remove(&self.key);
     }
 }
 impl Requests {
-    fn start(
-        &self,
-        key: (String, String),
-    ) -> Result<(RequestGuard<'_>, tokio::sync::oneshot::Receiver<()>), String> {
+    fn start(&self, key: RequestKey) -> Result<(RequestGuard<'_>, oneshot::Receiver<()>), String> {
         let mut requests = self.0.lock().unwrap();
-        requests.retain(|_, (at, sender)| sender.is_some() || at.elapsed().as_secs() < 60);
-        if requests.remove(&key).is_some() {
+        if requests
+            .early
+            .remove(&key)
+            .is_some_and(|at| at.elapsed() < CANCELLATION_TTL)
+        {
             return Err("Request cancelled".into());
         }
-        if requests.len() >= 256 {
+        if requests.active.len() >= MAX_ACTIVE_REQUESTS {
             return Err("Too many review requests".into());
         }
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        requests.insert(key.clone(), (std::time::Instant::now(), Some(tx)));
+        let Entry::Vacant(entry) = requests.active.entry(key.clone()) else {
+            return Err("Duplicate review request ID".into());
+        };
+        let (tx, rx) = oneshot::channel();
+        entry.insert(Some(tx));
         Ok((
             RequestGuard {
                 requests: self,
@@ -45,18 +63,24 @@ impl Requests {
             rx,
         ))
     }
-    fn cancel(&self, key: (String, String)) {
+    fn cancel(&self, key: RequestKey) {
         let mut requests = self.0.lock().unwrap();
-        if let Some((_, Some(sender))) = requests.remove(&key) {
-            let _ = sender.send(());
-        } else {
-            if requests.len() >= 128 {
-                requests.retain(|_, (_, sender)| sender.is_some());
+        if let Some(sender) = requests.active.get_mut(&key) {
+            if let Some(sender) = sender.take() {
+                let _ = sender.send(());
             }
-            if requests.len() < 256 {
-                requests.insert(key, (std::time::Instant::now(), None));
-            }
+            return;
         }
+        let early = &mut requests.early;
+        if early.len() >= MAX_EARLY_CANCELLATIONS && !early.contains_key(&key) {
+            let oldest = early
+                .iter()
+                .min_by_key(|(_, at)| *at)
+                .map(|(key, _)| key.clone())
+                .unwrap();
+            early.remove(&oldest);
+        }
+        early.insert(key, Instant::now());
     }
 }
 #[tauri::command]
@@ -116,32 +140,50 @@ pub async fn review_request(
     path: String,
     body: Option<String>,
 ) -> Result<tauri::ipc::Response, String> {
-    // Release the lifecycle lock before expensive reads and LSP requests.
-    let router = {
-        let slot = state.0.lock().await;
-        let runtime = slot
-            .as_ref()
-            .filter(|r| r.id == id)
-            .ok_or("This review has closed")?;
-        runtime.router.clone()
+    let route = path
+        .split_once('?')
+        .map_or(path.as_str(), |(route, _)| route);
+    // Config updates share a file across review runtimes. Serialize them with opening and
+    // settings writes so a newly prepared review picks up the committed settings.
+    let _transition = if method == "PUT" && route == "/api/config" {
+        Some(state.lifecycle.lock().await)
+    } else {
+        None
+    };
+    let (router, mut closing) = {
+        let runtime = state.runtime(&id).await?;
+        (runtime.router.clone(), runtime.closing())
     };
     // Mutations finish atomically even if their UI caller goes away.
     let cancellable = method == "GET"
-        || matches!(
-            path.as_str(),
-            "/api/patch"
-                | "/api/patch-page"
-                | "/api/lsp/hover"
-                | "/api/lsp/references"
-                | "/api/lsp/definition"
-                | "/api/lsp/type-definition"
-                | "/api/lsp/occurrences"
-        );
-    let reply = if let Some(request_id) = request_id.filter(|_| cancellable) {
-        let (_guard, cancelled) = requests.start((id, request_id))?;
+        || (method == "POST"
+            && matches!(
+                route,
+                "/api/patch"
+                    | "/api/patch-page"
+                    | "/api/lsp/hover"
+                    | "/api/lsp/references"
+                    | "/api/lsp/definition"
+                    | "/api/lsp/type-definition"
+                    | "/api/lsp/occurrences"
+            ));
+    let reply = if cancellable {
+        let (_guard, cancelled) = match request_id {
+            Some(request_id) => {
+                let (guard, cancelled) = requests.start((id, request_id))?;
+                (Some(guard), Some(cancelled))
+            }
+            None => (None, None),
+        };
         tokio::select! {
             biased;
-            _ = cancelled => return Err("Request cancelled".into()),
+            _ = closing.wait_for(|closed| *closed) => return Err("This review has closed".into()),
+            _ = async {
+                match cancelled {
+                    Some(cancelled) => { let _ = cancelled.await; }
+                    None => std::future::pending().await,
+                }
+            } => return Err("Request cancelled".into()),
             reply = dispatch(router, &method, &path, body) => reply?,
         }
     } else {
@@ -189,12 +231,22 @@ mod cancellation_tests {
         requests.cancel(("a".into(), "1".into()));
         assert!(requests.start(("a".into(), "1".into())).is_err());
         let (guard, rx) = requests.start(("b".into(), "1".into())).unwrap();
+        assert!(requests.start(("b".into(), "1".into())).is_err());
+        requests.cancel(("b".into(), "1".into()));
         requests.cancel(("b".into(), "1".into()));
         assert!(rx.await.is_ok());
         drop(guard);
+        assert!(requests.start(("b".into(), "1".into())).is_ok());
         for i in 0..1000 {
             requests.cancel(("b".into(), i.to_string()));
         }
-        assert!(requests.0.lock().unwrap().len() <= 128);
+        assert!(requests.0.lock().unwrap().early.len() <= MAX_EARLY_CANCELLATIONS);
+        assert!(requests.start(("b".into(), "999".into())).is_err());
+        let active = (0..MAX_ACTIVE_REQUESTS)
+            .map(|i| requests.start(("c".into(), i.to_string())).unwrap())
+            .collect::<Vec<_>>();
+        assert!(requests.start(("c".into(), "over-limit".into())).is_err());
+        drop(active);
+        assert!(requests.start(("c".into(), "over-limit".into())).is_ok());
     }
 }

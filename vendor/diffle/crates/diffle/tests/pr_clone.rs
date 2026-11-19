@@ -49,11 +49,21 @@ async fn clones_foreign_prs_into_temp_storage_and_removes_them_including_after_a
     unset("TMPDIR");
 
     // A foreign pull request is cloned, inside a repository or outside any.
+    let unrelated = git_in(&f.local, &["commit-tree", "HEAD^{tree}", "-m", "Unrelated remote history"]);
+    git_in(&f.local, &["push", &as_git_url(&f.origin), &format!("{unrelated}:refs/heads/unrelated")]);
+    let release = git_in(&f.origin, &["commit-tree", "HEAD^{tree}", "-p", &f.merge_base, "-m", "Release branch tip"]);
+    git_in(&f.origin, &["update-ref", "refs/heads/release", &release]);
     let config = root.join("gitconfig");
-    let rewrite = format!("[url \"{}\"]\n\tinsteadOf = https://github.com/foreign/repo\n", as_git_url(&f.origin));
+    // Use upload-pack rather than the local clone optimization that copies all objects.
+    let origin = url::Url::from_file_path(&f.origin).unwrap();
+    let rewrite = format!("[url \"{origin}\"]\n\tinsteadOf = https://github.com/foreign/repo\n");
     std::fs::write(&config, rewrite).unwrap();
     set("GIT_CONFIG_GLOBAL", &config);
-    let foreign = knows(Some(f.node(json!({ "url": "https://github.com/foreign/repo/pull/7" }))));
+    let foreign = knows(Some(f.node(json!({
+        "url": "https://github.com/foreign/repo/pull/7",
+        "baseRefName": "release",
+        "baseRefOid": release,
+    }))));
     let github =
         Github { instance: GithubInstance::github_com(), client: Some(Arc::new(foreign) as Arc<dyn GithubClient>) };
     let refs = git_in(&f.local, &["show-ref"]);
@@ -69,10 +79,14 @@ async fn clones_foreign_prs_into_temp_storage_and_removes_them_including_after_a
         let temp = dunce::canonicalize(std::env::temp_dir()).unwrap();
         assert!(dunce::canonicalize(&clone_root).unwrap().starts_with(temp.join("")), "{}", clone_root.display());
         assert!(clone_root.file_name().unwrap().to_string_lossy().starts_with("diffle-pr-"));
+        assert!(opened.repo.try_resolve(&unrelated).await.unwrap().is_none());
+        assert!(opened.repo.try_resolve(&release).await.unwrap().is_none());
+        assert_eq!(git_in(&clone_root, &["rev-parse", "--is-shallow-repository"]), "false");
         let review = resolve_review(&req, &opened.repo, &github).await.unwrap();
         let diffle::protocol::Review::Range { old, new, pr, .. } = &review else { panic!("a range") };
         assert_eq!(opened.repo.resolve(new).await.unwrap(), f.head);
-        assert_eq!(opened.repo.resolve(old).await.unwrap(), f.merge_base);
+        assert_eq!(opened.repo.resolve(old).await.unwrap(), release);
+        assert_eq!(opened.repo.merge_base(old, new).await.unwrap(), f.merge_base);
         assert_eq!(pr.as_ref().map(|p| p.url.as_str()), Some(url));
         assert_eq!(git_in(&f.local, &["show-ref"]), refs);
         assert_eq!(git_in(&f.local, &["count-objects", "-v"]), objects);

@@ -86,7 +86,7 @@ pub async fn open_review_repository_with(
     }
     let dir = tempfile::Builder::new().prefix("diffle-pr-").tempdir()?;
     let url = &found.url[..found.url.find("/pull/").unwrap_or(found.url.len())];
-    let repo = GitRepo::clone_with_auth(url, dir.path(), auth).await?;
+    let repo = GitRepo::clone_for_pr(url, dir.path(), auth).await?;
     *pr = Some(found.url.clone());
     Ok(opened(repo, github, Some(dir)))
 }

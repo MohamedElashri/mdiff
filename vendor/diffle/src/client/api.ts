@@ -1,5 +1,5 @@
 import { completePatchPrefix } from './patchPages.js';
-import { request, reviewTransport } from './transport.js';
+import { request, reviewTransport, type ReviewResponse } from './transport.js';
 import { z } from 'zod';
 import {
   ConfigUpdateSchema,
@@ -81,7 +81,7 @@ async function text(input: string, init?: RequestInit): Promise<string> {
   return res.text();
 }
 
-async function safeMessage(res: Response): Promise<string> {
+async function safeMessage(res: ReviewResponse): Promise<string> {
   try {
     const result = ApiErrorSchema.safeParse(await res.json());
     return result.success ? result.data.error : res.statusText;
@@ -215,11 +215,13 @@ export const api = {
       scope?: SearchScope;
       content?: SearchContent;
       path?: string;
+      signal?: AbortSignal;
     } = {},
   ) =>
     json(
       SearchResponseSchema,
       `api/search?${q({ q: query, word: opts.word ? '1' : undefined, i: opts.ignoreCase ? '1' : undefined, re: opts.regex ? '1' : undefined, scope: opts.scope, content: opts.content, path: opts.path })}`,
+      { signal: opts.signal },
     ),
   threads: (query: ThreadQuery = {}) =>
     json(CommentThreadSchema.array(), `api/threads?${q({ state: query.state, path: query.path })}`),

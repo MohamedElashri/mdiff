@@ -1,6 +1,13 @@
 import { expect, it } from 'vitest';
-import { patchBatches, PATCH_BATCH_FILES, PATCH_BATCH_LINES, reuseThreads } from '@/client/model.js';
-import type { ChangedFile, CommentThread, Snapshot } from '@/shared/protocol.js';
+import {
+  countViewed,
+  isCollapsed,
+  patchBatches,
+  PATCH_BATCH_FILES,
+  PATCH_BATCH_LINES,
+  reuseThreads,
+} from '@/client/model.js';
+import { DEFAULT_USER_CONFIG, type ChangedFile, type CommentThread, type Snapshot } from '@/shared/protocol.js';
 
 it('schedules a 20,000-file review within a desktop responsiveness budget', () => {
   const files: ChangedFile[] = Array.from({ length: 20_000 }, (_, i) => ({
@@ -14,8 +21,12 @@ it('schedules a 20,000-file review within a desktop responsiveness budget', () =
     oldBlob: 'old',
   }));
   const first = files.slice(-10_000).map((file) => file.path);
+  const snapshot = { changed: files } as Snapshot;
+  const viewed = files.filter((_, i) => i % 2 === 0).map(({ path, blob }) => ({ path, blob, viewed: true }));
+  const state = { snapshot, viewed, config: DEFAULT_USER_CONFIG, collapsed: {} };
   const start = performance.now();
-  const batches = patchBatches({ changed: files } as Snapshot, files, first, () => false);
+  const batches = patchBatches(snapshot, files, first, (path) => isCollapsed(state, path));
+  expect(countViewed(state, files)).toBe(viewed.length);
   const elapsed = performance.now() - start;
   expect(new Set(batches.flat()).size).toBe(files.length);
   expect(first).toContain(batches[0]![0]);

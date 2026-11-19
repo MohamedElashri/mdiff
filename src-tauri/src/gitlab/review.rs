@@ -2,6 +2,7 @@ use super::Gitlab;
 use anyhow::{bail, Context, Result};
 use reqwest::Method;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 impl Gitlab {
     async fn fresh(&self) -> Result<()> {
@@ -19,9 +20,19 @@ impl Gitlab {
         {
             bail!("Return to the original merge request comparison before exporting comments.");
         }
-        let threads = read(router.clone(), "/api/threads?state=open").await?;
-        let drafts = self.list("/draft_notes").await?;
-        let discussions = self.list("/discussions").await?;
+        let (threads, drafts, discussions) = tokio::try_join!(
+            read(router.clone(), "/api/threads?state=open"),
+            self.list("/draft_notes"),
+            self.list("/discussions"),
+        )?;
+        let changed: HashMap<_, _> = snapshot["changed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|file| Some((file["path"].as_str()?, file)))
+            .collect();
+        // Threads from the review store are ordered by path. Keep only one patch in memory.
+        let mut current_patch: Option<(&str, axum::body::Bytes)> = None;
         let mut count = 0;
         let mut skipped = 0;
         for thread in threads.as_array().context("Invalid review threads")? {
@@ -87,25 +98,31 @@ impl Gitlab {
             let suffix = existing
                 .and_then(|d| d["id"].as_u64())
                 .map(|id| format!("/draft_notes/{id}"));
-            let query = {
-                let mut query = url::form_urlencoded::Serializer::new(String::new());
-                query.append_pair("path", path);
-                query.finish()
+            let position = if let Some(file) = changed.get(path) {
+                let patch = if a["kind"] == "file" {
+                    Default::default()
+                } else {
+                    if current_patch
+                        .as_ref()
+                        .is_none_or(|(loaded, _)| *loaded != path)
+                    {
+                        let endpoint = {
+                            let mut query = url::form_urlencoded::Serializer::new(String::new());
+                            query.append_pair("path", path);
+                            format!("/api/patch?{}", query.finish())
+                        };
+                        let patch =
+                            crate::transport::dispatch(router.clone(), "GET", &endpoint, None)
+                                .await
+                                .map_err(anyhow::Error::msg)?;
+                        current_patch = Some((path, patch.body));
+                    }
+                    String::from_utf8_lossy(&current_patch.as_ref().unwrap().1)
+                };
+                super::position::position(a, file, &self.metadata["diff_refs"], &patch)
+            } else {
+                None
             };
-            let patch = crate::transport::dispatch(
-                router.clone(),
-                "GET",
-                &format!("/api/patch?{}", query),
-                None,
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let position = super::position::position(
-                a,
-                &snapshot["changed"],
-                &self.metadata["diff_refs"],
-                &String::from_utf8_lossy(&patch.body),
-            );
             let mut payload = json!({"note":note});
             if let Some(position) = position {
                 payload["position"] = position;

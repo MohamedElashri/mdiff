@@ -271,6 +271,23 @@ async fn keeps_the_newest_previous_viewed_mark_per_path_and_caps_the_history() {
 }
 
 #[tokio::test]
+async fn viewed_marks_do_not_parse_unrelated_thread_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CommentStore::open(dir.path(), "working").await.unwrap();
+    let thread = store.add_thread(anchor(), "keep this comment".into()).await.unwrap();
+    let db = rusqlite::Connection::open(store.file()).unwrap();
+    db.execute("UPDATE threads SET context = 'invalid JSON' WHERE id=?1", [&thread.id]).unwrap();
+    drop(db);
+
+    assert!(store.viewed().await.unwrap().is_empty());
+    let updated = store.set_viewed("a.py", "sha1", true).await.unwrap();
+    assert_eq!(marks(updated), [mark("a.py", "sha1", true)]);
+    store.set_viewed_many(vec![entry("a.py", "sha2", false), entry("b.py", "sha3", true)]).await.unwrap();
+    assert_eq!(marks(store.viewed().await.unwrap()), [mark("a.py", "sha2", false), mark("b.py", "sha3", true)]);
+    assert_eq!(first_body(&store.get(&thread.id).await.unwrap().unwrap()), "keep this comment");
+}
+
+#[tokio::test]
 async fn relocates_flags_stale_and_unflags_when_text_returns() {
     let dir = tempfile::tempdir().unwrap();
     let s = CommentStore::open(dir.path(), "working").await.unwrap();

@@ -35,6 +35,8 @@ pub struct ExecOptions<'a> {
     pub input: Option<&'a [u8]>,
     /// Merged over the inherited environment.
     pub env: &'a [(&'a str, &'a str)],
+    /// Bound interactive patch output before buffering it.
+    pub preview: bool,
 }
 
 pub fn command(cwd: &Path, args: &[&str]) -> Command {
@@ -71,18 +73,16 @@ pub async fn exec_git(cwd: &Path, args: &[&str], opts: ExecOptions<'_>) -> Resul
     // Feed stdin while the output drains, so neither pipe fills and blocks the other.
     let feed = {
         let stdin = child.stdin.take();
-        let input = opts.input.map(<[u8]>::to_vec);
+        let input = opts.input;
         async move {
             if let (Some(mut stdin), Some(input)) = (stdin, input) {
                 // A child that exits without reading its input is judged by its status, not EPIPE.
-                let _ = stdin.write_all(&input).await;
+                let _ = stdin.write_all(input).await;
             }
         }
     };
     // Large patches are explicitly bounded before buffering or IPC, not after allocation.
-    // Whole-review exports retain their existing limit-free path (no explicit pathspec).
-    let bounded = args.first() == Some(&"diff") && args.contains(&"--");
-    let (output, ()) = if bounded {
+    let output = if opts.preview {
         let mut stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         let collect = async {
@@ -108,10 +108,10 @@ pub async fn exec_git(cwd: &Path, args: &[&str], opts: ExecOptions<'_>) -> Resul
         };
         let (collected, stderr, ()) = tokio::join!(collect, drain, feed);
         let (status, stdout) = collected?;
-        (std::process::Output { status, stdout, stderr }, ())
+        std::process::Output { status, stdout, stderr }
     } else {
         let (output, ()) = tokio::join!(child.wait_with_output(), feed);
-        (output.map_err(|e| spawn_error(args, &e))?, ())
+        output.map_err(|e| spawn_error(args, &e))?
     };
     let code = output.status.code();
     if output.status.success() || code.is_some_and(|c| opts.ok_codes.contains(&c)) {

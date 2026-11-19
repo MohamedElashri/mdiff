@@ -42,6 +42,8 @@ import { SymbolMenu } from '@/client/lsp/SymbolMenu.js';
 import { SymbolPicker } from '@/client/lsp/SymbolPicker.js';
 import { lspTarget, type TokenTarget } from '@/client/lsp/target.js';
 import {
+  changedFile,
+  changedFilesByPath,
   draftRange,
   imageSides,
   type ImageSides,
@@ -52,8 +54,9 @@ import {
   orderedPaths,
   pathFromItemId,
   rangeLabel,
+  threadsForPath,
+  usesViewportPatches,
   viewedState,
-  visibleThreads,
   type ItemVersion,
   commentsOff,
 } from '@/client/model.js';
@@ -263,6 +266,13 @@ const codeViewOptions = {
 } as const;
 
 const LOADING: Loaded = { kind: 'loading' };
+type ReviewItem = {
+  loaded: Loaded;
+  changed: ChangedFile | undefined;
+  gen: number;
+  version: ItemVersion;
+  item: CodeViewItem<Annot>;
+};
 
 type WorkerPool = NonNullable<ReturnType<typeof useWorkerPool>>;
 type PendingHighlight = { key: string; diff: FileDiffMetadata; pool: WorkerPool };
@@ -324,55 +334,48 @@ export function ReviewPane() {
   const diffStyle = useStore((s) => s.diffStyle);
   const lineWrap = useStore((s) => s.config.lineWrap);
 
-  // CodeView re-renders an item only when its version changes, so each path's version is derived
-  // here from what the item paints (its threads, draft, composers, collapsed state); no manual bump.
-  const versions = useRef(new Map<string, ItemVersion>());
-  const items = useMemo<CodeViewItem<Annot>[]>(() => {
-    if (!snapshot) return [];
-    const byPath = new Map(snapshot.changed.map((f) => [f.path, f]));
-    const state = { collapsed, viewed, config, snapshot };
-    const threadsByPath = new Map<string, CommentThread[]>();
-    for (const t of visibleThreads({ threads, showResolved })) {
-      const list = threadsByPath.get(t.anchor.path);
-      if (list) list.push(t);
-      else threadsByPath.set(t.anchor.path, [t]);
-    }
-    const versionOf = (path: string, mine: CommentThread[], isCollapsed: boolean) => {
-      const v = itemVersion(
-        versions.current.get(path),
-        itemDeps({ draft, replyTo, editingId }, path, mine, isCollapsed),
-      );
-      versions.current.set(path, v);
-      return v.version;
+  // A patch batch changes a few items at a time. Reuse the rest and keep their annotations and
+  // placeholder banners intact. CodeView accepts changes to an item only when its version changes.
+  const previousItems = useRef(new Map<string, ReviewItem>());
+  const { items, cache } = useMemo(() => {
+    const previous = previousItems.current;
+    const cache = new Map<string, ReviewItem>();
+    if (!snapshot) return { items: [], cache };
+    const itemFor = (path: string, loaded: Loaded, changed: ChangedFile | undefined, folded: boolean) => {
+      const mine = threadsForPath({ threads, showResolved }, path);
+      const gen = gens[path] ?? 0;
+      const prev = previous.get(path);
+      const deps = itemDeps({ draft, replyTo, editingId }, path, mine, folded);
+      const version = itemVersion(prev?.version, deps);
+      if (prev && prev.loaded === loaded && prev.changed === changed && prev.gen === gen && prev.version === version) {
+        cache.set(path, prev);
+        return prev.item;
+      }
+      const item = toItem(path, loaded, changed, mine, draft, version.version, gen, folded);
+      cache.set(path, { loaded, changed, gen, version, item });
+      return item;
     };
     if (fileView) {
       const { path, item } = fileView;
-      const mine = threadsByPath.get(path) ?? [];
-      const one =
-        item && toItem(path, item, undefined, mine, draft, versionOf(path, mine, false), gens[path] ?? 0, false);
-      return one ? [one] : [];
+      return { items: item ? [itemFor(path, item, undefined, false)] : [], cache };
     }
-    const out: CodeViewItem<Annot>[] = [];
-    for (const path of orderedPaths(snapshot)) {
+    const byPath = changedFilesByPath(snapshot.changed);
+    const state = { collapsed, viewed, config, snapshot };
+    const items = orderedPaths(snapshot).map((path) => {
       // A file whose patch has not arrived is a header-only placeholder, so the pane and the nav model
       // hold the same items and a jump onto it has somewhere to land.
-      const l = loaded[path] ?? LOADING;
-      const mine = threadsByPath.get(path) ?? [];
-      const folded = isCollapsed(state, path);
-      const item = toItem(
-        path,
-        l,
-        byPath.get(path),
-        mine,
-        draft,
-        versionOf(path, mine, folded),
-        gens[path] ?? 0,
-        folded,
-      );
-      if (item) out.push(item);
-    }
-    return out;
+      return itemFor(path, loaded[path] ?? LOADING, byPath.get(path), isCollapsed(state, path));
+    });
+    return { items, cache };
   }, [snapshot, loaded, gens, fileView, threads, showResolved, replyTo, editingId, draft, collapsed, viewed, config]);
+  useLayoutEffect(() => {
+    previousItems.current = cache;
+  }, [cache]);
+  const windowed = usesViewportPatches(snapshot) && !fileView;
+  const patchesLoading = useMemo(
+    () => !windowed && snapshot?.changed.some((f) => !loaded[f.path]),
+    [windowed, snapshot, loaded],
+  );
 
   // The scroller is state, not a ref: CodeView mounts after the empty / error branches and remounts per
   // theme, and the effects that listen to it must re-run for each element, not only when the snapshot appears.
@@ -448,14 +451,17 @@ export function ReviewPane() {
     const update = () => {
       raf = 0;
       const rendered = viewerRef.current?.getInstance()?.getRenderedItems() ?? [];
-      if (workerPool && rendered.length > 0) {
+      let candidate: CodeViewItem<Annot> | undefined;
+      if ((workerPool || windowed) && rendered.length > 0) {
         let edge = direction === 'down' ? -1 : items.length;
         for (const row of rendered) {
           const index = indexById.get(row.id);
           if (index !== undefined) edge = direction === 'down' ? Math.max(edge, index) : Math.min(edge, index);
         }
         const nextIndex = edge + (direction === 'down' ? 1 : -1);
-        const candidate = items[nextIndex];
+        candidate = items[nextIndex];
+      }
+      if (workerPool) {
         if (candidate?.type === 'diff' && candidate.fileDiff.cacheKey) {
           const key = `${theme}:${candidate.fileDiff.cacheKey}`;
           if (state.runningKey !== key && state.lastKey !== key)
@@ -464,15 +470,21 @@ export function ReviewPane() {
           drainHighlightLookahead(state);
         } else state.pending = null;
       }
-      if (jumping.current || useStore.getState().selection) return;
+      const s = useStore.getState();
+      const followViewport = !jumping.current && !s.selection;
+      if (!windowed && !followViewport) return;
       const box = scroller.getBoundingClientRect();
       const header = geometry.itemMetrics.diffHeaderHeight;
       const eye = box.top + box.height * EYE_FRACTION;
       const inView = rendered
         .map((r) => ({ id: r.id, rect: r.element.getBoundingClientRect() }))
         .filter((r) => r.rect.bottom > box.top + header + 1 && r.rect.top < box.bottom && r.rect.height > 0);
-      if (inView.length === 0) return;
-      const s = useStore.getState();
+      if (windowed) {
+        const paths = inView.map((r) => pathFromItemId(r.id));
+        if (candidate) paths.push(pathFromItemId(candidate.id));
+        s.loadViewportPatches(paths);
+      }
+      if (!followViewport || inView.length === 0) return;
       const pick =
         inView.find((r) => pathFromItemId(r.id) === s.activePath) ??
         inView.filter((r) => r.rect.top <= eye).sort((a, b) => b.rect.top - a.rect.top)[0] ??
@@ -489,12 +501,17 @@ export function ReviewPane() {
       if (!raf) raf = requestAnimationFrame(update);
     };
     scroller.addEventListener('scroll', onScroll, { passive: true });
+    // The viewport also changes when the first items mount or the window resizes.
+    const resize = windowed ? new ResizeObserver(onScroll) : null;
+    resize?.observe(scroller);
+    if (windowed) onScroll();
     return () => {
       scroller.removeEventListener('scroll', onScroll);
       if (raf) cancelAnimationFrame(raf);
+      resize?.disconnect();
       state.pending = null;
     };
-  }, [scroller, geometry, items, workerPool, theme]);
+  }, [scroller, geometry, items, workerPool, theme, windowed]);
 
   // A display toggle re-lays the rows out (split / unified, wrap, the pane resizing as the tree or the
   // side panel hides, or as a view with another panel shows) or remounts the viewer (theme). Neither is
@@ -1031,7 +1048,7 @@ export function ReviewPane() {
         ? !fileView.item && (
             <div className="border-b border-b-border bg-hover px-3 py-2 text-muted">Loading {fileView.path}…</div>
           )
-        : snapshot.changed.some((f) => !loaded[f.path]) && (
+        : patchesLoading && (
             <div className="border-b border-b-border bg-hover px-3 py-2 text-muted">Loading diffs…</div>
           )}
       <CodeView<Annot>
@@ -1053,7 +1070,7 @@ export function ReviewPane() {
 /** The file view's header: the path, its change stats, and the note on files outside the repository. */
 function FileViewBar({ path }: { path: string }) {
   const external = useStore((s) => s.fileView?.external ?? false);
-  const file = useStore((s) => s.snapshot?.changed.find((f) => f.path === path));
+  const file = useStore((s) => changedFile(s.snapshot, path));
   return (
     <div className="flex items-center gap-3 border-b border-b-border bg-hover px-3 py-1.5 text-[0.75rem]">
       <span className="min-w-0 flex-1 truncate font-mono">
@@ -1078,12 +1095,12 @@ function toItem(
   path: string,
   loaded: Loaded,
   changed: ChangedFile | undefined,
-  mine: CommentThread[],
+  mine: readonly CommentThread[],
   draft: Draft | null,
   version: number,
   gen: number,
   collapsed: boolean,
-): CodeViewItem<Annot> | null {
+): CodeViewItem<Annot> {
   const id = itemId(changed != null, path, gen);
   // Threads on the file as a whole, and a draft of one, sit above the first line (the viewer's line 0).
   const fileLevel: LineAnnotation<Annot>[] = mine
@@ -1216,7 +1233,7 @@ function FileHeader({ id, resizeHeader }: { id: string; resizeHeader: (id: strin
     observer.observe(element);
     return () => observer.disconnect();
   }, [id, resizeHeader, localSearch]);
-  const file = useStore((s) => s.snapshot?.changed.find((f) => f.path === path));
+  const file = useStore((s) => changedFile(s.snapshot, path));
   return (
     // `data-path` names the file for tests and scripts; the visible title splits it into styled parts.
     <div ref={ref} data-path={path}>
@@ -1268,7 +1285,7 @@ function CopyPathButton({ path }: { path: string }) {
 }
 
 function FileHeaderMeta({ path }: { path: string }) {
-  const file = useStore((s) => s.snapshot?.changed.find((f) => f.path === path));
+  const file = useStore((s) => changedFile(s.snapshot, path));
   const active = useStore((s) => s.activePath === path);
   const ref = useRef<HTMLSpanElement | null>(null);
   // The header lives in the viewer's shadow DOM; flag its host so the injected CSS can tint the active file.
@@ -1311,10 +1328,10 @@ function FileHeaderMeta({ path }: { path: string }) {
   }, [path, toggleCollapsed, selectFile, full]);
   const vs = useStore((s) => (file ? viewedState(s, file) : 'unviewed'));
   const setViewed = useStore((s) => s.setViewed);
-  const count = useStore((s) => s.threads.filter((t) => t.anchor.path === path && !t.resolved).length);
+  const count = useStore((s) => threadsForPath({ threads: s.threads, showResolved: false }, path).length);
   const collapsedNow = useStore((s) => isCollapsed(s, path));
   const openFullFile = useStore((s) => s.openFullFile);
-  const oversized = useStore((s) => s.loaded[path]?.kind === 'oversized');
+  const patchKind = useStore((s) => s.loaded[path]?.kind);
   const loadPatch = useStore((s) => s.loadPatch);
   const openFileDraft = useStore((s) => s.openFileDraft);
   const external = useStore((s) => s.fileView?.external === true && s.fileView.path === path);
@@ -1342,9 +1359,14 @@ function FileHeaderMeta({ path }: { path: string }) {
           submodule
         </span>
       )}
-      {oversized && (
-        <Button variant="ghost" onClick={() => void loadPatch(path)} title="Large diff, not loaded yet (zo)">
-          <Download size="0.875rem" /> Load diff
+      {!full && (patchKind === 'oversized' || patchKind === 'error') && (
+        <Button
+          variant="ghost"
+          onClick={() => void loadPatch(path)}
+          title={patchKind === 'error' ? 'Try loading this diff again (zo)' : 'Large diff, not loaded yet (zo)'}
+        >
+          {patchKind === 'error' ? <RefreshCw size="0.875rem" /> : <Download size="0.875rem" />}
+          {patchKind === 'error' ? 'Retry diff' : 'Load diff'}
         </Button>
       )}
       {file && vs === 'restale' && (
