@@ -10,7 +10,8 @@ use crate::generated::GeneratedFlags;
 use crate::git::patch_cache::PatchText;
 use crate::git::{GitRepo, WORKTREE};
 use crate::iterations::IterationStore;
-use crate::mode::view::{Shown, resolve_shown};
+use crate::mode::resolve::Endpoints;
+use crate::mode::view::{Shown, resolve_shown_with_endpoints};
 use crate::protocol::{
     ChangeStatus, ChangedFile, Iteration, MAX_RANGE_COMMITS, RangeCommits, RangeEnds, Review, ReviewedCommit, Snapshot,
 };
@@ -123,7 +124,8 @@ impl Snapshotter {
     }
 
     /// Fast path for content edits to known tracked regular files. All ambiguous changes
-    /// return None, asking the session to perform its normal full recomputation.
+    /// return None, asking the session to perform its normal full recomputation. Renames and
+    /// submodules already in the diff only require that fallback when an affected path is dirty.
     pub async fn refresh_paths(
         self: &Arc<Self>,
         paths: &HashSet<String>,
@@ -134,7 +136,10 @@ impl Snapshotter {
             || previous.old_sha == WORKTREE
             || paths.is_empty()
             || paths.iter().map(|path| path.len() + 16).sum::<usize>() > 64 * 1024
-            || previous.changed.iter().any(|f| f.old_path.is_some() || f.submodule.is_some())
+            || previous.changed.iter().any(|f| {
+                f.old_path.as_ref().is_some_and(|old| paths.contains(old) || paths.contains(&f.path))
+                    || f.submodule.is_some() && paths.contains(&f.path)
+            })
         {
             return Ok(None);
         }
@@ -178,11 +183,18 @@ impl Snapshotter {
     }
 
     pub async fn current(self: &Arc<Self>) -> Result<Arc<Snapshot>> {
+        self.current_with_endpoints(None).await
+    }
+
+    pub(crate) async fn current_with_endpoints(self: &Arc<Self>, initial: Option<Endpoints>) -> Result<Arc<Snapshot>> {
         let task = {
             let mut state = self.state.lock().unwrap();
             let version = state.version;
             let this = self.clone();
-            state.snapshot.get_or_insert_with(|| async move { this.compute(version).await }.boxed().shared()).clone()
+            state
+                .snapshot
+                .get_or_insert_with(|| async move { this.compute(version, initial).await }.boxed().shared())
+                .clone()
         };
         let result = task.clone().await;
         if result.is_err() {
@@ -464,9 +476,15 @@ impl Snapshotter {
         }
     }
 
-    async fn compute(self: Arc<Self>, version: i64) -> Result<Arc<Snapshot>> {
+    async fn compute(self: Arc<Self>, version: i64, initial: Option<Endpoints>) -> Result<Arc<Snapshot>> {
         let repo = &self.repo;
-        let shown = resolve_shown(repo, &self.review, self.iterations.as_ref(), self.range_key.as_deref());
+        let shown = resolve_shown_with_endpoints(
+            repo,
+            &self.review,
+            self.iterations.as_ref(),
+            self.range_key.as_deref(),
+            initial,
+        );
         let (shown, head_sha) = tokio::join!(shown, repo.resolve("HEAD"));
         let (shown, head_sha) = (shown?, head_sha.unwrap_or_default());
         let Shown { old_sha, new_sha, follows, range, interdiff, commit, comment_key } = shown;

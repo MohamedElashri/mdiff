@@ -60,8 +60,8 @@ impl Session {
         let version = self.next_version();
         // A range that can move again gets its iterations recorded: one between refs, or a PR's,
         // fetched anew each run. Its key is the range's, whatever slice is shown.
-        let (range_key, followed, branches) = match &review {
-            Review::Commit { .. } => (None, false, false),
+        let (range_key, followed, branches, endpoints) = match &review {
+            Review::Commit { .. } => (None, false, false, None),
             Review::Range { old, new, base, pr, .. } => {
                 let ends = resolve_range(&self.repo, old, new, *base).await?;
                 let key = range_comment_key(
@@ -74,13 +74,13 @@ impl Session {
                 .await?;
                 let followed = ends.live == Live::Refs || pr.is_some();
                 let branches = ends.live == Live::Refs && names_branch(&self.repo, old, new).await?;
-                (Some(key), followed, branches)
+                (Some(key), followed, branches, Some(ends))
             }
         };
         let iterations = followed.then(|| IterationStore::new(self.repo.clone(), range_key.clone().expect("a range")));
         let snapshotter =
             Snapshotter::new(self.repo.clone(), review.clone(), range_key.clone(), version, self.context(), iterations);
-        let snap = snapshotter.current().await?;
+        let snap = snapshotter.current_with_endpoints(endpoints).await?;
         let comments = Arc::new(CommentStore::open(&self.repo.git_dir, &snap.comment_key).await?);
         let next = Arc::new(Active {
             review,

@@ -64,6 +64,27 @@ async fn selective_refresh_matches_full_recomputation_and_falls_back_for_members
 }
 
 #[tokio::test]
+async fn selective_refresh_remains_available_with_an_unrelated_rename() {
+    let t = TestRepo::new();
+    t.write("old.txt", "renamed content\n");
+    t.write("edited.txt", "base\n");
+    t.commit("base");
+    t.git(&["mv", "old.txt", "new.txt"]);
+    let repo = Arc::new(t.open().await);
+    let (s, snap) = snapshot(&repo, EnterRequest::Working).await;
+    assert_eq!(snap.changed[0].old_path.as_deref(), Some("old.txt"));
+
+    t.write("edited.txt", "updated\n");
+    let incremental = s.refresh_paths(&HashSet::from(["edited.txt".into()]), 200).await.unwrap().unwrap();
+    let (_, full) = snapshot(&repo, EnterRequest::Working).await;
+    assert_eq!(serde_json::to_value(&incremental.changed).unwrap(), serde_json::to_value(&full.changed).unwrap());
+    assert_eq!(incremental.tree, full.tree);
+
+    t.write("new.txt", "rename target updated\n");
+    assert!(s.refresh_paths(&HashSet::from(["new.txt".into()]), 201).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn pages_preserve_utf8_reject_mixed_versions_and_have_bounded_payloads() {
     let t = TestRepo::new();
     t.write("large.txt", "base\n");
