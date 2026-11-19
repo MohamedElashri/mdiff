@@ -21,7 +21,7 @@ workflows:
         - 'actions/setup-node@v7.1.0'
         - 'actions/upload-artifact@v7.0.2'
         - 'dtolnay/rust-toolchain@1.99'
-        - 'mohamedelashri/sanad@v1.0.1'
+        - 'mohamedelashri/sanad@v1.1.0'
         - 'swatinem/rust-cache@v2.9.3'
 dependencies:
     'actions/checkout@v7.0.1':
@@ -49,9 +49,9 @@ dependencies:
         commit: 'sha1-263313d2989f864a2b8613f97277288638e7d8f8'
         owner_id: 1940490
         repo_id: 260749683
-    'mohamedelashri/sanad@v1.0.1':
-        ref: 'v1.0.1'
-        commit: 'sha1-a73376eda34400ec92e51fcefec6ee287871da38'
+    'mohamedelashri/sanad@v1.1.0':
+        ref: 'v1.1.0'
+        commit: 'sha1-f7fa1a6dc17e14f7d15354402dd8d24939e80fa1'
         owner_id: 25898984
         repo_id: 1242434851
     'swatinem/rust-cache@v2.9.3':
