@@ -33,6 +33,18 @@ pub async fn resolve_shown(
     iterations: Option<&IterationStore>,
     range_key: Option<&str>,
 ) -> Result<Shown> {
+    resolve_shown_with_endpoints(repo, review, iterations, range_key, None).await
+}
+
+/// Activation already resolved the range to choose its comment key. Use those same endpoints
+/// for the initial snapshot; later snapshots resolve live refs again.
+pub(crate) async fn resolve_shown_with_endpoints(
+    repo: &GitRepo,
+    review: &Review,
+    iterations: Option<&IterationStore>,
+    range_key: Option<&str>,
+    initial: Option<Endpoints>,
+) -> Result<Shown> {
     let (old, new, base, pr, view) = match review {
         Review::Commit { sha } => {
             let ends = resolve_commit(repo, sha).await?;
@@ -48,7 +60,10 @@ pub async fn resolve_shown(
         }
         Review::Range { old, new, base, pr, view } => (old, new, *base, pr, view),
     };
-    let ends = resolve_range(repo, old, new, base).await?;
+    let ends = match initial {
+        Some(ends) => ends,
+        None => resolve_range(repo, old, new, base).await?,
+    };
     // A pull request's refs stay where the fetch put them; nothing moves them under the reviewer.
     let follows = if pr.is_some() { Live::None } else { ends.live };
     // A pinned slice still belongs to the range: its refs move the range, whose commits stay listed,
