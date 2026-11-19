@@ -25,6 +25,8 @@ use crate::server::image::image_type;
 const MAX_PATCH_PATHS: usize = 200;
 /// Matches one search returns before it reports truncation.
 const SEARCH_LIMIT: usize = 500;
+/// For small searches the extra grep process is usually more work than preparing the diffs.
+const SEARCH_PREFILTER_MIN_FILES: usize = 32;
 
 pub fn routes() -> Router<Arc<ApiDeps>> {
     Router::new()
@@ -139,10 +141,17 @@ async fn search(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiRe
     };
     let mut matches = Vec::new();
     let mut truncated = false;
+    let options = GrepOptions {
+        word: flag(q.word.map(|w| w.to_string())),
+        ignore_case: flag(q.i.map(|w| w.to_string())),
+        regex: flag(q.re.map(|w| w.to_string())),
+        ..Default::default()
+    };
     for &side in sides {
+        let rev = if side == Side::Old { &snap.old_sha } else { &snap.new_sha };
         let mut paths: Option<Vec<String>> = match q.scope {
             SearchScope::Repo => None,
-            SearchScope::File => Some(snap.tree.iter().filter(|p| Some(*p) == q.path.as_ref()).cloned().collect()),
+            SearchScope::File => Some(q.path.iter().filter(|p| snap.tree.binary_search(p).is_ok()).cloned().collect()),
             SearchScope::Diff => {
                 Some(snap.changed.iter().filter(|f| f.status != ChangeStatus::D).map(|f| f.path.clone()).collect())
             }
@@ -150,22 +159,27 @@ async fn search(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiRe
         let mut ranges = None;
         let mut renamed = HashMap::new();
         if q.content != SearchContent::Full {
-            let candidates: Vec<_> = snap
+            let mut candidates: Vec<_> = snap
                 .changed
                 .iter()
                 .filter(|f| !f.binary)
                 .filter(|f| q.scope != SearchScope::File || Some(&f.path) == q.path.as_ref())
-                .cloned()
+                .map(|file| {
+                    let source =
+                        if side == Side::Old { file.old_path.as_ref().unwrap_or(&file.path) } else { &file.path };
+                    (source.clone(), file.path.clone())
+                })
                 .collect();
+            if candidates.len() >= SEARCH_PREFILTER_MIN_FILES {
+                let sources = candidates.iter().map(|(source, _)| source.clone()).collect::<Vec<_>>();
+                let hits =
+                    d.session.repo.grep_paths(&q.q, rev, &sources, options).await.map_err(crate::error::Error::from)?;
+                candidates.retain(|(source, _)| hits.contains(source));
+            }
             let snapshotter = &snapshotter;
-            let entries = map_limit(candidates, 8, |file| async move {
-                let spans = snapshotter.search_ranges(&file.path, side, q.content == SearchContent::Diff).await?;
-                let source = if side == Side::Old {
-                    file.old_path.clone().unwrap_or_else(|| file.path.clone())
-                } else {
-                    file.path.clone()
-                };
-                Ok::<_, crate::error::Error>((source, file.path, spans))
+            let entries = map_limit(candidates, 8, |(source, path)| async move {
+                let spans = snapshotter.search_ranges(&path, side, q.content == SearchContent::Diff).await?;
+                Ok::<_, crate::error::Error>((source, path, spans))
             })
             .await
             .into_iter()
@@ -178,14 +192,7 @@ async fn search(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiRe
             }
             ranges = Some(indexed);
         }
-        let opts = GrepOptions {
-            word: flag(q.word.map(|w| w.to_string())),
-            ignore_case: flag(q.i.map(|w| w.to_string())),
-            regex: flag(q.re.map(|w| w.to_string())),
-            paths: paths.as_deref(),
-            ranges: ranges.as_ref(),
-        };
-        let rev = if side == Side::Old { &snap.old_sha } else { &snap.new_sha };
+        let opts = GrepOptions { paths: paths.as_deref(), ranges: ranges.as_ref(), ..options };
         let found = d.session.repo.grep(&q.q, rev, SEARCH_LIMIT, opts).await.map_err(crate::error::Error::from)?;
         truncated |= found.truncated;
         matches.extend(found.matches.into_iter().map(|m| SearchMatch {
