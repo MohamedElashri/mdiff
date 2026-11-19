@@ -61,14 +61,17 @@ import {
   itemIdOf,
   linesOf,
   MODE_PANES,
+  orderedPaths,
   OVERSIZED_LINES,
   patchBatches,
+  PATCH_WINDOW_FILES,
   PATCH_BATCH_LINES,
   pathFromItemId,
   rangeStep,
   reuseThreads,
   selectionRange,
   threadsForPath,
+  usesViewportPatches,
   commentsOff,
   iterationPick,
   iterationStep,
@@ -555,10 +558,11 @@ export interface ReviewState {
   stepCommit(direction: -1 | 1): void;
   /** Jumps to a line of a path: in its diff for a changed file, else in the file view of that file. */
   openFile(path: string, line?: number, side?: Side): Promise<void>;
-  /** Full contents of one side, one request per side and path per transition, shared with hydration and the file view. */
+  /** Full contents of one side, sharing pending and recently completed requests with the viewer. */
   loadFile(path: string, side: Side): Promise<FileResponse>;
   /** Fetch an oversized patch on demand or retry a failed patch. */
   loadPatch(path: string): Promise<void>;
+  loadViewportPatches(paths: readonly string[]): void;
   /**
    * Show a path's whole new side in the file view, with the cursor on `line` or the top. No-op for
    * deleted files. `external` opens a file the language server named outside the snapshot instead.
@@ -631,19 +635,28 @@ export const useStore = create<ReviewState>((set, get) => {
   };
   /** Aborts every full-file request of the current transition; replaced by `begin`. */
   let aborter = new AbortController();
-  /**
-   * Full-file loads of the current transition, in flight or finished, keyed by side and path.
-   * Hydration, the file view, comment anchors and the viewer's context expansion all read
-   * through it, so concurrent consumers share one request. A rejected load is dropped so the
-   * next consumer retries; the map is cleared with its transition.
-   */
+  /** In-flight requests are always shared. Completed full files use a bounded cache. */
   const loads = new Map<string, Promise<FileResponse>>();
+  const fileCache = new Map<string, FileResponse>();
+  const FILE_CACHE_BYTES = 16 * 1024 * 1024;
+  const FILE_CACHE_ENTRIES = 128;
+  let fileCacheBytes = 0;
   const patchLoads = new Map<string, Promise<void>>();
+  interface PatchWindow {
+    generation: number;
+    pending: Set<string>;
+    next: string[] | null;
+    running: Promise<void> | null;
+  }
+  let patchWindow: PatchWindow | null = null;
   const begin = () => {
     aborter.abort();
     aborter = new AbortController();
     loads.clear();
+    fileCache.clear();
+    fileCacheBytes = 0;
     patchLoads.clear();
+    hydrating.clear();
     return ++generation;
   };
   /**
@@ -752,13 +765,35 @@ export const useStore = create<ReviewState>((set, get) => {
   /** One side of a file in the current transition; rejects with an AbortError once a newer transition begins. */
   const fetchFile = (path: string, side: Side): Promise<FileResponse> => {
     const key = `${generation}\0${side}\0${path}`;
-    let p = loads.get(key);
-    if (!p) {
-      p = api.file(path, side, aborter.signal);
-      loads.set(key, p);
-      p.catch(() => loads.delete(key));
+    const cached = fileCache.get(key);
+    if (cached) {
+      fileCache.delete(key);
+      fileCache.set(key, cached);
+      return Promise.resolve(cached);
     }
-    return p;
+    const existing = loads.get(key);
+    if (existing) return existing;
+    const request = api.file(path, side, aborter.signal);
+    loads.set(key, request);
+    void request.then(
+      (file) => {
+        if (loads.get(key) !== request) return;
+        loads.delete(key);
+        const bytes = file.contents.length * 2;
+        if (bytes > FILE_CACHE_BYTES) return;
+        for (const [oldKey, oldFile] of fileCache) {
+          if (fileCacheBytes + bytes <= FILE_CACHE_BYTES && fileCache.size < FILE_CACHE_ENTRIES) break;
+          fileCache.delete(oldKey);
+          fileCacheBytes -= oldFile.contents.length * 2;
+        }
+        fileCache.set(key, file);
+        fileCacheBytes += bytes;
+      },
+      () => {
+        if (loads.get(key) === request) loads.delete(key);
+      },
+    );
+    return request;
   };
   const isAbort = (e: unknown) => (e as { name?: string } | null)?.name === 'AbortError';
   /** `fetchFile` for consumers that outlive transitions: a load the transition aborted is retried in the new one. */
@@ -782,7 +817,7 @@ export const useStore = create<ReviewState>((set, get) => {
     if (have != null) return have;
     const g = generation;
     const res = await loadFile(path, side);
-    if (current(g))
+    if (current(g) && !usesViewportPatches(get().snapshot))
       set((s) => ({
         contents: {
           ...s.contents,
@@ -790,6 +825,13 @@ export const useStore = create<ReviewState>((set, get) => {
         },
       }));
     return res.contents;
+  };
+
+  const patchPlaceholder = (file: ChangedFile, previous?: Loaded): Loaded | undefined => {
+    if (file.binary) return { kind: 'binary' };
+    // The reader has already opted into this oversized diff, so refresh it in place.
+    if (linesOf(file) > OVERSIZED_LINES && previous?.kind !== 'diff')
+      return { kind: 'oversized', lines: linesOf(file) };
   };
 
   /**
@@ -833,7 +875,7 @@ export const useStore = create<ReviewState>((set, get) => {
    * `patchBatches`), each batch committing as it lands so the first diff paints before the
    * rest downloads. Binary files and oversized diffs commit at once without a request.
    */
-  const loadPatches = async (snap: Snapshot, paths: string[], g: number) => {
+  const loadPatches = async (snap: Snapshot, paths: string[], g: number, superseded = () => false) => {
     const byPath = changedFilesByPath(snap.changed);
     const wanted = paths.filter((p) => byPath.has(p));
     if (wanted.length === 0) return;
@@ -842,10 +884,8 @@ export const useStore = create<ReviewState>((set, get) => {
     const prev = get().loaded;
     for (const p of wanted) {
       const f = byPath.get(p)!;
-      if (f.binary) immediate[p] = { kind: 'binary' };
-      // A diff already on screen is refreshed in place whatever its size; only an unloaded one waits to be asked for.
-      else if (linesOf(f) > OVERSIZED_LINES && prev[p]?.kind !== 'diff')
-        immediate[p] = { kind: 'oversized', lines: linesOf(f) };
+      const placeholder = patchPlaceholder(f, prev[p]);
+      if (placeholder) immediate[p] = placeholder;
       else textual.push(f);
     }
     if (Object.keys(immediate).length > 0)
@@ -861,9 +901,43 @@ export const useStore = create<ReviewState>((set, get) => {
     await mapLimit(
       batches,
       2,
-      () => !current(g),
+      () => !current(g) || superseded(),
       (batch) => loadBatch(snap, batch, g),
     );
+  };
+
+  /** One background window at a time. A farther scroll replaces batches that have yet to start. */
+  const loadViewport = (paths: readonly string[]): Promise<void> | undefined => {
+    const window = patchWindow;
+    const state = get();
+    const snap = state.snapshot;
+    if (!window || !current(window.generation) || !snap || state.fileView) return;
+    const wanted = [...new Set(paths)].filter((path) => window.pending.has(path) && !isCollapsed(state, path));
+    window.next = wanted.length ? wanted.slice(0, PATCH_WINDOW_FILES) : null;
+    if (!wanted.length) return window.running ?? undefined;
+    const g = generation;
+    return (window.running ??= Promise.resolve().then(async () => {
+      try {
+        while (current(g) && window.next) {
+          const next = window.next;
+          window.next = null;
+          await loadPatches(
+            snap,
+            next.filter((path) => window.pending.has(path)),
+            g,
+            () => window.next != null,
+          );
+        }
+      } finally {
+        window.running = null;
+      }
+    }));
+  };
+
+  const demandPatch = (path: string): Promise<void> | undefined => {
+    const { snapshot, fileView } = get();
+    if (!fileView && snapshot && patchWindow?.generation === generation && patchWindow.pending.has(path))
+      return loadBatch(snapshot, [path], generation);
   };
 
   /** Share work when a manual load or retry overlaps another request for the same snapshot and file. */
@@ -926,18 +1000,19 @@ export const useStore = create<ReviewState>((set, get) => {
       for (const p of paths) loaded[p] = { kind: 'error', message: String(e) };
     }
     if (!current(g)) return;
+    for (const path of paths) patchWindow?.pending.delete(path);
     // First paint: the parsed patches, straight away.
     set((s) => ({
       loaded: { ...s.loaded, ...loaded },
       ...regen(s, Object.keys(loaded)),
     }));
     // A submodule's patch is the commit-id change itself; there is no file to hydrate from.
-    hydrate(
-      paths.filter((p) => !byPath.get(p)!.submodule),
-      files,
-      loaded,
-      g,
-    );
+    if (!usesViewportPatches(snap))
+      hydrate(
+        paths.filter((p) => !byPath.get(p)!.submodule),
+        loaded,
+        g,
+      );
   };
 
   /**
@@ -960,19 +1035,17 @@ export const useStore = create<ReviewState>((set, get) => {
   const HYDRATION_WORKERS = 4;
   const hydrationQueue: HydrationJob[] = [];
   let hydrationWorkers = 0;
-  const hydrate = (
-    paths: string[],
-    files: Map<string, FileDiffMetadata>,
-    committed: Record<string, Loaded>,
-    g: number,
-  ) => {
+  const hydrationJob = (path: string, replaces: Loaded | undefined, g: number): HydrationJob | undefined => {
+    if (replaces?.kind !== 'diff') return;
+    const f = replaces.fileDiff;
+    // Pure renames and mode changes have no hunks or file contents to hydrate here.
+    if (f.isPartial && f.hunks.length > 0 && (f.type === 'change' || f.type === 'rename-changed'))
+      return { path, file: f, replaces, g };
+  };
+  const hydrate = (paths: string[], committed: Record<string, Loaded>, g: number) => {
     for (const p of paths) {
-      const f = files.get(p);
-      // Pure renames and mode changes have no hunks to hydrate, and hydratePartialDiff rejects a pure
-      // rename's old file, so queueing them wastes two fetches and swallows an error.
-      if (f?.isPartial && f.hunks.length > 0 && (f.type === 'change' || f.type === 'rename-changed')) {
-        hydrationQueue.push({ path: p, file: f, replaces: committed[p]!, g });
-      }
+      const job = hydrationJob(p, committed[p], g);
+      if (job) hydrationQueue.push(job);
     }
     while (hydrationWorkers < HYDRATION_WORKERS && hydrationWorkers < hydrationQueue.length) {
       hydrationWorkers++;
@@ -1056,10 +1129,10 @@ export const useStore = create<ReviewState>((set, get) => {
     if (live.length === 0) return;
     set((s) => {
       const loaded = { ...s.loaded };
-      const contents = { ...s.contents };
+      const contents = usesViewportPatches(s.snapshot) ? s.contents : { ...s.contents };
       for (const h of live) {
         loaded[h.path] = { kind: 'diff', fileDiff: h.fileDiff };
-        contents[h.path] = { ...contents[h.path], old: h.old, new: h.new };
+        if (contents !== s.contents) contents[h.path] = { ...contents[h.path], old: h.old, new: h.new };
       }
       return {
         loaded,
@@ -1079,7 +1152,11 @@ export const useStore = create<ReviewState>((set, get) => {
       (j) => j.path === path && current(j.g) && get().loaded[path] === j.replaces,
     );
     if (queued !== -1) await hydrateOne(hydrationQueue.splice(queued, 1)[0]!);
-    else await hydrating.get(path);
+    else if (hydrating.has(path)) await hydrating.get(path);
+    else if (usesViewportPatches(get().snapshot) && !changedFile(get().snapshot, path)?.submodule) {
+      const job = hydrationJob(path, get().loaded[path], generation);
+      if (job) await hydrateOne(job);
+    }
     // The frame's flush would land after the jump; the queued one then finds nothing left.
     if (hydratedFlush) flushHydrated();
     const entry = get().loaded[path];
@@ -1096,19 +1173,37 @@ export const useStore = create<ReviewState>((set, get) => {
     const sidesMoved = oldMoved || (prev != null && prev.newSha !== next.newSha);
     const prevChanged = changedFilesByPath(prev?.changed ?? []);
     const nextChanged = changedFilesByPath(next.changed);
+    const pending = usesViewportPatches(next) ? new Set<string>() : null;
+    const previouslyPending = !modeChanged ? patchWindow?.pending : undefined;
 
     const loaded: Record<string, Loaded> = modeChanged ? {} : { ...get().loaded };
     // Cached sides of any path are stale once either side moved.
-    const contents = modeChanged || sidesMoved ? {} : { ...get().contents };
+    const contents = modeChanged || sidesMoved || pending ? {} : { ...get().contents };
     const reload: string[] = [];
+    const replaced: string[] = [];
     for (const f of next.changed) {
       const p = prevChanged.get(f.path);
-      if (modeChanged || contextChanged || oldMoved || !p || !sameChange(p, f) || loaded[f.path] == null) {
+      if (
+        modeChanged ||
+        contextChanged ||
+        oldMoved ||
+        !p ||
+        !sameChange(p, f) ||
+        loaded[f.path] == null ||
+        previouslyPending?.has(f.path)
+      ) {
         // The stale diff stays on screen until its replacement lands: dropping it would remove the
         // card and reflow everything below it under the reader's eyes. A fresh wrapper object makes
         // a hydration of the old content still in flight miss its identity check and stand down.
         const stale = loaded[f.path];
-        if (stale) loaded[f.path] = { ...stale };
+        const placeholder = pending ? patchPlaceholder(f, stale) : undefined;
+        if (placeholder) {
+          loaded[f.path] = placeholder;
+          if (stale) replaced.push(f.path);
+        } else {
+          if (stale) loaded[f.path] = { ...stale };
+          pending?.add(f.path);
+        }
         delete contents[f.path];
         reload.push(f.path);
       }
@@ -1146,6 +1241,7 @@ export const useStore = create<ReviewState>((set, get) => {
     // A watcher refresh must not take the comment being typed with it; only a new mode or a vanished file does.
     const draft = get().draft;
     const keepDraft = draft != null && !modeChanged && (nextChanged.has(draft.path) || fileView?.path === draft.path);
+    patchWindow = pending && { generation: g, pending, next: null, running: null };
     resyncing = false;
     set((s) => ({
       snapshot: next,
@@ -1160,6 +1256,7 @@ export const useStore = create<ReviewState>((set, get) => {
       draft: keepDraft ? draft : null,
       // A newer snapshot resolved the refs afresh; a notice about this one, or one still being fetched, stands.
       moved: s.moved && s.moved.version < next.version ? null : s.moved,
+      ...(replaced.length ? regen({ ...s, snapshot: next, fileView, draft: keepDraft ? draft : null }, replaced) : {}),
     }));
     void get().refreshGithub();
     if (modeChanged) {
@@ -1184,8 +1281,17 @@ export const useStore = create<ReviewState>((set, get) => {
         },
       }));
     }
+    let patches: Promise<void> | undefined;
+    if (pending) {
+      const paths = orderedPaths(next);
+      const active = get().activePath;
+      const start = active == null ? 0 : Math.max(0, paths.indexOf(active) - 4);
+      patches = loadViewport(paths.slice(start, start + PATCH_WINDOW_FILES));
+    } else {
+      patches = loadPatches(next, reload, g);
+    }
     await Promise.all([
-      loadPatches(next, reload, g),
+      patches,
       ...(fileView && (viewMoved || !fileView.item) ? [loadFileView(fileView.path, fileView.external, g, true)] : []),
     ]);
   };
@@ -1232,7 +1338,10 @@ export const useStore = create<ReviewState>((set, get) => {
     set((s) => ({
       fileView: { path, external, item, from: s.fileView?.from ?? from },
       ...regen(s, [path]),
-      contents: contents == null ? s.contents : { ...s.contents, [path]: { ...s.contents[path], new: contents } },
+      contents:
+        contents == null || usesViewportPatches(s.snapshot)
+          ? s.contents
+          : { ...s.contents, [path]: { ...s.contents[path], new: contents } },
     }));
   };
 
@@ -1241,9 +1350,30 @@ export const useStore = create<ReviewState>((set, get) => {
   const nav = (): NavItem[] => {
     const s = get();
     if (!s.snapshot) return [];
-    const inputs = [s.snapshot, s.loaded, s.gens, s.revealed, s.collapsed, s.viewed, s.config, s.diffStyle, s.fileView];
+    const pending = patchWindow?.pending;
+    const inputs = [
+      s.snapshot,
+      s.loaded,
+      s.gens,
+      s.revealed,
+      s.collapsed,
+      s.viewed,
+      s.config,
+      s.diffStyle,
+      s.fileView,
+      pending,
+    ];
     if (navCache && navCache.inputs.every((v, i) => v === inputs[i])) return navCache.items;
-    const items = buildNav(s.snapshot, s.loaded, s.gens, (p) => isCollapsed(s, p), s.revealed, s.diffStyle, s.fileView);
+    const items = buildNav(
+      s.snapshot,
+      s.loaded,
+      s.gens,
+      (p) => isCollapsed(s, p),
+      s.revealed,
+      s.diffStyle,
+      s.fileView,
+      pending,
+    );
     navCache = { inputs, items };
     return items;
   };
@@ -1328,6 +1458,13 @@ export const useStore = create<ReviewState>((set, get) => {
         focusedThread: null,
       });
     }
+    const pending = !pos.full && demandPatch(pos.path);
+    if (pending) {
+      const g = generation;
+      const { activePath, scrollTarget } = get();
+      await pending;
+      if (!current(g) || get().activePath !== activePath || get().scrollTarget?.nonce !== scrollTarget?.nonce) return;
+    }
     silent = true;
     try {
       goToPosition(pos);
@@ -1397,6 +1534,7 @@ export const useStore = create<ReviewState>((set, get) => {
         nonce: (s.scrollTarget?.nonce ?? 0) + 1,
       },
     }));
+    if (next && !next.collapsed) void demandPatch(next.path);
   };
 
   /** After `v`, review continues at the next file still to be viewed, collapsed or not. */
@@ -1440,6 +1578,7 @@ export const useStore = create<ReviewState>((set, get) => {
         nonce: (s.scrollTarget?.nonce ?? 0) + 1,
       },
     }));
+    if (!item.collapsed) void demandPatch(item.path);
   };
 
   /**
@@ -1449,8 +1588,10 @@ export const useStore = create<ReviewState>((set, get) => {
   const jumpToLine = async (path: string, line: number, external = false, col?: number, side: Side = 'new') => {
     // One jumplist entry per jump, taken at the origin. Opening the file parks the cursor on its
     // first hunk on the way; recording that would make Ctrl+o land somewhere the reader never was.
+    const g = generation;
     recordJump();
     await quietly(() => (external ? get().openFullFile(path, undefined, true) : get().openFile(path, undefined, side)));
+    if (!current(g) || get().activePath !== path) return;
     ensureExpanded(path);
     const items = nav();
     const itemIndex = items.findIndex((i) => i.path === path);
@@ -1499,7 +1640,7 @@ export const useStore = create<ReviewState>((set, get) => {
   const hydrateToReveal = async (path: string, line: number): Promise<boolean> => {
     const g = generation;
     const hydrated = await hydrateNow(path);
-    if (!current(g)) return false;
+    if (!current(g) || get().activePath !== path) return false;
     if (hydrated) return true;
     await quietly(() => get().openFullFile(path, line));
     return false;
@@ -1598,6 +1739,7 @@ export const useStore = create<ReviewState>((set, get) => {
         nonce: (s.scrollTarget?.nonce ?? 0) + 1,
       },
     }));
+    if (!item.collapsed) void demandPatch(item.path);
   };
 
   const threadAtCursor = (): CommentThread | undefined => {
@@ -2452,6 +2594,7 @@ export const useStore = create<ReviewState>((set, get) => {
             nonce: (s.scrollTarget?.nonce ?? 0) + 1,
           },
         }));
+        if (!item.collapsed) void demandPatch(item.path);
         return;
       }
       placeCursor(cur);
@@ -2465,7 +2608,9 @@ export const useStore = create<ReviewState>((set, get) => {
     },
     moveHunk(delta) {
       // From the active file's header (no line selected), ] enters that file and [ leaves it backwards.
-      placeCursor(stepHunk(nav(), currentNavCursor(), delta), false, 'eye');
+      const items = nav();
+      const next = stepHunk(items, currentNavCursor(), delta);
+      if (next && (next.rowIndex !== -1 || items[next.itemIndex]?.pending)) placeNavCursor(next, false, 'eye');
     },
     toggleVisual() {
       const cur = currentCursor();
@@ -2610,6 +2755,7 @@ export const useStore = create<ReviewState>((set, get) => {
     endReview() {
       sessionGeneration++;
       beginMode();
+      patchWindow = null;
       cancelSymbolWait();
       menuSeq++;
       hoverSeq++;
@@ -2790,6 +2936,7 @@ export const useStore = create<ReviewState>((set, get) => {
     },
 
     loadFile,
+    loadViewportPatches: loadViewport,
 
     async openFile(path, line, side) {
       const snap = get().snapshot;
@@ -2810,11 +2957,26 @@ export const useStore = create<ReviewState>((set, get) => {
           focusedThread: null,
         });
       }
+      const pending = demandPatch(path);
+      if (pending) {
+        const g = generation;
+        // Put the header on screen immediately. A newer jump wins while this file loads.
+        recordJump();
+        get().selectFile(path);
+        quietly(() => get().jumpTo(path));
+        const nonce = get().scrollTarget?.nonce;
+        await pending;
+        if (!current(g) || get().activePath !== path || get().scrollTarget?.nonce !== nonce) return;
+        quietly(() => get().jumpTo(path, line, side));
+        return;
+      }
       get().jumpTo(path, line, side);
       set({ activePath: path });
     },
 
     async loadPatch(path) {
+      const pending = demandPatch(path);
+      if (pending) return pending;
       const snap = get().snapshot;
       const kind = get().loaded[path]?.kind;
       if (!snap || !changedFile(snap, path) || (kind !== 'oversized' && kind !== 'error')) return;

@@ -55,6 +55,7 @@ import {
   pathFromItemId,
   rangeLabel,
   threadsForPath,
+  usesViewportPatches,
   viewedState,
   type ItemVersion,
   commentsOff,
@@ -370,7 +371,11 @@ export function ReviewPane() {
   useLayoutEffect(() => {
     previousItems.current = cache;
   }, [cache]);
-  const patchesLoading = useMemo(() => snapshot?.changed.some((f) => !loaded[f.path]), [snapshot, loaded]);
+  const windowed = usesViewportPatches(snapshot) && !fileView;
+  const patchesLoading = useMemo(
+    () => !windowed && snapshot?.changed.some((f) => !loaded[f.path]),
+    [windowed, snapshot, loaded],
+  );
 
   // The scroller is state, not a ref: CodeView mounts after the empty / error branches and remounts per
   // theme, and the effects that listen to it must re-run for each element, not only when the snapshot appears.
@@ -446,14 +451,17 @@ export function ReviewPane() {
     const update = () => {
       raf = 0;
       const rendered = viewerRef.current?.getInstance()?.getRenderedItems() ?? [];
-      if (workerPool && rendered.length > 0) {
+      let candidate: CodeViewItem<Annot> | undefined;
+      if ((workerPool || windowed) && rendered.length > 0) {
         let edge = direction === 'down' ? -1 : items.length;
         for (const row of rendered) {
           const index = indexById.get(row.id);
           if (index !== undefined) edge = direction === 'down' ? Math.max(edge, index) : Math.min(edge, index);
         }
         const nextIndex = edge + (direction === 'down' ? 1 : -1);
-        const candidate = items[nextIndex];
+        candidate = items[nextIndex];
+      }
+      if (workerPool) {
         if (candidate?.type === 'diff' && candidate.fileDiff.cacheKey) {
           const key = `${theme}:${candidate.fileDiff.cacheKey}`;
           if (state.runningKey !== key && state.lastKey !== key)
@@ -462,15 +470,21 @@ export function ReviewPane() {
           drainHighlightLookahead(state);
         } else state.pending = null;
       }
-      if (jumping.current || useStore.getState().selection) return;
+      const s = useStore.getState();
+      const followViewport = !jumping.current && !s.selection;
+      if (!windowed && !followViewport) return;
       const box = scroller.getBoundingClientRect();
       const header = geometry.itemMetrics.diffHeaderHeight;
       const eye = box.top + box.height * EYE_FRACTION;
       const inView = rendered
         .map((r) => ({ id: r.id, rect: r.element.getBoundingClientRect() }))
         .filter((r) => r.rect.bottom > box.top + header + 1 && r.rect.top < box.bottom && r.rect.height > 0);
-      if (inView.length === 0) return;
-      const s = useStore.getState();
+      if (windowed) {
+        const paths = inView.map((r) => pathFromItemId(r.id));
+        if (candidate) paths.push(pathFromItemId(candidate.id));
+        s.loadViewportPatches(paths);
+      }
+      if (!followViewport || inView.length === 0) return;
       const pick =
         inView.find((r) => pathFromItemId(r.id) === s.activePath) ??
         inView.filter((r) => r.rect.top <= eye).sort((a, b) => b.rect.top - a.rect.top)[0] ??
@@ -487,12 +501,17 @@ export function ReviewPane() {
       if (!raf) raf = requestAnimationFrame(update);
     };
     scroller.addEventListener('scroll', onScroll, { passive: true });
+    // The viewport also changes when the first items mount or the window resizes.
+    const resize = windowed ? new ResizeObserver(onScroll) : null;
+    resize?.observe(scroller);
+    if (windowed) onScroll();
     return () => {
       scroller.removeEventListener('scroll', onScroll);
       if (raf) cancelAnimationFrame(raf);
+      resize?.disconnect();
       state.pending = null;
     };
-  }, [scroller, geometry, items, workerPool, theme]);
+  }, [scroller, geometry, items, workerPool, theme, windowed]);
 
   // A display toggle re-lays the rows out (split / unified, wrap, the pane resizing as the tree or the
   // side panel hides, or as a view with another panel shows) or remounts the viewer (theme). Neither is

@@ -582,6 +582,80 @@ describe('client transitions', () => {
     expect(useStore.getState().loaded[path]?.kind).toBe('diff');
   });
 
+  it('loads only a window of a large review, and fetches a distant file when keyboard navigation reaches it', async () => {
+    const paths = Array.from({ length: 180 }, (_, i) => `file-${i}.txt`);
+    const changed = paths.map((path) => file({ path }));
+    changed[170] = file({ path: paths[170], additions: OVERSIZED_LINES + 1 });
+    changed[171] = file({ path: paths[171], binary: true });
+    api.patch.mockImplementation(async (path: string) => patchesFor([path]));
+    api.patches.mockImplementation(async (batch: string[]) => patchesFor(batch));
+    api.snapshot.mockResolvedValueOnce({ ...snap(1, 'working', paths), changed });
+
+    await useStore.getState().refreshSnapshot();
+    const requested = () => [
+      ...api.patch.mock.calls.map(([path]) => path),
+      ...api.patches.mock.calls.flatMap(([paths]) => paths),
+    ];
+    expect(requested()).toHaveLength(24);
+    expect(api.file).not.toHaveBeenCalled();
+    expect(useStore.getState().loaded[paths[170]!]?.kind).toBe('oversized');
+    expect(useStore.getState().loaded[paths[171]!]?.kind).toBe('binary');
+
+    useStore.getState().loadViewportPatches(paths.slice(100, 104));
+    await vi.waitFor(() => expect(useStore.getState().loaded[paths[103]!]?.kind).toBe('diff'));
+    expect(requested()).toHaveLength(28);
+    expect(api.file).not.toHaveBeenCalled();
+
+    const last = paths.at(-1)!;
+    useStore.getState().moveFile('last');
+    expect(useStore.getState().activePath).toBe(last);
+    await vi.waitFor(() => expect(useStore.getState().loaded[last]?.kind).toBe('diff'));
+    useStore.getState().moveHunk(1);
+    expect(useStore.getState().selection?.id).toBe(itemIdOf(useStore.getState(), last));
+    expect(requested()).toHaveLength(29);
+    api.patch.mockReset();
+    api.patches.mockReset();
+  });
+
+  it('keeps an offscreen change pending across repeated snapshots until the file is opened', async () => {
+    const paths = Array.from({ length: 180 }, (_, i) => `file-${i}.txt`);
+    const far = paths.at(-1)!;
+    const changed = paths.map((path) => file({ path }));
+    api.patch.mockImplementation(async (path: string) => patchesFor([path]));
+    api.patches.mockImplementation(async (batch: string[]) => patchesFor(batch));
+    api.snapshot.mockResolvedValueOnce({ ...snap(1, 'working', paths), changed });
+    await useStore.getState().refreshSnapshot();
+    useStore.getState().loadViewportPatches([far]);
+    await vi.waitFor(() => expect(useStore.getState().loaded[far]?.kind).toBe('diff'));
+    const cached = useStore.getState().loaded[far];
+
+    const edited = changed.map((f) => (f.path === far ? { ...f, blob: 'new' } : f));
+    for (const version of [2, 3]) {
+      api.snapshot.mockResolvedValueOnce({ ...snap(version, 'working', paths), changed: edited });
+      await useStore.getState().refreshSnapshot();
+    }
+    expect(api.patch.mock.calls.filter(([path]) => path === far)).toHaveLength(1);
+    await useStore.getState().openFile(far);
+    expect(api.patch.mock.calls.filter(([path]) => path === far)).toHaveLength(2);
+    expect(useStore.getState().loaded[far]).not.toBe(cached);
+    expect(useStore.getState().selection?.id).toBe(itemIdOf(useStore.getState(), far));
+    api.patch.mockReset();
+    api.patches.mockReset();
+  });
+
+  it('shares completed file reads within the full-file cache byte budget', async () => {
+    const contents = 'x'.repeat(6 * 1024 * 1024);
+    api.file.mockResolvedValue({ contents, binary: false });
+    const { loadFile } = useStore.getState();
+    await loadFile('cache-first.txt', 'new');
+    await loadFile('cache-first.txt', 'new');
+    expect(api.file).toHaveBeenCalledTimes(1);
+    await loadFile('cache-second.txt', 'new');
+    await loadFile('cache-first.txt', 'new');
+    expect(api.file).toHaveBeenCalledTimes(3);
+    api.file.mockReset();
+  });
+
   it('hydration and the file view opening at once share one request per side; a failed load is retried by the next consumer', async () => {
     const changed = [file({ path: 'a.txt', blob: 'b1' })];
     api.patch.mockResolvedValue('diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-x\n+y\n');
