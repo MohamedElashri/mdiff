@@ -15,7 +15,7 @@ The isolated macOS pass covered all theme/font choices, dirty preferences, resta
 
 Latest automated coverage: **572 frontend, 459 engine and 130 native tests passed**; one opt-in live provider-write test remains ignored. Types, lint, strict Clippy, formatting, metadata and packaging checks passed. Docker browser tests could not run because the daemon is unavailable.
 
-Unresolved: the native updater's connection times out before HTTPS although `curl` reaches the manifest. External Terminal/Ghostty UI inspection was denied by computer-use policy; launch receipts passed, completion remains unverified. Parent-thread deletion was not repeated; reply deletion passed.
+The native updater check passed on retry; the earlier TCP timeout did not recur. External Terminal/Ghostty UI inspection was denied by computer-use policy; launch receipts passed, completion remains unverified. Parent-thread deletion was not repeated; reply deletion passed.
 
 [Resource limits](src-tauri/src/reviews.md) bound retained work, not total memory. macOS debug observations ranged roughly 274–802 MiB summed app/helper RSS; controlled release/leak profiling remains pending. Use [macOS probe](scripts/macos-resource-probe.py) for comparable observations.
 
