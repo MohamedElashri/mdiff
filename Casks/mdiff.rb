@@ -1,9 +1,9 @@
 cask "mdiff" do
   arch arm: "aarch64", intel: "x86_64"
 
-  version "0.2.1"
-  sha256 arm:   "618932fe9ebea5904720619abcf3bf0fff0ac40b0dd4832f5ae0c930a87a37c8",
-         intel: "11c15d88dfa8336f6b03982771f3c81bd8096091333f5752a92a6a583249a7f2"
+  version "0.3.0"
+  sha256 arm:   "7065eb5e218d354700fde33cc00700c607b3d285950b72ac55250694715ca6fc",
+         intel: "59cea25deffa176bc4d7c84bf2ec74fcf3ebc6747bbcb10205e848349b37d916"
 
   url "https://github.com/MohamedElashri/mdiff/releases/download/v#{version}/mdiff-#{version}-#{arch}-apple-darwin.zip"
   name "mdiff"
