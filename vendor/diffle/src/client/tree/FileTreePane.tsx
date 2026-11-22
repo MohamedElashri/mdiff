@@ -1,3 +1,6 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewRoot } from '@/client/runtime.js';
+import { useReviewStore } from '@/client/store.js';
 import { SegmentedControl, ToggleButton } from '@/client/ui/ToggleButton.js';
 import { Button } from '@/client/ui/Button.js';
 import type { GitStatusEntry } from '@pierre/trees';
@@ -7,7 +10,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { focusReview } from '@/client/keyboard/useKeymap.js';
 import { changedFile, isCollapsed, isViewed } from '@/client/model.js';
 import { remPx } from '@/client/scale.js';
-import { useStore } from '@/client/store.js';
+
 import { ButtonLabel } from '@/client/ui/ButtonLabel.js';
 import { useConfirm } from '@/client/useConfirm.js';
 import { activeView } from '@/client/views/state.js';
@@ -21,6 +24,9 @@ import { toggleDirectoryViewed, trackMenuPointer, TreeMenu } from './TreeMenu.js
 type Scope = 'changed' | 'all';
 
 export function FileTreePane() {
+  const root = useReviewRoot();
+  const useStore = useReviewStore();
+
   const snapshot = useStore((s) => s.snapshot);
   const openFile = useStore((s) => s.openFile);
   const [scope, setScope] = useState<Scope>('changed');
@@ -126,7 +132,7 @@ export function FileTreePane() {
       if (isCollapsed(s, path)) s.toggleCollapsed(path);
       void openRef.current(path);
       // The tree re-focuses its input when it renders; hand focus over after that update.
-      requestAnimationFrame(focusReview);
+      requestAnimationFrame(() => focusReview(root));
     };
     body.addEventListener('blur', retainSearch, true);
     body.addEventListener('keydown', onSearchKeyDown, true);
@@ -134,7 +140,7 @@ export function FileTreePane() {
       body.removeEventListener('blur', retainSearch, true);
       body.removeEventListener('keydown', onSearchKeyDown, true);
     };
-  }, [model]);
+  }, [model, useStore, root]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -162,7 +168,7 @@ export function FileTreePane() {
         if (!path) return;
         // Choosing a file is the start of reading it: expand it and hand the keys to the review pane.
         // The tree focuses its row on click, so hand focus over a frame later.
-        requestAnimationFrame(focusReview);
+        requestAnimationFrame(() => focusReview(root));
         const s = useStore.getState();
         if (isCollapsed(s, path)) s.toggleCollapsed(path);
         // Re-clicking the active file changes no selection, so `onSelectionChange` stays silent; a view
@@ -186,7 +192,7 @@ export function FileTreePane() {
       el.removeEventListener('pointerdown', onPointerDown, true);
       el.removeEventListener('click', onClick, true);
     };
-  }, []);
+  }, [useStore, root]);
 
   useCutNameTitles(bodyRef);
   useEffect(() => trackMenuPointer(bodyRef.current), []);
@@ -246,7 +252,7 @@ export function FileTreePane() {
       case 'none':
         break;
     }
-  }, [model, keys, paths, gitStatus, scope]);
+  }, [model, keys, paths, gitStatus, scope, useStore]);
 
   // The selected row follows the file under the cursor, so the tree always shows where the reader is.
   const activePath = useStore((s) => s.activePath);
@@ -259,14 +265,14 @@ export function FileTreePane() {
   }, [model, activePath, paths]);
 
   return (
-    <aside className="tree-theme flex min-h-0 flex-col bg-surface">
+    <aside className="tree-theme flex min-h-0 flex-col">
       <div className="@container flex items-center gap-2 border-b border-b-border px-2.5 py-1.5 text-muted [&_button]:flex-none [&_button]:whitespace-nowrap">
         <SegmentedControl>
           <ToggleButton selected={scope === 'changed'} onClick={() => setScope('changed')}>
-            Changed
+            {uiText('Changed')}
           </ToggleButton>
           <ToggleButton selected={scope === 'all'} onClick={() => setScope('all')}>
-            All files
+            {uiText('All files')}
           </ToggleButton>
         </SegmentedControl>
         {/* The count goes first when the bar is too narrow for every control: the buttons stay reachable. */}
@@ -280,8 +286,8 @@ export function FileTreePane() {
             disabled={viewedCount === 0}
             title={
               unview.armed
-                ? 'Click again to mark all files not viewed'
-                : `Mark all ${viewedCount} viewed file(s) not viewed`
+                ? uiText('Click again to mark all files not viewed')
+                : uiText('Mark all {value0} viewed file(s) not viewed', { value0: String(viewedCount) })
             }
             onClick={unview.fire}
           >
@@ -300,7 +306,7 @@ export function FileTreePane() {
         />
         {searchEmpty && (
           <div role="status" className="absolute inset-x-0 top-14 pr-2.5 pl-[calc(1.5rem+1px)] text-muted">
-            No matching files
+            {uiText('No matching files')}
           </div>
         )}
       </div>

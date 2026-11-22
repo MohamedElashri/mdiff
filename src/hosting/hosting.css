@@ -1,0 +1,225 @@
+.hosting-hub {
+  width: min(900px, calc(100vw - 40px));
+  height: min(820px, calc(100vh - 60px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  overflow: hidden;
+}
+.hosting-hub header,
+.hosting-controls,
+.hosting-hub nav,
+.hosting-tabs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hosting-hub > header {
+  justify-content: space-between;
+}
+.hosting-hub h2,
+.hosting-hub h3,
+.hosting-hub p {
+  margin: 0;
+}
+.hosting-hub h2 {
+  font-size: 18px;
+}
+.hosting-hub h3 {
+  font-size: 16px;
+}
+.hosting-hub header p,
+.hosting-hub small,
+.hosting-heading > span {
+  color: var(--fg-2);
+  font-size: 12px;
+}
+.hosting-hub button,
+.hosting-hub select {
+  min-height: 30px;
+}
+.hosting-hub label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+}
+.hosting-controls {
+  flex-wrap: wrap;
+}
+.hosting-controls strong {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.hosting-scroll {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.hosting-review-row {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  padding: 12px !important;
+  border-bottom: 1px solid var(--border);
+}
+.hosting-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.hosting-hub code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.hosting-tabs {
+  border-bottom: 1px solid var(--border);
+}
+.hosting-tabs button[aria-selected="true"] {
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+.hosting-hub a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.hosting-prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.hosting-compose {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.hosting-compose > label:first-child,
+.hosting-compose > small {
+  grid-column: 1/-1;
+}
+.hosting-hub textarea {
+  width: 100%;
+  min-height: 85px;
+  resize: vertical;
+}
+.hosting-note,
+.hosting-check,
+.hosting-thread {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hosting-note {
+  border: 0;
+  border-left: 2px solid var(--border);
+}
+.hosting-check header,
+.hosting-thread header {
+  justify-content: space-between;
+}
+.hosting-job {
+  padding: 10px 0 0 12px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hosting-check pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  max-height: 280px;
+  overflow: auto;
+}
+.hosting-hub nav {
+  justify-content: flex-end;
+}
+.hosting-hub [role="alert"] {
+  color: var(--danger, #d35b5b);
+  font-size: 12px;
+}
+.hosting-receipt,
+.hosting-confirm {
+  border: 1px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 45%;
+  overflow: auto;
+}
+.hosting-confirm {
+  background: var(--bg-raised);
+  flex-shrink: 0;
+}
+.hosting-hub {
+  background: var(--bg-2);
+  color: var(--fg);
+  border-radius: var(--radius-card);
+}
+.hosting-hub :is(select, textarea) {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 7px;
+  min-width: 0;
+  max-width: 100%;
+}
+.hosting-hub button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.hosting-hub button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.hosting-hub button.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.hosting-hub :is(button, select, textarea, a):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.hosting-hub .hosting-review-row {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+.hosting-hub .hosting-markdown {
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.hosting-hub .hosting-markdown p {
+  margin: 0 0 10px;
+}
+.hosting-hub .hosting-markdown table {
+  display: block;
+  overflow: auto;
+  max-width: 100%;
+}

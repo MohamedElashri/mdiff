@@ -14,7 +14,7 @@ SIGNED ?= false
 RELEASE_TAG ?=
 export TARGET BUNDLES PROFILE FRONTEND SIGNED RELEASE_TAG
 
-.PHONY: help doctor setup dev dev-web build build-debug build-native build-signed \
+.PHONY: messages check-messages  help doctor setup dev dev-web build build-debug build-native build-signed \
  build-frontend build-assets build-review build-engine lint lint-metadata typecheck \
  format format-check clippy check test test-review test-engine test-native \
  test-updater test-installer test-homebrew test-performance test-tooling test-e2e protocol \
@@ -82,7 +82,7 @@ lint-metadata: ## Check installer syntax, shell lint, versions, and release note
 	shellcheck install.sh
 	@set -eu; set --; if [ -n "$$RELEASE_TAG" ]; then set -- --tag "$$RELEASE_TAG"; fi; $(PYTHON) scripts/release-notes.py "$$@"
 
-typecheck: ## Typecheck desktop, review, tooling, and browser tests
+typecheck: check-messages ## Typecheck desktop, review, tooling, and browser tests
 	$(NPM) exec -- tsc --noEmit
 	$(NPM) run typecheck --prefix vendor/diffle
 
@@ -167,3 +167,9 @@ clean: ## Remove generated builds, reports, and release artifacts; keep dependen
 
 test-homebrew: ## Test Homebrew release updates
 	$(PYTHON) tests/test_cask.py
+
+messages: ## Extract shared/desktop UI and owned native labels into the English catalogue
+	node scripts/check-messages.mjs --write
+
+check-messages: ## Verify the extracted English catalogue is current
+	node scripts/check-messages.mjs

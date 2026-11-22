@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-22
+
+### Added
+
+- Review tabs, workspaces, commit history, and configurable shortcuts.
+- Git operations, conflict recovery, worktrees, and terminals.
+- Hosting reviews/checks, opt-in agent activity, and an attention inbox.
+
+### Changed
+
+- Customizable appearance, a French preview, and stronger review isolation.
+
 ## [0.2.1] - 2026-11-19
 
 ### Changed

@@ -1,3 +1,6 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useApi } from '@/client/api.js';
+import { useReviewStore } from '@/client/store.js';
 import { Button } from '@/client/ui/Button.js';
 import { CopyIcon } from '@/client/ui/CopyIcon.js';
 import { FileDiff, Link, MessageSquare } from 'lucide-react';
@@ -81,7 +84,7 @@ export function CommentComposer({ label }: { label: string }) {
           className="max-h-[60vh] min-h-17.5 w-full resize-y rounded-sm border border-border bg-canvas p-1.5 font-mono text-[0.75rem] leading-[1.5]"
           ref={ref}
           value={text}
-          placeholder="Leave a comment…"
+          placeholder={uiText('Leave a comment…')}
           onChange={(e) => setText(e.target.value)}
           // Escape is the keymap's: handled here too, it would also drop the cursor.
           onKeyDown={(e) => {
@@ -90,21 +93,24 @@ export function CommentComposer({ label }: { label: string }) {
         />
         <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">
           <span className="mr-auto text-[0.75rem] whitespace-nowrap text-muted @max-[36rem]:hidden">
-            <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd> to save · <kbd>Esc</kbd> to cancel
+            <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd>
+            {uiText(' to save · ')}
+            <kbd>Esc</kbd>
+            {uiText(' to cancel')}
           </span>
           {!fileLevel && (
             <Button
               variant="ghost"
               onClick={() => void suggest()}
-              title="Insert the selected lines as a suggestion block to edit"
-              aria-label="Suggest change"
+              title={uiText('Insert the selected lines as a suggestion block to edit')}
+              aria-label={uiText('Suggest change')}
             >
-              <FileDiff size="0.8125rem" /> <span className="@max-[18rem]:hidden">Suggest change</span>
+              <FileDiff size="0.8125rem" /> <span className="@max-[18rem]:hidden">{uiText('Suggest change')}</span>
             </Button>
           )}
-          <Button onClick={closeDraft}>Cancel</Button>
+          <Button onClick={closeDraft}>{uiText('Cancel')}</Button>
           <Button variant="primary" onClick={() => void submit()} disabled={!text.trim() || busy}>
-            Comment
+            {uiText('Comment')}
           </Button>
         </div>
       </div>
@@ -118,6 +124,9 @@ export function CommentComposer({ label }: { label: string }) {
  * pushed since show the button.
  */
 function CopyLinkButton() {
+  const api = useApi();
+  const useStore = useReviewStore();
+
   const flash = useStore((s) => s.flash);
   const draft = useStore((s) => s.draft);
   const snapshot = useStore((s) => s.snapshot);
@@ -125,11 +134,11 @@ function CopyLinkButton() {
   useEffect(() => {
     let live = true;
     setUrl(null);
-    void draftPermalink(useStore.getState()).then((u) => live && setUrl(u));
+    void draftPermalink(useStore.getState(), api).then((u) => live && setUrl(u));
     return () => {
       live = false;
     };
-  }, [draft, snapshot]);
+  }, [draft, snapshot, useStore, api]);
   const { done, copy } = useCopied();
   if (!url) return null;
   return (
@@ -138,8 +147,8 @@ function CopyLinkButton() {
       icon
       // The header row stays as tall as its label.
       className="-my-0.5 ml-auto py-0.5 text-muted hover:text-foreground"
-      title="Copy a GitHub permalink to these lines (yl)"
-      aria-label="Copy link"
+      title={uiText('Copy a GitHub permalink to these lines (yl)')}
+      aria-label={uiText('Copy link')}
       onClick={async () => {
         if (!(await copy(url))) flash('The browser blocked clipboard access');
       }}

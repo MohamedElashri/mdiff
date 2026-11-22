@@ -4,7 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { GithubMetadata, Snapshot } from '@/shared/protocol.js';
 
-vi.mock('@/client/api.js', () => ({ api: { github: () => new Promise(() => {}) } }));
+vi.mock('@/client/api.js', async (original) => {
+  const actual = await original<typeof import('@/client/api.js')>();
+  const api = { ...actual.api, github: () => new Promise(() => {}) };
+  return { ...actual, api, useApi: () => api };
+});
 const { useStore } = await import('@/client/store.js');
 const { GithubMenu } = await import('@/client/header/GithubMenu.js');
 const { useKeymap } = await import('@/client/keyboard/useKeymap.js');

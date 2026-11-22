@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { Button } from '@/client/ui/Button.js';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useLayoutEffect, useRef } from 'react';
@@ -65,7 +66,7 @@ export function CommitOffsetInput({
           className="rounded-none border-0 bg-transparent px-0.75 py-0 leading-[1] text-muted hover:bg-surface hover:text-foreground"
           type="button"
           tabIndex={-1}
-          aria-label={`Increase ${label.toLowerCase()}`}
+          aria-label={uiText('Increase {value0}', { value0: String(label.toLowerCase()) })}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => step(1)}
         >
@@ -75,7 +76,7 @@ export function CommitOffsetInput({
           className="rounded-none border-0 bg-transparent px-0.75 py-0 leading-[1] text-muted hover:bg-surface hover:text-foreground"
           type="button"
           tabIndex={-1}
-          aria-label={`Decrease ${label.toLowerCase()}`}
+          aria-label={uiText('Decrease {value0}', { value0: String(label.toLowerCase()) })}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => step(-1)}
         >

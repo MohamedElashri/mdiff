@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { Fragment, useEffect, useId, useRef, useState, type Ref } from 'react';
 import type { RefsResponse } from '@/shared/protocol.js';
 
@@ -114,7 +115,7 @@ export function RefInput({
           id={id}
           role="listbox"
           tabIndex={-1}
-          aria-label={`${label} suggestions`}
+          aria-label={uiText('{value0} suggestions', { value0: String(label) })}
           ref={list}
         >
           {options.map((option, i) => (
@@ -136,7 +137,9 @@ export function RefInput({
             </Fragment>
           ))}
           {!options.length && (
-            <div className="p-2 font-sans text-[0.6875rem] leading-[1.4] text-muted">Use this revision as typed.</div>
+            <div className="p-2 font-sans text-[0.6875rem] leading-[1.4] text-muted">
+              {uiText('Use this revision as typed.')}
+            </div>
           )}
         </div>
       )}

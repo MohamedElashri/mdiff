@@ -7,6 +7,9 @@
 @import './styles/markdown.css' layer(components);
 @import './styles/viewers.css' layer(components);
 @import './appearance/appearance.css' layer(components);
+@import './styles/chrome.css' layer(components);
+@import './commands/commands.css' layer(components);
+@import './history/history.css' layer(components);
 
 @theme inline {
   --color-canvas: var(--bg);
@@ -52,5 +55,17 @@
   to {
     opacity: 1;
     transform: translate(-50%, 0);
+  }
+}
+
+/* Keep focus feedback while removing decorative motion for OS accessibility preferences. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

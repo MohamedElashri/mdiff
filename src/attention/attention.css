@@ -1,0 +1,192 @@
+.attention-dialog {
+  width: min(920px, calc(100vw - 32px));
+  max-height: 88vh;
+  overflow: auto;
+  padding: 22px;
+  background: var(--surface);
+  color: var(--fg);
+  display: block;
+}
+.attention-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.attention-dialog h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+}
+.attention-dialog h3 {
+  margin: 24px 0 12px;
+}
+.attention-dialog p {
+  color: var(--fg-2);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.attention-toolbar,
+.attention-actions,
+.attention-options,
+.attention-add,
+.attention-remote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.attention-toolbar {
+  padding: 14px 0;
+}
+.attention-toolbar > span {
+  margin-right: auto;
+}
+.attention-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.attention-row {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.attention-row-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.attention-row-body p {
+  margin: 0;
+  font-size: 12px;
+}
+.attention-source,
+.attention-row time {
+  font-size: 11px;
+  color: var(--fg-2);
+}
+.attention-source {
+  color: var(--accent);
+}
+.attention-row.is-read .attention-source {
+  color: var(--fg-2);
+}
+.attention-row code {
+  font-size: 11px;
+}
+.attention-actions {
+  justify-content: flex-end;
+  align-content: start;
+  flex-shrink: 0;
+  max-width: 260px;
+}
+.attention-empty {
+  padding: 16px 0;
+}
+.attention-preferences {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.attention-dialog summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 8px 0;
+}
+.attention-preferences label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+  font-size: 13px;
+}
+.attention-add label {
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 120px;
+  flex: 1;
+}
+.attention-add input {
+  width: 100%;
+  min-width: 0;
+}
+.attention-repositories {
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.attention-repositories li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attention-repositories small,
+.attention-dialog small {
+  color: var(--fg-2);
+  line-height: 1.5;
+}
+.attention-remote {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 6px 0;
+}
+@media (max-width: 720px) {
+  .attention-dialog {
+    padding: 16px;
+  }
+  .attention-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .attention-actions {
+    max-width: none;
+    justify-content: flex-start;
+  }
+}
+
+.attention-dialog button,
+.attention-dialog input,
+.attention-dialog select {
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 6px 9px;
+}
+.attention-dialog button {
+  cursor: pointer;
+}
+.attention-dialog button:hover {
+  background: var(--bg-3);
+}
+.attention-dialog button:focus-visible,
+.attention-dialog input:focus-visible,
+.attention-dialog select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.attention-dialog button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.attention-dialog input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+.attention-checks {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+.attention-checks code {
+  overflow-wrap: anywhere;
+}

@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { AppearancePanel } from '@/client/appearance/AppearancePanel.js';
 import { Dialog, DialogContent } from '@/client/ui/dialog.js';
 import { Button } from '@/client/ui/Button.js';
@@ -6,9 +7,9 @@ import { useStore } from '@/client/store.js';
 import type { FollowRefs } from '@/shared/protocol.js';
 
 const FOLLOW_REFS: [FollowRefs, string][] = [
-  ['on', 'Always'],
-  ['auto', 'Auto (not on branches)'],
-  ['off', 'Never'],
+  ['on', uiText('Always')],
+  ['auto', uiText('Auto (not on branches)')],
+  ['off', uiText('Never')],
 ];
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
@@ -68,67 +69,70 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent
-        aria-label="Settings"
+        aria-label={uiText('Settings')}
         className="[&_code]:rounded-sm [&_code]:bg-hover [&_code]:px-1 [&_code]:font-mono"
       >
-        <div className="mb-4 flex items-center gap-2" aria-label="Settings sections">
+        <div className="mb-4 flex items-center gap-2" aria-label={uiText('Settings sections')}>
           <Button
             variant={section === 'review' ? 'primary' : 'default'}
             aria-pressed={section === 'review'}
             onClick={() => setSection('review')}
           >
-            Review
+            {uiText('Review')}
           </Button>
           <Button
             variant={section === 'appearance' ? 'primary' : 'default'}
             aria-pressed={section === 'appearance'}
             onClick={() => setSection('appearance')}
           >
-            Appearance
+            {uiText('Appearance')}
           </Button>
         </div>
         {section === 'appearance' ? (
           <>
             <AppearancePanel />
-            <Button onClick={onClose}>Done</Button>
+            <Button onClick={onClose}>{uiText('Done')}</Button>
           </>
         ) : (
           <>
-            <h3 className="m-0 mb-2">Auto-viewed patterns</h3>
+            <h3 className="m-0 mb-2">{uiText('Auto-viewed patterns')}</h3>
             <p className="m-0 mb-2 text-muted">
-              Matching files start collapsed and viewed. One glob per line: <code>*.lock</code> matches a file name,{' '}
-              <code>**/generated/**</code> a path.
+              {uiText('Matching files start collapsed and viewed. One glob per line: ')}
+              <code>*.lock</code>
+              {uiText(' matches a file name,')} <code>**/generated/**</code>
+              {uiText(' a path.')}
             </p>
             <textarea
               className="min-h-24 w-full rounded-md border border-border bg-surface p-2 font-mono text-[0.75rem]"
               value={text}
               onChange={(e) => setText(e.target.value)}
               spellCheck={false}
-              aria-label="Auto-viewed patterns"
+              aria-label={uiText('Auto-viewed patterns')}
               autoFocus
             />
-            <h3 className="m-0 mt-[14px] mb-2">Context lines</h3>
-            <p className="m-0 mb-2 text-muted">Unchanged lines around each change.</p>
+            <h3 className="m-0 mt-[14px] mb-2">{uiText('Context lines')}</h3>
+            <p className="m-0 mb-2 text-muted">{uiText('Unchanged lines around each change.')}</p>
             <input
               type="number"
-              aria-label="Context lines"
+              aria-label={uiText('Context lines')}
               min={0}
               max={10000}
               value={context}
               onChange={(e) => setContext(e.target.value)}
               className="w-[100px]"
             />
-            <h3 className="m-0 mt-[14px] mb-2">Long lines</h3>
+            <h3 className="m-0 mt-[14px] mb-2">{uiText('Long lines')}</h3>
             <label className="flex cursor-pointer items-center gap-1.5">
               <input type="checkbox" checked={lineWrap} onChange={(e) => setLineWrap(e.target.checked)} />
-              Wrap long lines
+              {uiText('Wrap long lines')}
               <span className="text-muted">
-                (toggle with <code>zw</code>)
+                {uiText('(toggle with ')}
+                <code>zw</code>)
               </span>
             </label>
-            <h3 className="m-0 mt-[14px] mb-2">Reload behavior</h3>
-            <p className="m-0 mb-2 text-muted">Reload when a compared ref moves.</p>
-            <div role="radiogroup" aria-label="Reload behavior" className="flex flex-col gap-1">
+            <h3 className="m-0 mt-[14px] mb-2">{uiText('Reload behavior')}</h3>
+            <p className="m-0 mb-2 text-muted">{uiText('Reload when a compared ref moves.')}</p>
+            <div role="radiogroup" aria-label={uiText('Reload behavior')} className="flex flex-col gap-1">
               {FOLLOW_REFS.map(([value, label]) => (
                 <label key={value} className="flex cursor-pointer items-center gap-1.5">
                   <input
@@ -142,13 +146,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 </label>
               ))}
             </div>
-            <h3 className="m-0 mt-[14px] mb-2">Language servers</h3>
+            <h3 className="m-0 mt-[14px] mb-2">{uiText('Language servers')}</h3>
             <p className="m-0 mb-2 text-muted">
-              Configure servers in Preferences → Code intelligence. Check status and logs in the toolbar.
+              {uiText('Configure servers in Preferences → Code intelligence. Check status and logs in the toolbar.')}
             </p>
             {overrides.length > 0 && (
               <p className="m-0 mb-2 text-muted">
-                Overrides:{' '}
+                {uiText('Overrides:')}{' '}
                 {overrides.map(([language, command], i) => (
                   <span key={language}>
                     {i > 0 && ', '}
@@ -158,12 +162,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               </p>
             )}
             <div className="mt-2.5 flex items-center gap-1.5">
-              <span className="flex-1 text-[0.75rem] text-muted" title="Bundled review engine version">
-                mdiff · review engine v{__DIFFLE_VERSION__}
+              <span className="flex-1 text-[0.75rem] text-muted" title={uiText('Bundled review engine version')}>
+                {uiText('mdiff · review engine v')}
+                {__DIFFLE_VERSION__}
               </span>
-              <Button onClick={onClose}>Cancel</Button>
+              <Button onClick={onClose}>{uiText('Cancel')}</Button>
               <Button variant="primary" onClick={save} disabled={saving}>
-                Save
+                {uiText('Save')}
               </Button>
             </div>
           </>

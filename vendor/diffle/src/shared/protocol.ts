@@ -45,7 +45,12 @@ export type Side = z.infer<typeof SideSchema>;
  * What the CLI and the picker enter a review with: the words, parsed and resolved by the server
  * into a `Review`. A slice of the active range is chosen with a `RangeView` instead.
  */
+export const ComparisonBaseSchema = z.enum(['direct', 'merge-base']);
+export type ComparisonBase = z.infer<typeof ComparisonBaseSchema>;
+
 export const EnterRequestSchema = z.discriminatedUnion('kind', [
+  /** Pinned history endpoints; null old means the empty tree, including a root commit series. */
+  z.object({ kind: z.literal('comparison'), old: z.string().nullable(), new: z.string(), base: ComparisonBaseSchema }),
   z.object({
     kind: z.literal('working'),
   }),
@@ -81,8 +86,6 @@ export const IterationSchema = z.object({
 export type Iteration = z.infer<typeof IterationSchema>;
 
 /** How a range's old side is derived: `old` itself, or merge-base(old, new) with the worktree taken as HEAD. */
-export const ComparisonBaseSchema = z.enum(['direct', 'merge-base']);
-export type ComparisonBase = z.infer<typeof ComparisonBaseSchema>;
 
 /** What a snapshot follows: the worktree, the refs the range was named by, or nothing (pinned hashes, a pull request, an interdiff). */
 export const LiveSchema = z.enum(['worktree', 'refs', 'none']);
@@ -270,6 +273,7 @@ export function rangeLabel(side: { old: string; new: string }): string {
 
 /** A comparison endpoint as the user named it: without diffle's PR namespace or `refs/heads/`. */
 export function refName(rev: string): string {
+  if (rev === ':empty-tree:') return 'Empty tree';
   return rev.replace(/^refs\/diffle\/[^/]+\/\d+\/(?:base|head)\//, '').replace(/^refs\/(?:heads|remotes)\//, '');
 }
 
@@ -938,6 +942,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('config'),
+    /** Drop authenticated summaries and in-flight answers after a connection change. */
+    authChanged: z.boolean().optional(),
   }),
   z.object({
     type: z.literal('lsp'),
@@ -1102,3 +1108,66 @@ export const VersionResponseSchema = z.object({
 export type VersionResponse = z.infer<typeof VersionResponseSchema>;
 
 export const ApiErrorSchema = z.object({ error: z.string() });
+
+/** A lightweight, read-only history context; roots are explicitly pinned per query. */
+export const HistoryRefSchema = z.object({ name: z.string(), sha: z.string() });
+export const HistoryInfoSchema = z.object({
+  root: z.string(),
+  gitDir: z.string(),
+  commonDir: z.string(),
+  head: z.string().nullable(),
+  branch: z.string().nullable(),
+  refs: HistoryRefSchema.array(),
+  refsTruncated: z.boolean(),
+  shallow: z.boolean(),
+  partial: z.boolean(),
+  stamp: z.string(),
+});
+export type HistoryInfo = z.infer<typeof HistoryInfoSchema>;
+export const HistoryQuerySchema = z.object({
+  root: z.string(),
+  generation: z.string().optional(),
+  search: z.string(),
+  author: z.string(),
+  since: z.number().int().nullable(),
+  until: z.number().int().nullable(),
+});
+export type HistoryQuery = z.infer<typeof HistoryQuerySchema>;
+export const HistoryRowSchema = z.object({
+  sha: z.string(),
+  parents: z.string().array(),
+  author: z.string(),
+  date: z.number().int(),
+  subject: z.string(),
+  refs: z.string().array(),
+  lane: z.number().int().nullable(),
+  incoming: z.boolean(),
+  edges: z.object({ from: z.number().int(), to: z.number().int(), color: z.number().int() }).array(),
+  boundary: z.boolean(),
+  index: z.number().int(),
+});
+export type HistoryRow = z.infer<typeof HistoryRowSchema>;
+export const HistoryPageSchema = z.object({
+  generation: z.string(),
+  page: z.number().int(),
+  rows: HistoryRowSchema.array(),
+  next: z.number().int().nullable(),
+  scanned: z.number().int(),
+  limited: z.boolean(),
+  notice: z.string().nullable(),
+});
+export type HistoryPage = z.infer<typeof HistoryPageSchema>;
+export const HistoryDetailSchema = z.object({
+  sha: z.string(),
+  tree: z.string(),
+  parents: z.string().array(),
+  author: z.string(),
+  date: z.number().int(),
+  message: z.string(),
+});
+export type HistoryDetail = z.infer<typeof HistoryDetailSchema>;
+export const HistoryTreeSchema = z.object({
+  entries: z.object({ name: z.string(), oid: z.string(), kind: z.string() }).array(),
+  truncated: z.boolean(),
+});
+export type HistoryTree = z.infer<typeof HistoryTreeSchema>;

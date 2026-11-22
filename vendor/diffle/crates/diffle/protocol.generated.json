@@ -247,7 +247,7 @@
         "direct",
         "merge-base"
       ],
-      "description": "How a range's old side is derived: `old` itself, or merge-base(old, new) with the worktree taken as HEAD."
+      "description": "What the CLI and the picker enter a review with: the words, parsed and resolved by the server\ninto a `Review`. A slice of the active range is chosen with a `RangeView` instead."
     },
     "ConfigUpdate": {
       "type": "object",
@@ -274,6 +274,33 @@
     },
     "EnterRequest": {
       "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "comparison"
+            },
+            "old": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "new": {
+              "type": "string"
+            },
+            "base": {
+              "$ref": "#/$defs/ComparisonBase"
+            }
+          },
+          "required": [
+            "kind",
+            "old",
+            "new",
+            "base"
+          ]
+        },
         {
           "type": "object",
           "properties": {
@@ -339,8 +366,7 @@
             "args"
           ]
         }
-      ],
-      "description": "What the CLI and the picker enter a review with: the words, parsed and resolved by the server\ninto a `Review`. A slice of the active range is chosen with a `RangeView` instead."
+      ]
     },
     "FileAnchor": {
       "type": "object",
@@ -721,6 +747,345 @@
       ],
       "description": "`GET /api/lsp/graph`: the snapshot's changed symbols and the code using them, from the language servers."
     },
+    "HistoryDetail": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "tree": {
+          "type": "string"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "author": {
+          "type": "string"
+        },
+        "date": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "tree",
+        "parents",
+        "author",
+        "date",
+        "message"
+      ]
+    },
+    "HistoryInfo": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "gitDir": {
+          "type": "string"
+        },
+        "commonDir": {
+          "type": "string"
+        },
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HistoryRef"
+          }
+        },
+        "refsTruncated": {
+          "type": "boolean"
+        },
+        "shallow": {
+          "type": "boolean"
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "stamp": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "gitDir",
+        "commonDir",
+        "head",
+        "branch",
+        "refs",
+        "refsTruncated",
+        "shallow",
+        "partial",
+        "stamp"
+      ]
+    },
+    "HistoryPage": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": "string"
+        },
+        "page": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HistoryRow"
+          }
+        },
+        "next": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scanned": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "limited": {
+          "type": "boolean"
+        },
+        "notice": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "generation",
+        "page",
+        "rows",
+        "next",
+        "scanned",
+        "limited",
+        "notice"
+      ]
+    },
+    "HistoryQuery": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "search": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "root",
+        "search",
+        "author",
+        "since",
+        "until"
+      ]
+    },
+    "HistoryRef": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sha"
+      ],
+      "description": "A lightweight, read-only history context; roots are explicitly pinned per query."
+    },
+    "HistoryRow": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "author": {
+          "type": "string"
+        },
+        "date": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "subject": {
+          "type": "string"
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lane": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "incoming": {
+          "type": "boolean"
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "to": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "color": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "color"
+            ]
+          }
+        },
+        "boundary": {
+          "type": "boolean"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "sha",
+        "parents",
+        "author",
+        "date",
+        "subject",
+        "refs",
+        "lane",
+        "incoming",
+        "edges",
+        "boundary",
+        "index"
+      ]
+    },
+    "HistoryTree": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "oid": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "oid",
+              "kind"
+            ]
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries",
+        "truncated"
+      ]
+    },
     "ImageQuery": {
       "type": "object",
       "properties": {
@@ -933,7 +1298,7 @@
         "refs",
         "none"
       ],
-      "description": "What a snapshot follows: the worktree, the refs the range was named by, or nothing (pinned hashes, a pull request, an interdiff)."
+      "description": "How a range's old side is derived: `old` itself, or merge-base(old, new) with the worktree taken as HEAD.\n\nWhat a snapshot follows: the worktree, the refs the range was named by, or nothing (pinned hashes, a pull request, an interdiff)."
     },
     "LspFeature": {
       "type": "string",
@@ -2375,6 +2740,10 @@
             "type": {
               "type": "string",
               "const": "config"
+            },
+            "authChanged": {
+              "type": "boolean",
+              "description": "Drop authenticated summaries and in-flight answers after a connection change."
             }
           },
           "required": [

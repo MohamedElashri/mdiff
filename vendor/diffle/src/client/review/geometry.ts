@@ -1,11 +1,17 @@
 import type { CodeViewOptions } from '@pierre/diffs';
 
 /** Shared CSS and virtual geometry in CSS pixels at the current root font size. */
-export function reviewGeometry(rem: number, codeSize?: number, weight = 400, ligatures = false) {
+export function reviewGeometry(
+  rem: number,
+  codeSize?: number,
+  weight = 400,
+  ligatures = false,
+  density: 'default' | 'compact' = 'default',
+) {
   // Whole CSS pixels avoid accumulating browser-specific fractional row rounding.
   const px = (value: number) => Math.round(value * rem);
   const lineHeight = codeSize == null ? px(1.25) : Math.round(codeSize * 1.55);
-  const spacing = px(0.5);
+  const spacing = px(density === 'compact' ? 0.375 : 0.5);
   const diffHeaderHeight = lineHeight + 3 * spacing;
   const hunkSeparatorHeight = px(2);
   const itemMetrics = { lineHeight, spacing, diffHeaderHeight, hunkSeparatorHeight };

@@ -9,7 +9,11 @@ const api = { exportComment: vi.fn() };
 const writeText = vi.fn();
 Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true });
 Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-vi.mock('@/client/api.js', () => ({ api }));
+vi.mock('@/client/api.js', async (original) => ({
+  ...(await original<typeof import('@/client/api.js')>()),
+  api,
+  useApi: () => api,
+}));
 vi.mock('@/client/Markdown.js', () => ({ Markdown: ({ text }: { text: string }) => text }));
 
 const { useStore } = await import('@/client/store.js');

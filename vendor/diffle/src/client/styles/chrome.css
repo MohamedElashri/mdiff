@@ -1,0 +1,93 @@
+/* Shell and review controls share these metrics. Code rows retain their own measured geometry. */
+:root {
+  --surface-toolbar: var(--bg-2);
+  --surface-sidebar: var(--bg-2);
+  --selection: var(--bg-3);
+  --focus-ring: var(--accent);
+  --radius-control: 0.3125rem;
+  --control-height: 1.75rem;
+  --review-toolbar-height: 2.5rem;
+  --desktop-toolbar-height: 2.5rem;
+  --space-control-x: 0.5rem;
+  --space-control-y: 0.25rem;
+}
+
+:root[data-density='compact'] {
+  --control-height: 1.5rem;
+  --review-toolbar-height: 2.25rem;
+  --desktop-toolbar-height: 2.25rem;
+  --space-control-x: 0.4375rem;
+  --space-control-y: 0.125rem;
+}
+
+.review-button {
+  min-height: var(--control-height);
+}
+
+.review-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.review-segmented .review-button {
+  min-height: calc(var(--control-height) - 0.25rem);
+}
+
+.review-toolbar {
+  background: var(--surface-toolbar);
+}
+
+.review-inspector,
+.tree-theme {
+  background: var(--surface-sidebar);
+}
+
+.review-inspector h2,
+.review-inspector h3 {
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-toolbar *,
+  .review-inspector * {
+    animation-duration: 0s;
+    transition-duration: 0s;
+  }
+}
+
+.command-error {
+  position: fixed;
+  bottom: 1rem;
+  left: 1rem;
+  z-index: 90;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 0.75rem;
+}
+.command-error button {
+  margin-left: 0.75rem;
+}
+
+.legacy-drafts {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--fg-2);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+.legacy-drafts span {
+  flex: 1;
+}
+.legacy-drafts button {
+  flex-shrink: 0;
+}
+@media (max-width: 640px) {
+  .legacy-drafts {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+}

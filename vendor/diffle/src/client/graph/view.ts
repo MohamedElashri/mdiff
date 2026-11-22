@@ -4,7 +4,6 @@ import { lspBlocker } from '@/shared/lsp.js';
 import { GraphDetails } from './details/GraphDetails.js';
 import { GRAPH_HELP } from './help.js';
 import { GRAPH_PASSES, graphKeys, openFind } from './keys.js';
-import { enterGraph, graphPlace, leaveGraph, useGraph } from './state.js';
 import { GraphView } from './GraphView.js';
 
 /** The change graph: changed symbols and the code using them, which needs the language servers. */
@@ -19,13 +18,13 @@ export const graphView: ViewDef = {
   panelLabel: 'details panel',
   panelWidth: '21.25rem',
   blocked: (s) => lspBlocker(s.lsp, s.snapshot),
-  enter: enterGraph,
-  leave: leaveGraph,
-  place: graphPlace,
-  keys: graphKeys,
+  enter: (scope) => scope.graph().enter(),
+  leave: (scope) => scope.graph().leave(),
+  place: (scope) => scope.graph().place(),
+  keys: (e, scope) => graphKeys(e, scope.graph()),
   passes: GRAPH_PASSES,
-  escape(inField) {
-    const graph = useGraph.getState();
+  escape(inField, scope) {
+    const graph = scope.graph().store.getState();
     // An open find closes first, even from its own field.
     if (graph.find != null) {
       graph.closeFind();
@@ -35,6 +34,6 @@ export const graphView: ViewDef = {
     graph.deselect();
     return true;
   },
-  find: openFind,
-  pickFile: (path) => useGraph.getState().focusFile(path),
+  find: (scope) => openFind(scope.graph()),
+  pickFile: (path, scope) => scope.graph().store.getState().focusFile(path),
 };

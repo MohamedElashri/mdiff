@@ -1,3 +1,5 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewStore } from '@/client/store.js';
 import { useAppearance } from './appearance/preferences.js';
 import { getFiletypeFromFileName, parseDiffFromFile } from '@pierre/diffs';
 import { File, FileDiff, useWorkerPool } from '@pierre/diffs/react';
@@ -85,8 +87,8 @@ function Pre({
       // A quote from a CRLF file keeps its CRs; the composer's textarea drops them from the suggestion.
       const original = quoted == null ? undefined : lf(quoted);
       return (
-        <div className="suggestion highlighted" title="Suggested replacement for the quoted lines">
-          <span className="tag">Suggested change</span>
+        <div className="suggestion highlighted" title={uiText('Suggested replacement for the quoted lines')}>
+          <span className="tag">{uiText('Suggested change')}</span>
           {/* An unchanged suggestion diffs to nothing, so it shows as the lines it keeps. */}
           {original == null || (source !== '' && original === source) ? (
             <Highlighted path={path} source={source} />
@@ -211,6 +213,8 @@ function urlTransform(url: string): string | null | undefined {
 }
 
 function Anchor({ node: _node, href, children, ...rest }: ComponentProps<'a'> & { node?: unknown }) {
+  const useStore = useReviewStore();
+
   const jump = JUMP_LINK.exec(href ?? '');
   // Land it like gd does: following the hover text's "Go to X" must not cost the reader the diff they are in.
   if (jump)

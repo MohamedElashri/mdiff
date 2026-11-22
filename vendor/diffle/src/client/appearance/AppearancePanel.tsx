@@ -1,18 +1,23 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { languageChoice, storeLanguage, type LanguageChoice } from '@/client/i18n/locale.js';
+import { uiText } from '@/client/i18n/runtime.js';
+import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { THEMES, type ThemeId } from './catalogue.js';
 import { APP_FONTS, CODE_FONTS, DEFAULTS, setAppearance, useAppearance } from './preferences.js';
 import { applyTheme, getTheme, storeTheme, subscribeTheme, type ThemeChoice } from '@/client/theme.js';
 export function AppearancePanel({ showHeading = true }: { showHeading?: boolean }) {
   const preferences = useAppearance();
+  const [language, setLanguage] = useState(languageChoice);
+  const [languageError, setLanguageError] = useState(false);
+  const densityHint = useId();
   const mode = useSyncExternalStore(subscribeTheme, getTheme, getTheme);
   const changeMode = (value: ThemeChoice) => {
     storeTheme(value);
     applyTheme(value);
   };
   return (
-    <section className="appearance-panel" aria-label="Appearance">
+    <section className="appearance-panel" aria-label={uiText('Appearance')}>
       <div className="appearance-heading">
-        {showHeading && <h3>Appearance</h3>}
+        {showHeading && <h3>{uiText('Appearance')}</h3>}
         <button
           type="button"
           onClick={() => {
@@ -20,22 +25,60 @@ export function AppearancePanel({ showHeading = true }: { showHeading?: boolean 
             changeMode('system');
           }}
         >
-          Reset
+          {uiText('Reset')}
         </button>
       </div>
+      <label className="appearance-language">
+        {uiText('Language')}
+        <select
+          aria-label={uiText('Language')}
+          value={language}
+          onChange={(event) => {
+            const choice = event.target.value as LanguageChoice;
+            if (storeLanguage(choice)) {
+              setLanguage(choice);
+              setLanguageError(false);
+            } else setLanguageError(true);
+          }}
+        >
+          <option value="system">{uiText('System (English)')}</option>
+          <option value="en">English</option>
+          <option value="fr">{uiText('Français (preview; partial translation)')}</option>
+          {import.meta.env.DEV && <option value="qps-ploc">Pseudo-localization (development)</option>}
+        </select>
+        <small className="appearance-hint" role="status">
+          {uiText('Restart mdiff to apply the language. Save your work before restarting.')}
+        </small>
+        {languageError && <small role="alert">{uiText('Language could not be saved.')}</small>}
+      </label>
       <fieldset className="appearance-mode">
-        <legend>Color mode</legend>
+        <legend>{uiText('Color mode')}</legend>
         {(['system', 'light', 'dark'] as const).map((value) => (
           <label key={value}>
             <input type="radio" name="appearance-mode" checked={mode === value} onChange={() => changeMode(value)} />
-            {value === 'system' ? 'System' : value === 'light' ? 'Light' : 'Dark'}
+            {value === 'system' ? uiText('System') : value === 'light' ? uiText('Light') : uiText('Dark')}
           </label>
         ))}
       </fieldset>
       <div className="appearance-grid">
+        <label className="appearance-density">
+          {uiText('Interface density')}
+          <select
+            aria-label={uiText('Interface density')}
+            aria-describedby={densityHint}
+            value={preferences.density}
+            onChange={(e) => setAppearance({ density: e.target.value === 'compact' ? 'compact' : 'default' })}
+          >
+            <option value="default">{uiText('Default')}</option>
+            <option value="compact">{uiText('Compact')}</option>
+          </select>
+          <small id={densityHint} className="appearance-hint">
+            {uiText('Adjusts controls and file headers. Code size stays independent.')}
+          </small>
+        </label>
         {(['light', 'dark'] as const).map((kind) => (
           <label key={kind}>
-            {kind === 'light' ? 'Light theme' : 'Dark theme'}{' '}
+            {kind === 'light' ? uiText('Light theme') : uiText('Dark theme')}{' '}
             <select value={preferences[kind]} onChange={(e) => setAppearance({ [kind]: e.target.value as ThemeId })}>
               {THEMES.filter((t) => t.mode === kind).map((t) => (
                 <option key={t.id} value={t.id}>
@@ -52,7 +95,7 @@ export function AppearancePanel({ showHeading = true }: { showHeading?: boolean 
           </label>
         ))}
         <label>
-          Interface font
+          {uiText('Interface font')}
           <select value={preferences.appFont} onChange={(e) => setAppearance({ appFont: e.target.value })}>
             {APP_FONTS.map(([id, label]) => (
               <option key={id} value={id}>
@@ -62,7 +105,7 @@ export function AppearancePanel({ showHeading = true }: { showHeading?: boolean 
           </select>
         </label>
         <label>
-          Interface size
+          {uiText('Interface size')}
           <SizeField
             min={12}
             max={18}
@@ -71,7 +114,7 @@ export function AppearancePanel({ showHeading = true }: { showHeading?: boolean 
           />
         </label>
         <label>
-          Code font
+          {uiText('Code font')}
           <select value={preferences.codeFont} onChange={(e) => setAppearance({ codeFont: e.target.value })}>
             {CODE_FONTS.map(([id, label]) => (
               <option key={id} value={id}>
@@ -81,7 +124,7 @@ export function AppearancePanel({ showHeading = true }: { showHeading?: boolean 
           </select>
         </label>
         <label>
-          Code size
+          {uiText('Code size')}
           <SizeField
             min={11}
             max={22}
@@ -90,14 +133,14 @@ export function AppearancePanel({ showHeading = true }: { showHeading?: boolean 
           />
         </label>
         <label>
-          Code weight
+          {uiText('Code weight')}
           <select
             value={preferences.codeWeight}
             onChange={(e) => setAppearance({ codeWeight: Number(e.target.value) })}
           >
-            <option value={400}>Regular</option>
-            <option value={500}>Medium</option>
-            <option value={600}>Semibold</option>
+            <option value={400}>{uiText('Regular')}</option>
+            <option value={500}>{uiText('Medium')}</option>
+            <option value={600}>{uiText('Semibold')}</option>
           </select>
         </label>
         <label className="appearance-check">
@@ -106,18 +149,20 @@ export function AppearancePanel({ showHeading = true }: { showHeading?: boolean 
             checked={preferences.ligatures}
             onChange={(e) => setAppearance({ ligatures: e.target.checked })}
           />
-          Code ligatures
+          {uiText('Code ligatures')}
         </label>
       </div>
       <div className="appearance-preview">
-        <span>Review changes</span>
+        <span>{uiText('Review changes')}</span>
         <code>
           <span style={{ color: 'var(--kind-callable)' }}>const</span> review = changes.filter(item =&gt; item.ready);
           <br />
           <span style={{ color: 'var(--fg-2)' }}>// 0 O 1 l I · {'{} [] () != => =>'}</span>
         </code>
       </div>
-      <p className="appearance-hint">Saved automatically. System mode uses your selected light and dark themes.</p>
+      <p className="appearance-hint">
+        {uiText('Saved automatically. System mode uses your selected light and dark themes.')}
+      </p>
     </section>
   );
 }

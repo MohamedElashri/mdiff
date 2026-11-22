@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '@/client/api.js';
+import { useApi, type ReviewApi } from '@/client/api.js';
 import { kindGroup } from '@/client/lsp/symbolKind.js';
 import type { GraphNode } from '@/shared/protocol.js';
 
@@ -25,6 +25,7 @@ const MAX_MEMBERS = 16;
  * file-level node has no symbol to ask about.
  */
 export function useSignatures(graph: unknown, nodes: GraphNode[]): Signatures {
+  const api = useApi();
   const cache = useRef({ graph, answers: new Map() as Signatures, asked: new Set<string>() });
   if (cache.current.graph !== graph) cache.current = { graph, answers: new Map(), asked: new Set() };
   const [, rerender] = useState(0);
@@ -34,17 +35,17 @@ export function useSignatures(graph: unknown, nodes: GraphNode[]): Signatures {
     for (const n of nodes) {
       if (n.kind === 1 || current.asked.has(n.id)) continue;
       current.asked.add(n.id);
-      void describe(n).then((s) => {
+      void describe(n, api).then((s) => {
         current.answers.set(n.id, s);
         if (cache.current === current) rerender((x) => x + 1);
       });
     }
-  }, [nodes]);
+  }, [nodes, api]);
   return cache.current.answers;
 }
 
-async function describe(n: GraphNode): Promise<Signature> {
-  const hover = await hoverAt(n);
+async function describe(n: GraphNode, api: ReviewApi): Promise<Signature> {
+  const hover = await hoverAt(n, api);
   if (kindGroup(n.kind) !== 'type') return { hover, members: null };
   const outline = await api.lspSymbols({ path: n.path }).then(
     (r) => r.symbols,
@@ -57,13 +58,13 @@ async function describe(n: GraphNode): Promise<Signature> {
     .filter((s) => s.container === n.name && n.line < s.line && s.endLine <= n.endLine && kinds.includes(s.kind))
     .filter((s) => !new RegExp(`\\b${literal(s.name)}\\b`).test(shown))
     .slice(0, MAX_MEMBERS);
-  const fences = (await Promise.all(members.map(hoverAt))).flatMap((h) => (h ? [fenceOf(h)] : []));
+  const fences = (await Promise.all(members.map((s) => hoverAt(s, api)))).flatMap((h) => (h ? [fenceOf(h)] : []));
   if (!fences.length) return { hover, members: null };
   const body = fences.map((f) => f.code).join('\n');
   return { hover, members: `\`\`\`${fences[0]!.lang}\n${body}\n\`\`\`` };
 }
 
-function hoverAt(s: { path: string; line: number; col: number }): Promise<string | null> {
+function hoverAt(s: { path: string; line: number; col: number }, api: ReviewApi): Promise<string | null> {
   return api.lspHover({ path: s.path, line: s.line, col: s.col, ownerOnly: true }).then(
     (r) => r.contents,
     () => null,

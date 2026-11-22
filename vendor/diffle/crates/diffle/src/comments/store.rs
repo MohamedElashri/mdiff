@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::anchor::compare_threads;
@@ -36,6 +36,70 @@ pub struct CommentStore {
 }
 
 impl CommentStore {
+    /// Merge a legacy checkout's data into a durable root. Read a transactionally consistent
+    /// snapshot under its existing lock; preserve the source for recovery. Existing target
+    /// records win conflicts, so retrying migration cannot undo newer edits.
+    pub async fn migrate(from: &Path, to: &Path) -> Result<()> {
+        Self::import(from, to, None, None).await
+    }
+    /// Legacy MR checkouts contained just one logical review but keyed each resolved range
+    /// separately. Merge their saved discussions into that MR's durable identity; keep originals.
+    pub async fn migrate_ranges(root: &Path, key: String) -> Result<()> {
+        Self::import(root, root, Some(key), None).await
+    }
+    pub async fn migrate_ranges_current(root: &Path, key: String, current: String) -> Result<()> {
+        Self::import(root, root, Some(key), Some(current)).await
+    }
+    async fn import(from: &Path, to: &Path, range_key: Option<String>, preferred: Option<String>) -> Result<()> {
+        let source = from.join("diffle/comments.sqlite");
+        let target = to.join("diffle/comments.sqlite");
+        if !source.exists() && !source.with_extension("json").exists() {
+            return Ok(());
+        }
+        let migration = format!("import:{}:{}", source.display(), range_key.as_deref().unwrap_or("all"));
+        let mut paths = vec![source.clone(), target.clone()];
+        paths.sort();
+        paths.dedup();
+        let mut locks = vec![];
+        for path in paths {
+            locks.push(crate::persist::lock_file(&path).await?);
+        }
+        tokio::task::spawn_blocking(move ||->anyhow::Result<()> {
+            // Both locks stay with this task if its async caller disappears. SQLite copies
+            // indexed rows directly: discussions are never materialized as one giant Vec.
+            let _locks=locks;
+            drop(database::connect(&source)?);
+            let mut db=database::connect(&target)?;
+            let schema=if source==target {"main"}else {db.execute("ATTACH DATABASE ?1 AS legacy",[source.to_str().ok_or_else(||anyhow::anyhow!("Non-UTF8 data path"))?])?;"legacy"};
+            let tx=db.transaction()?;
+            let imported:Option<String>=tx.query_row("SELECT value FROM metadata WHERE key=?1",[&migration],|r|r.get(0)).optional()?;
+            if imported.is_some(){return Ok(())}
+            const LIMIT:i64=16*1024*1024;
+            let largest:i64=tx.query_row(&format!("SELECT COALESCE(MAX(length(data)),0) FROM {schema}.threads"),[],|r|r.get(0))?;
+            anyhow::ensure!(largest<=LIMIT,"Legacy discussion exceeds the migration limit; source data was preserved");
+            {
+                let mut stmt=tx.prepare(&format!("SELECT key,length(viewed),viewed FROM {schema}.reviews ORDER BY key=?1 DESC"))?;
+                let mut rows=stmt.query([preferred.unwrap_or_default()])?;
+                while let Some(row)=rows.next()? {
+                    let source_key:String=row.get(0)?;
+                    let key=match &range_key {Some(key) if source_key.starts_with("range:")&&!source_key.contains(":pair:")&&!source_key.contains(":interdiff:")=>key.clone(),Some(_)=>continue,None=>source_key.clone()};
+                    let size:i64=row.get(1)?;
+                    let existing:i64=tx.query_row("SELECT length(viewed) FROM reviews WHERE key=?1",[&key],|r|r.get(0)).optional()?.unwrap_or(0);
+                    anyhow::ensure!(size<=LIMIT&&existing<=LIMIT,"Legacy viewed state exceeds the migration limit; source data was preserved");
+                    let text:String=row.get(2)?;let incoming:Vec<ViewedEntry>=serde_json::from_str(&text)?;
+                    let mut viewed=database::viewed(&tx,&key)?;let paths:HashSet<_>=viewed.iter().map(|v|v.path.clone()).collect();
+                    viewed.extend(incoming.into_iter().filter(|v|!paths.contains(&v.path)));
+                    database::write_viewed(&tx,&key,&viewed)?;
+                    // Populate FTS only for records that will be new; target edits win.
+                    tx.execute(&format!("INSERT INTO discussion_search(review,id,body) SELECT ?1,s.id,s.body FROM {schema}.discussion_search s WHERE s.review=?2 AND NOT EXISTS(SELECT 1 FROM main.threads t WHERE t.review=?1 AND t.id=s.id)"),rusqlite::params![key,source_key])?;
+                    tx.execute(&format!("INSERT OR IGNORE INTO threads(review,id,path,resolved,data,context) SELECT ?1,id,path,resolved,data,context FROM {schema}.threads WHERE review=?2"),rusqlite::params![key,source_key])?;
+                }
+            }
+            tx.execute("INSERT INTO metadata(key,value) VALUES(?1,'1')",[migration])?;tx.commit()?;Ok(())
+        }).await.map_err(anyhow::Error::from)??;
+        Ok(())
+    }
+
     pub async fn open(git_dir: &Path, key: &str) -> Result<Self> {
         Ok(Self { file: git_dir.join("diffle").join("comments.sqlite"), key: key.to_owned() })
     }

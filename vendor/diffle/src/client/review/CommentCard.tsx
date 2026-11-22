@@ -1,3 +1,5 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useApi } from '@/client/api.js';
 import { CopyIcon } from '@/client/ui/CopyIcon.js';
 import { twMerge } from 'tailwind-merge';
 import { Button } from '@/client/ui/Button.js';
@@ -15,7 +17,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { CommentMessage, CommentThread } from '@/shared/protocol.js';
-import { api } from '@/client/api.js';
+
 import { useCopied } from '@/client/clipboard.js';
 import { Markdown } from '@/client/Markdown.js';
 import { anchorLabel, composerKey, exportLabel, type ExportOutcome } from '@/client/model.js';
@@ -69,16 +71,18 @@ export function CommentCard({ thread }: { thread: CommentThread }) {
             className="inline-flex items-center gap-0.75 text-warn"
             title={
               a.kind === 'file'
-                ? 'Not in the current diff: the file left the review'
-                : 'Not found in the current diff: the text changed or left the changed lines'
+                ? uiText('Not in the current diff: the file left the review')
+                : uiText('Not found in the current diff: the text changed or left the changed lines')
             }
           >
-            <AlertTriangle size="0.75rem" /> stale
+            <AlertTriangle size="0.75rem" />
+            {uiText(' stale')}
           </span>
         )}
         {thread.resolved && (
           <span className="inline-flex items-center gap-0.75 text-add">
-            <Check size="0.75rem" /> resolved
+            <Check size="0.75rem" />
+            {uiText(' resolved')}
           </span>
         )}
         <span className="flex-1" />
@@ -88,7 +92,7 @@ export function CommentCard({ thread }: { thread: CommentThread }) {
             variant="ghost"
             icon
             onClick={() => setEditingId(editingSolo ? null : solo.id)}
-            title={editingSolo ? 'Cancel' : 'Edit (e)'}
+            title={editingSolo ? uiText('Cancel') : uiText('Edit (e)')}
           >
             {editingSolo ? <X size="0.875rem" /> : <Pencil size="0.875rem" />}
           </Button>
@@ -102,10 +106,10 @@ export function CommentCard({ thread }: { thread: CommentThread }) {
             onClick={post.fire}
             title={
               thread.stale
-                ? 'Stale threads cannot be added to a GitHub review'
+                ? uiText('Stale threads cannot be added to a GitHub review')
                 : post.armed
-                  ? 'Click again to add this thread to the pending review'
-                  : 'Add this thread to a pending review on the GitHub pull request; you submit it on GitHub'
+                  ? uiText('Click again to add this thread to the pending review')
+                  : uiText('Add this thread to a pending review on the GitHub pull request; you submit it on GitHub')
             }
           >
             {posted ? <Check size="0.875rem" /> : <GitPullRequestArrow size="0.875rem" />}
@@ -116,7 +120,7 @@ export function CommentCard({ thread }: { thread: CommentThread }) {
           variant="ghost"
           icon
           onClick={() => (replying ? closeReply() : openReply(thread.id))}
-          title={replying ? 'Cancel reply' : 'Reply'}
+          title={replying ? uiText('Cancel reply') : uiText('Reply')}
         >
           {replying ? <X size="0.875rem" /> : <Reply size="0.875rem" />}
         </Button>
@@ -124,7 +128,7 @@ export function CommentCard({ thread }: { thread: CommentThread }) {
           variant="ghost"
           icon
           onClick={() => void setResolved(thread.id, !thread.resolved)}
-          title={thread.resolved ? 'Reopen (R)' : 'Resolve (R)'}
+          title={thread.resolved ? uiText('Reopen (R)') : uiText('Resolve (R)')}
         >
           {thread.resolved ? <RotateCcw size="0.875rem" /> : <Check size="0.875rem" />}
         </Button>
@@ -134,7 +138,7 @@ export function CommentCard({ thread }: { thread: CommentThread }) {
           icon={!del.armed}
           feedback={del.armed ? 'confirm' : undefined}
           onClick={del.fire}
-          title={del.armed ? 'Click again to delete this thread' : 'Delete thread (dd)'}
+          title={del.armed ? uiText('Click again to delete this thread') : uiText('Delete thread (dd)')}
         >
           <Trash2 size="0.875rem" />
           <ButtonLabel text={del.armed && 'Delete?'} />
@@ -174,7 +178,7 @@ function Message({ thread, message, first }: { thread: CommentThread; message: C
             variant="ghost"
             icon
             onClick={() => setEditingId(editing ? null : message.id)}
-            title={editing ? 'Cancel' : 'Edit (e)'}
+            title={editing ? uiText('Cancel') : uiText('Edit (e)')}
           >
             {editing ? <X size="0.75rem" /> : <Pencil size="0.75rem" />}
           </Button>
@@ -185,7 +189,7 @@ function Message({ thread, message, first }: { thread: CommentThread; message: C
               icon={!del.armed}
               feedback={del.armed ? 'confirm' : undefined}
               onClick={del.fire}
-              title={del.armed ? 'Click again to delete this reply' : 'Delete this reply'}
+              title={del.armed ? uiText('Click again to delete this reply') : uiText('Delete this reply')}
             >
               <Trash2 size="0.75rem" />
               <ButtonLabel text={del.armed && 'Delete?'} />
@@ -206,7 +210,7 @@ function Message({ thread, message, first }: { thread: CommentThread; message: C
           />
           <div className="mt-1.5 flex items-center justify-end gap-1.5">
             <Button variant="primary" onClick={save}>
-              Save
+              {uiText('Save')}
             </Button>
           </div>
         </div>
@@ -223,6 +227,8 @@ function Message({ thread, message, first }: { thread: CommentThread; message: C
 
 /** Copies one message in agent-prompt format; the icon morphs into a check mark after success. */
 function CopyMessageButton({ threadId, messageId, size }: { threadId: string; messageId: string; size: string }) {
+  const api = useApi();
+
   const flash = useStore((s) => s.flash);
   const report = useStore((s) => s.report);
   const { done, copy } = useCopied();
@@ -232,7 +238,7 @@ function CopyMessageButton({ threadId, messageId, size }: { threadId: string; me
       icon
       feedback={done ? 'copied' : undefined}
       className="relative"
-      title="Copy this comment as a prompt"
+      title={uiText('Copy this comment as a prompt')}
       onClick={async () => {
         let text: string;
         try {
@@ -278,7 +284,7 @@ function ReplyComposer({ threadId }: { threadId: string }) {
         className="min-h-17.5 w-full resize-y rounded-sm border border-border bg-canvas p-1.5 font-mono text-[0.75rem] leading-[1.5]"
         ref={ref}
         value={text}
-        placeholder="Reply…"
+        placeholder={uiText('Reply…')}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit();
@@ -286,11 +292,14 @@ function ReplyComposer({ threadId }: { threadId: string }) {
       />
       <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">
         <span className="mr-auto text-[0.75rem] whitespace-nowrap text-muted @max-[26rem]:hidden">
-          <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd> to send · <kbd>Esc</kbd> to cancel
+          <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd>
+          {uiText(' to send · ')}
+          <kbd>Esc</kbd>
+          {uiText(' to cancel')}
         </span>
-        <Button onClick={closeReply}>Cancel</Button>
+        <Button onClick={closeReply}>{uiText('Cancel')}</Button>
         <Button variant="primary" onClick={() => void submit()} disabled={!text.trim() || busy}>
-          Reply
+          {uiText('Reply')}
         </Button>
       </div>
     </div>

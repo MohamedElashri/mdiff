@@ -61,6 +61,27 @@ export class UpdateController {
     this.state = { ...this.state, ...patch };
     for (const listener of this.listeners) listener();
   }
+  /** Wait only for operations that can modify a package; restart itself waits on window flushes. */
+  settled(): Promise<void> {
+    const pending = () =>
+      ["checking", "downloading", "installing"].includes(this.state.phase);
+    if (!pending()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const stop = this.subscribe(() => {
+        if (!pending()) {
+          stop();
+          resolve();
+        }
+      });
+    });
+  }
+  cancelRestart() {
+    if (this.state.phase === "restarting")
+      this.set({
+        phase: "ready",
+        error: "Restart cancelled because a window could not save.",
+      });
+  }
   private busy() {
     return [
       "checking",

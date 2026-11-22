@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { FloatingPanel } from '@/client/ui/FloatingPanel.js';
 import { twMerge } from 'tailwind-merge';
 import { Check, CircleAlert, Compass, Copy, LoaderCircle, X } from 'lucide-react';
@@ -60,7 +61,7 @@ export function LspIndicator({ lsp }: { lsp: LspStatus }) {
         className={twMerge(
           `flex cursor-pointer list-none items-center gap-1.25 text-xs whitespace-nowrap text-muted [&::-webkit-details-marker]:hidden ${error || broken ? 'text-warn' : ''}`,
         )}
-        aria-label={`Language servers${label ? `: ${label}` : ''}`}
+        aria-label={uiText('Language servers{value0}', { value0: String(label ? `: ${label}` : '') })}
       >
         {busy ? <LoaderCircle size="0.875rem" className="animate-spin" /> : <Compass size="0.875rem" />}
         <span className="max-lg:hidden">{label}</span>
@@ -71,15 +72,15 @@ export function LspIndicator({ lsp }: { lsp: LspStatus }) {
           panelRef={panelRef}
           align="end"
           className="w-[min(28rem,85vw)] overflow-auto rounded-lg border border-border bg-surface p-2.5 text-[0.8125rem] text-foreground shadow-lg"
-          aria-label="Language server status"
+          aria-label={uiText('Language server status')}
         >
           <div className="flex items-center justify-between gap-2">
-            <strong>Language servers</strong>
+            <strong>{uiText('Language servers')}</strong>
             <Button
               variant="ghost"
               icon
               type="button"
-              aria-label="Close language server status"
+              aria-label={uiText('Close language server status')}
               className="border-0 p-0.5 text-muted hover:text-foreground"
               onClick={close}
             >
@@ -89,7 +90,7 @@ export function LspIndicator({ lsp }: { lsp: LspStatus }) {
           {lsp.servers.map((s) => (
             <ServerStatus key={s.command} server={s} />
           ))}
-          {!lsp.servers.length && !lsp.missing.length && <p className="text-muted">No servers</p>}
+          {!lsp.servers.length && !lsp.missing.length && <p className="text-muted">{uiText('No servers')}</p>}
           {lsp.missing.map((m) => (
             <div
               className="mt-1.5 flex items-center gap-2 border-t border-border pt-1.5 text-muted"
@@ -99,7 +100,7 @@ export function LspIndicator({ lsp }: { lsp: LspStatus }) {
               <X size="0.875rem" className="shrink-0" />
               <span className="min-w-0 flex-1 font-medium wrap-anywhere text-foreground">{m.language}</span>
               <span className="shrink-0 text-[0.6875rem]">
-                {m.why ? 'Incomplete' : m.tried.length ? 'Not on PATH' : 'Disabled'}
+                {m.why ? uiText('Incomplete') : m.tried.length ? uiText('Not on PATH') : uiText('Disabled')}
               </span>
             </div>
           ))}
@@ -128,7 +129,7 @@ function ServerStatus({ server: s }: { server: LspServerStatus }) {
         <strong className="min-w-0 flex-1 font-medium wrap-anywhere">{s.name}</strong>
         <span
           className="shrink-0 text-[0.6875rem] text-muted"
-          title={label === 'Connected' ? 'Initialized; workspace readiness is not reported by LSP' : undefined}
+          title={label === 'Connected' ? uiText('Initialized; workspace readiness is not reported by LSP') : undefined}
         >
           {label}
         </span>
@@ -143,7 +144,7 @@ function ServerStatus({ server: s }: { server: LspServerStatus }) {
       {s.message && <p className="my-1.5 ml-5.5 wrap-anywhere text-warn">{s.message}</p>}
       {s.notice && <p className="my-1.5 ml-5.5 wrap-anywhere text-warn">{s.notice.message}</p>}
       <details className="ml-5.5 text-[0.6875rem] text-muted" onToggle={(e) => setOpen(e.currentTarget.open)}>
-        <summary className="cursor-pointer">Details</summary>
+        <summary className="cursor-pointer">{uiText('Details')}</summary>
         <pre className="my-2 font-mono wrap-anywhere whitespace-pre-wrap">{s.command}</pre>
         <ServerLog server={s} shown={open} />
       </details>
@@ -163,7 +164,7 @@ function Projects({ projects: { label, paths } }: { projects: LspProjects }) {
               <span className="font-mono text-foreground">{path}</span>
             </Fragment>
           ))
-        : 'none found'}
+        : uiText('none found')}
     </div>
   );
 }
@@ -205,28 +206,31 @@ function ServerLog({ server: s, shown }: { server: LspServerStatus; shown: boole
   return (
     <div className="my-2 overflow-hidden rounded-md border border-border bg-card">
       <div className="flex items-center justify-between gap-2 border-b border-border py-0.5 pr-1 pl-2">
-        <span>Log{counts ? ` (${counts})` : ''}</span>
+        <span>
+          {uiText('Log')}
+          {counts ? ` (${counts})` : ''}
+        </span>
         <Button
           variant="ghost"
           type="button"
-          aria-label="Copy log"
+          aria-label={uiText('Copy log')}
           onClick={async () => setResult((await copyText(entries.map(logLine).join('\n'))) ? 'copied' : 'failed')}
         >
           {result === 'copied' ? <Check size="0.75rem" /> : <Copy size="0.75rem" />}
-          <span aria-live="polite">{result === 'copied' ? 'Copied' : 'Copy'}</span>
+          <span aria-live="polite">{result === 'copied' ? uiText('Copied') : uiText('Copy')}</span>
         </Button>
       </div>
       {result === 'failed' && (
         <p role="status" className="m-2 text-warn">
-          Copy failed. Select the log and press Ctrl/⌘+C.
+          {uiText('Copy failed. Select the log and press Ctrl/⌘+C.')}
         </p>
       )}
       <ol
-        aria-label="server log"
+        aria-label={uiText('server log')}
         tabIndex={0}
         className="m-0 max-h-[min(12rem,25vh)] list-none overflow-auto overscroll-contain p-2 font-mono text-foreground"
       >
-        {entries.length === 0 && <li className="text-muted">Nothing logged yet</li>}
+        {entries.length === 0 && <li className="text-muted">{uiText('Nothing logged yet')}</li>}
         {entries.map((e) => (
           <li key={e.id} className={lineWrap ? 'wrap-anywhere whitespace-pre-wrap' : 'whitespace-pre'}>
             <span className={e.level === 'error' || e.level === 'warning' ? 'text-warn' : 'text-muted'}>{e.level}</span>{' '}

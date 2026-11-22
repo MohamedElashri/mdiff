@@ -1,6 +1,3 @@
-#[cfg(target_os = "linux")]
-use tauri::Manager;
-
 #[derive(serde::Serialize)]
 pub struct UpdateInfo {
     version: String,
@@ -39,10 +36,9 @@ pub fn updater_info(app: tauri::AppHandle) -> UpdateInfo {
 #[tauri::command]
 pub async fn restart_after_update(
     app: tauri::AppHandle,
-    engine: tauri::State<'_, crate::engine::Engine>,
+    window: tauri::WebviewWindow,
 ) -> Result<(), String> {
-    // Tauri restart requests cannot be prevented in ExitRequested.
-    engine.close().await;
-    app.request_restart();
+    crate::windows::authorize(&window)?;
+    crate::windows::request_exit(&app, "restart");
     Ok(())
 }

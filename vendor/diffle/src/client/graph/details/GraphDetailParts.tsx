@@ -1,3 +1,5 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewGraph } from '@/client/graph/state.js';
 import { ArrowUpRight, Crosshair, FileCode2, Link2, type LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { twMerge } from 'tailwind-merge';
@@ -5,7 +7,7 @@ import { FilePath } from '@/client/FilePath.js';
 import { Markdown } from '@/client/Markdown.js';
 import { kindColor, KindIcon } from '@/client/lsp/symbolKind.js';
 import type { GraphNode } from '@/shared/protocol.js';
-import { useGraph } from '@/client/graph/state.js';
+
 import { type Signature, signatureOf } from './useSignatures.js';
 
 // The panel's type scale: titles, then names and prose, then everything around them.
@@ -18,9 +20,9 @@ export const ENTRY =
 
 /** A change in words, coloured as the diff colours it. */
 export function StatusWord({ status }: { status: GraphNode['status'] }) {
-  if (status === 'added') return <span className="text-add">added</span>;
-  if (status === 'modified') return <span className="text-accent">modified</span>;
-  return <span className="text-muted">unchanged</span>;
+  if (status === 'added') return <span className="text-add">{uiText('added')}</span>;
+  if (status === 'modified') return <span className="text-accent">{uiText('modified')}</span>;
+  return <span className="text-muted">{uiText('unchanged')}</span>;
 }
 
 /**
@@ -41,7 +43,7 @@ export function SectionHeading({
 }) {
   return (
     <h3
-      className={`sticky top-0 z-[1] -mx-4 my-0 flex items-center gap-1.5 border-b border-border bg-surface px-4 py-2 ${BODY} font-semibold`}
+      className={`sticky top-0 z-[1] -mx-4 my-0 flex items-center gap-1.5 border-b border-border bg-surface px-4 py-2 ${String(BODY)} font-semibold`}
     >
       <Icon size="0.875rem" className="text-muted" />
       {children}
@@ -86,8 +88,8 @@ export function Name({
 /** The two jumps a symbol row offers, with the review's symbol popover icons for the same jumps. */
 export type JumpKind = 'definition' | 'reference';
 const JUMPS: Record<JumpKind, { icon: LucideIcon; label: string }> = {
-  definition: { icon: Crosshair, label: 'Definition' },
-  reference: { icon: Link2, label: 'Usages' },
+  definition: { icon: Crosshair, label: uiText('Definition') },
+  reference: { icon: Link2, label: uiText('Usages') },
 };
 
 /**
@@ -98,7 +100,7 @@ export function Jumps({ rows }: { rows: { to: JumpKind; path: string; lines: num
   return (
     // Centred, not on the baseline: the truncated path has none of its own, so its box's bottom edge
     // would stand in and push the row below its label.
-    <div className={`grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 ${META}`}>
+    <div className={`grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 ${String(META)}`}>
       {rows.map(({ to, path, lines }) => {
         const { icon: Icon, label } = JUMPS[to];
         return (
@@ -145,11 +147,13 @@ function ShortPath({ path }: { path: string }) {
 
 /** Opens the diff at `path:line`. */
 export function JumpChip({ path, line }: { path: string; line: number }) {
+  const useGraph = useReviewGraph();
+
   return (
     <button
       type="button"
       onClick={() => useGraph.getState().pick({ path, line })}
-      aria-label={`Open ${path}:${line} in the diff`}
+      aria-label={uiText('Open {value0}:{value1} in the diff', { value0: String(path), value1: String(line) })}
       className="inline-flex cursor-pointer items-center gap-0.5 rounded-sm border-0 bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] px-1.5 py-px font-mono text-[0.75rem] text-accent hover:bg-[color-mix(in_srgb,var(--accent)_22%,transparent)]"
     >
       :{line}

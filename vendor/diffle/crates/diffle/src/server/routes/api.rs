@@ -125,7 +125,7 @@ async fn set_config(State(d): State<Arc<ApiDeps>>, raw: Bytes) -> ApiResult {
         line_wrap: update.line_wrap,
     };
     let saved = d.config.set(patch).await?;
-    d.hub.broadcast(ServerMessage::Config);
+    d.hub.broadcast(ServerMessage::Config { auth_changed: None });
     // The session keeps its own context (`--context` or the config at startup); only an explicit change moves it.
     if update.context_lines.is_some() {
         d.session.set_context(saved.context_lines as u32).await?;

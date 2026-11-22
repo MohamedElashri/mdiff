@@ -1,4 +1,4 @@
-import { type Match, useStore } from '@/client/store.js';
+import { type Match, type ReviewStore, defaultStore } from '@/client/store.js';
 import type { GraphNode } from '@/shared/protocol.js';
 import { basename } from '@/client/graph/labels.js';
 
@@ -15,7 +15,12 @@ const nameOf = (node: GraphNode) => (node.kind === 1 ? node.path : node.name);
  * Opens the references list on `of`'s links, entry by entry as the panel lists them, so Space
  * peeks through them in context without leaving the graph.
  */
-export async function peekLinks(kind: 'references' | 'uses', of: GraphNode, entries: PeekEntry[]): Promise<void> {
+export async function peekLinks(
+  kind: 'references' | 'uses',
+  of: GraphNode,
+  entries: PeekEntry[],
+  useStore: ReviewStore = defaultStore,
+): Promise<void> {
   const store = useStore.getState();
   const snapshot = store.snapshot;
   const paths = [...new Set(entries.map((e) => e.path))];

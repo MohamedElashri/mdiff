@@ -1,12 +1,11 @@
 {
   "identifier": "default",
-  "description": "Main window permissions",
-  "windows": [
-    "main"
-  ],
+  "description": "Admitted local workspace windows",
+  "windows": ["main", "workspace-*"],
   "permissions": [
     "core:default",
     "dialog:allow-open",
+    "dialog:allow-confirm",
     "clipboard-manager:allow-write-text",
     "opener:allow-open-url",
     "updater:default"

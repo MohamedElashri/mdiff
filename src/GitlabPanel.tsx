@@ -1,3 +1,4 @@
+import { uiText } from "../vendor/diffle/src/client/i18n/runtime";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 type Note = {
@@ -79,15 +80,15 @@ function GitlabReview({ id, onClose }: { id: string; onClose: () => void }) {
     }
   }
   return (
-    <aside className="gitlab-panel" aria-label="GitLab review">
+    <aside className="gitlab-panel" aria-label={uiText("GitLab review")}>
       <button
         className="delete"
         onClick={onClose}
-        aria-label="Close GitLab panel"
+        aria-label={uiText("Close GitLab panel")}
       >
         ×
       </button>
-      <h2>GitLab review</h2>
+      <h2>{uiText("GitLab review")}</h2>
       {data && (
         <>
           <a href={data.mergeRequest.web_url}>
@@ -95,7 +96,7 @@ function GitlabReview({ id, onClose }: { id: string; onClose: () => void }) {
           </a>
           <div className="actions">
             <button disabled={busy} onClick={() => act("export")}>
-              Save drafts
+              {uiText("Save drafts")}
             </button>
             <button
               disabled={
@@ -103,7 +104,7 @@ function GitlabReview({ id, onClose }: { id: string; onClose: () => void }) {
               }
               onClick={() => act("publish")}
             >
-              Publish drafts
+              {uiText("Publish drafts")}
             </button>
             <button
               disabled={busy}
@@ -112,28 +113,30 @@ function GitlabReview({ id, onClose }: { id: string; onClose: () => void }) {
                 void load().catch((e) => setError(String(e)));
               }}
             >
-              Refresh
+              {uiText("Refresh")}
             </button>
           </div>
-          <small>Only mdiff drafts for this revision are published.</small>
+          <small>
+            {uiText("Only mdiff drafts for this revision are published.")}
+          </small>
           {data.drafts
             .filter((d) => d.note.includes("<!-- mdiff:"))
             .map((d) => (
               <article key={d.id}>
-                <strong>Draft</strong>
+                <strong>{uiText("Draft")}</strong>
                 <p>{d.note.replace(/<!-- mdiff:.*? -->/g, "")}</p>
               </article>
             ))}
-          <h3>Discussions</h3>
+          <h3>{uiText("Discussions")}</h3>
           {data.discussions
             .filter((d) => d.notes.some((n) => !n.system))
             .map((d) => (
               <Thread key={d.id} discussion={d} disabled={busy} act={act} />
             ))}
-          {!data.discussions.length && <p>No discussions yet.</p>}
+          {!data.discussions.length && <p>{uiText("No discussions yet.")}</p>}
         </>
       )}
-      {!data && !error && <p>Loading merge request…</p>}
+      {!data && !error && <p>{uiText("Loading merge request…")}</p>}
       {error && <p role="alert">{error}</p>}
       {status && <p role="status">{status}</p>}
     </aside>
@@ -177,7 +180,9 @@ function Thread({
             })
           }
         >
-          {first.resolved ? "Reopen discussion" : "Resolve discussion"}
+          {first.resolved
+            ? uiText("Reopen discussion")
+            : uiText("Resolve discussion")}
         </button>
       )}
       <form
@@ -189,12 +194,14 @@ function Thread({
         }}
       >
         <textarea
-          aria-label="Reply to discussion"
-          placeholder="Write a reply…"
+          aria-label={uiText("Reply to discussion")}
+          placeholder={uiText("Write a reply…")}
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />
-        <button disabled={disabled || !body.trim()}>Publish reply</button>
+        <button disabled={disabled || !body.trim()}>
+          {uiText("Publish reply")}
+        </button>
       </form>
     </article>
   );

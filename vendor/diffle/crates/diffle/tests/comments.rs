@@ -476,6 +476,26 @@ async fn migrates_legacy_reviews_once_and_indexes_history() {
 }
 
 #[tokio::test]
+async fn durable_migration_keeps_target_edits_and_does_not_resurrect_deleted_threads() {
+    let source = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let legacy = CommentStore::open(source.path(), "range:old").await.unwrap();
+    let thread = legacy.add_thread(anchor(), "legacy".into()).await.unwrap();
+    legacy.set_viewed_many(vec![entry("a.py", "old", true)]).await.unwrap();
+    CommentStore::migrate(source.path(), target.path()).await.unwrap();
+    let saved = CommentStore::open(target.path(), "range:old").await.unwrap();
+    assert_eq!(saved.threads(&all()).await.unwrap().len(), 1);
+    saved.remove_thread(&thread.id).await.unwrap();
+    saved.set_viewed("a.py", "old", false).await.unwrap();
+    CommentStore::migrate(source.path(), target.path()).await.unwrap();
+    assert!(saved.threads(&all()).await.unwrap().is_empty());
+    assert_eq!(legacy.threads(&all()).await.unwrap().len(), 1);
+    CommentStore::migrate_ranges_current(target.path(), "mr:1".into(), "range:old".into()).await.unwrap();
+    let current = CommentStore::open(target.path(), "mr:1").await.unwrap();
+    assert_eq!(marks(current.viewed().await.unwrap()), vec![mark("a.py", "old", false)]);
+}
+
+#[tokio::test]
 async fn duplicate_quotes_are_unresolved_without_context() {
     let dir = tempfile::tempdir().unwrap();
     let store = CommentStore::open(dir.path(), "working").await.unwrap();

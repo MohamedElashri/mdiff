@@ -21,22 +21,25 @@ export function isToken(loc: LspLocation, target: TokenTarget): boolean {
   );
 }
 
-// Module state, not store state: hover fires constantly and must not re-render.
-let hovered: TokenTarget | null = null;
-let hoveredEl: HTMLElement | null = null;
-let focused: TokenTarget | null = null;
-let focusedEl: HTMLElement | null = null;
+export function createLspTarget() {
+  // Module state, not store state: hover fires constantly and must not re-render.
+  let hovered: TokenTarget | null = null;
+  let hoveredEl: HTMLElement | null = null;
+  let focused: TokenTarget | null = null;
+  let focusedEl: HTMLElement | null = null;
 
-export const lspTarget = {
-  get: (): TokenTarget | null => focused ?? hovered,
-  /** The element showing `get()`'s token, so a keyboard-opened tooltip can hang from it. */
-  element: (): HTMLElement | null => (focused ? focusedEl : hoveredEl),
-  set(t: TokenTarget | null, el: HTMLElement | null = null): void {
-    hovered = t;
-    hoveredEl = t ? el : null;
-  },
-  focus(t: TokenTarget | null, el: HTMLElement | null = null): void {
-    focused = t;
-    focusedEl = t ? el : null;
-  },
-};
+  return {
+    get: (): TokenTarget | null => focused ?? hovered,
+    /** The element showing `get()`'s token, so a keyboard-opened tooltip can hang from it. */
+    element: (): HTMLElement | null => (focused ? focusedEl : hoveredEl),
+    set(t: TokenTarget | null, el: HTMLElement | null = null): void {
+      hovered = t;
+      hoveredEl = t ? el : null;
+    },
+    focus(t: TokenTarget | null, el: HTMLElement | null = null): void {
+      focused = t;
+      focusedEl = t ? el : null;
+    },
+  };
+}
+export const lspTarget = createLspTarget();

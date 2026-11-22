@@ -38,7 +38,10 @@ export function applyPalette(mode: 'light' | 'dark') {
     'bg-3': blend(bg, fg, 0.09),
     'bg-raised': blend(bg, fg, 0.06),
     'fg-2': readable(blend(bg, fg, 0.58), bg, fg),
-    border: blend(bg, fg, 0.2),
+    border: blend(bg, fg, 0.16),
+    'surface-toolbar': blend(bg, fg, 0.025),
+    'surface-sidebar': blend(bg, fg, 0.018),
+    selection: blend(bg, fg, 0.12),
     accent,
     'accent-fg': contrast(accent, '#ffffff') > contrast(accent, '#000000') ? '#ffffff' : '#000000',
     add: readable(mode === 'dark' ? '#6fcf97' : '#237a46', bg, fg),
@@ -61,4 +64,5 @@ export function applyPalette(mode: 'light' | 'dark') {
   root.style.setProperty('--code-weight', String(settings.codeWeight));
   root.style.setProperty('--code-ligatures', settings.ligatures ? 'common-ligatures contextual' : 'none');
   root.dataset.palette = theme.id;
+  root.dataset.density = settings.density;
 }

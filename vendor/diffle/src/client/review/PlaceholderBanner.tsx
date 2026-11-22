@@ -35,9 +35,7 @@ export function PlaceholderBanner({ kind, message }: { kind: PlaceholderKind; me
   return (
     <div
       ref={ref}
-      className={`flex items-center gap-2 bg-hover px-4 py-2 text-[0.8125rem] ${
-        kind === 'error' ? 'text-danger' : 'text-muted'
-      }`}
+      className={`flex items-center gap-2 bg-hover px-4 py-2 text-[0.8125rem] ${String(kind === 'error' ? 'text-danger' : 'text-muted')}`}
       data-placeholder={kind}
     >
       <Icon size="0.875rem" className={kind === 'loading' ? 'animate-spin' : undefined} />

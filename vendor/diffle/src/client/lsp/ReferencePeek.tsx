@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { twMerge } from 'tailwind-merge';
 import { FileCode2 } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -104,7 +105,7 @@ export function ReferencePeek({
       <div
         className="relative flex-1 overflow-auto py-2 font-mono text-[0.75rem] leading-[1.6] outline-none"
         role="region"
-        aria-label="Peek"
+        aria-label={uiText('Peek')}
         tabIndex={-1}
         ref={paneRef}
       >

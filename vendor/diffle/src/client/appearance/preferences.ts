@@ -15,6 +15,7 @@ export const CODE_FONTS = [
   ['system', 'System mono', 'ui-monospace, Menlo, Consolas, monospace'],
 ] as const;
 export interface Appearance {
+  density: 'default' | 'compact';
   light: ThemeId;
   dark: ThemeId;
   appFont: string;
@@ -25,6 +26,7 @@ export interface Appearance {
   ligatures: boolean;
 }
 export const DEFAULTS: Appearance = {
+  density: 'default',
   light: 'github-light',
   dark: 'github-dark',
   appFont: 'inter',
@@ -41,6 +43,7 @@ export function normalize(value: Partial<Appearance>): Appearance {
   const number = (n: unknown, min: number, max: number, fallback: number) =>
     typeof n === 'number' && Number.isFinite(n) ? Math.max(min, Math.min(max, Math.round(n))) : fallback;
   return {
+    density: value.density === 'compact' ? 'compact' : 'default',
     light: theme(value.light, 'light'),
     dark: theme(value.dark, 'dark'),
     appFont: APP_FONTS.some((f) => f[0] === value.appFont) ? value.appFont! : DEFAULTS.appFont,

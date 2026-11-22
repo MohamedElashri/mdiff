@@ -22,6 +22,9 @@ fn changed() -> GithubError {
 }
 
 impl Session {
+    pub fn invalidate_github(&self) {
+        *self.discovered.lock().unwrap() = None;
+    }
     /// The pull request `snap` belongs to, cached apart from snapshot construction, so callers never
     /// hold the transition queue. A failed lookup is forgotten at once.
     pub async fn github_metadata(self: &Arc<Self>, snap: &Arc<Snapshot>) -> Result<GithubMetadata> {

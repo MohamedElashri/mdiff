@@ -44,13 +44,15 @@ export async function blocksSymbol(
   line: number,
   col: number,
   contents: () => Promise<string>,
+  signal?: AbortSignal,
+  namespace = '',
 ): Promise<boolean> {
   const lang = languageOf(path);
-  if (!lang || unavailable || typeof Worker === 'undefined') return false;
+  if (!lang || unavailable || typeof Worker === 'undefined' || signal?.aborted || pending.size >= 8) return false;
   try {
     const text = await contents();
     // Large files remain usable without copying and tokenizing them for an advisory popup.
-    if (text.length > 1_000_000 || unavailable) return false;
+    if (text.length > 1_000_000 || unavailable || signal?.aborted || pending.size >= 8) return false;
     if (!worker) {
       worker = new Worker(new URL('./syntax.worker.ts', import.meta.url), { type: 'module' });
       worker.onmessage = ({ data }: MessageEvent<SyntaxResponse>) => {
@@ -64,14 +66,23 @@ export async function blocksSymbol(
     return await new Promise<boolean>((resolve) => {
       // A broken worker must not leave a click waiting indefinitely.
       const timer = setTimeout(stop, 5000);
+      let settled = false;
+      const finish = (blocked: boolean) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', cancel);
+        resolve(blocked);
+      };
+      const cancel = () => finish(false);
+      signal?.addEventListener('abort', cancel, { once: true });
       pending.set(id, (blocked) => {
         clearTimeout(timer);
-        resolve(blocked);
+        finish(blocked);
       });
       try {
         worker!.postMessage({
           id,
-          key: `${side}:${path}`,
+          key: namespace ? `${namespace}\0${side}:${path}` : `${side}:${path}`,
           lang,
           contents: text,
           line,

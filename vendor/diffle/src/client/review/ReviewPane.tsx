@@ -1,3 +1,7 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewDom } from '@/client/runtime.js';
+import { useReviewViews } from '@/client/views/state.js';
+import { type ReviewStore, useReviewStore } from '@/client/store.js';
 import { useAppearance } from '@/client/appearance/preferences.js';
 import { Button } from '@/client/ui/Button.js';
 import type {
@@ -36,11 +40,11 @@ import { CopyIcon } from '@/client/ui/CopyIcon.js';
 import { lineBounds, sideOf } from '@/client/comments/anchor.js';
 import { renderedContext } from '@/client/keyboard/nav.js';
 import { SearchBar } from '@/client/keyboard/SearchBar.js';
-import { HoverTooltip, hoverControl } from '@/client/lsp/HoverTooltip.js';
+import { HoverTooltip } from '@/client/lsp/HoverTooltip.js';
 import { ReferencesList } from '@/client/lsp/ReferencesList.js';
 import { SymbolMenu } from '@/client/lsp/SymbolMenu.js';
 import { SymbolPicker } from '@/client/lsp/SymbolPicker.js';
-import { lspTarget, type TokenTarget } from '@/client/lsp/target.js';
+import { type TokenTarget } from '@/client/lsp/target.js';
 import {
   changedFile,
   changedFilesByPath,
@@ -63,12 +67,12 @@ import {
 import { remPx } from '@/client/scale.js';
 import { HIGHLIGHTER } from '@/client/theme.js';
 import { useStore, type Draft, type Loaded, type ReviewState } from '@/client/store.js';
-import { gridColumns, useViews } from '@/client/views/state.js';
+import { gridColumns } from '@/client/views/state.js';
 import { installInlineWheel, revealInline } from './inline.js';
 import { rowOf, topRow } from './rows.js';
 import { overflow, reviewGeometry } from './geometry.js';
-import { installOccurrenceHighlights, occurrenceControl } from '@/client/lsp/occurrences.js';
-import { focusToken, onSelectionChanged, setViewer, wordsIn } from '@/client/lsp/wordNav.js';
+import { installOccurrenceHighlights } from '@/client/lsp/occurrences.js';
+import { wordsIn } from '@/client/lsp/wordNav.js';
 import { charAtPoint, tokenRange } from '@/client/lsp/tokenText.js';
 import { installSearchHighlights } from '@/client/search/highlight.js';
 import { installCommentHighlights } from './commentHighlights.js';
@@ -94,7 +98,7 @@ const EYE_FRACTION = 0.5;
  * and deleted diffs already carry their whole contents), so the new side must
  * exist; a missing old side is the pure-rename case the loader contract allows.
  */
-async function loadDiffFiles(fileDiff: FileDiffMetadata): Promise<FileDiffLoadedFiles> {
+async function loadDiffFiles(fileDiff: FileDiffMetadata, useStore: ReviewStore): Promise<FileDiffLoadedFiles> {
   const newPath = fileDiff.name;
   const oldPath = fileDiff.prevName ?? newPath;
   const { loadFile } = useStore.getState();
@@ -109,7 +113,12 @@ async function loadDiffFiles(fileDiff: FileDiffMetadata): Promise<FileDiffLoaded
 }
 
 /** Tell the cursor model which context lines item `id`'s renderer shows, so j / k walk them. */
-function reportRevealed(id: string, fileDiff: FileDiffMetadata, renderer: { isLineRenderable(line: number): boolean }) {
+function reportRevealed(
+  id: string,
+  fileDiff: FileDiffMetadata,
+  renderer: { isLineRenderable(line: number): boolean },
+  useStore: ReviewStore,
+) {
   useStore.getState().setRevealed(
     id,
     renderedContext(fileDiff, (line) => renderer.isLineRenderable(line)),
@@ -214,10 +223,11 @@ function targetOf(
   props: TokenEventBase | DiffTokenEventBaseProps,
   itemId: string,
   event: MouseEvent,
+  useStore: ReviewStore,
 ): TokenTarget | null {
   const path = pathFromItemId(itemId);
   // No server for this language means no hover, no menu: a target would only produce blockers.
-  if (!served(path)) return null;
+  if (!served(path, useStore)) return null;
   // A highlighter token can span several names (`a.b.c`, or a whole unhighlighted line); the pointer picks one.
   const word = wordAtPoint(props.tokenElement, event, hoverOnly(useStore.getState().lsp, path));
   if (!word) return null;
@@ -235,7 +245,7 @@ function targetOf(
 }
 
 /** Whether some running language server claims this file's language. */
-function served(path: string): boolean {
+function served(path: string, useStore: ReviewStore): boolean {
   const language = languageOf(path);
   const { lsp } = useStore.getState();
   return language != null && lsp.enabled && serversFor(lsp, language).length > 0;
@@ -257,7 +267,6 @@ function markHover(el: HTMLElement, on: boolean): void {
 
 const codeViewOptions = {
   preferredHighlighter: HIGHLIGHTER,
-  loadDiffFiles,
   stickyHeaders: true,
   enableLineSelection: true,
   // Token hit-testing (data-char spans); also set on the worker pool in main.tsx, whose options win when the pool renders.
@@ -296,10 +305,19 @@ function drainHighlightLookahead(state: HighlightLookahead): void {
 }
 
 export function ReviewPane() {
+  const useStore = useReviewStore();
+  const useViews = useReviewViews();
+  const {
+    target: lspTarget,
+    occurrences: occurrenceControl,
+    hover: hoverControl,
+    words: { setViewer, focusToken, onSelectionChanged },
+  } = useReviewDom();
+
   const appearance = useAppearance();
   const rem = remPx();
   const geometry = useMemo(
-    () => reviewGeometry(rem, appearance.codeSize, appearance.codeWeight, appearance.ligatures),
+    () => reviewGeometry(rem, appearance.codeSize, appearance.codeWeight, appearance.ligatures, appearance.density),
     [rem, appearance],
   );
   const snapshot = useStore((s) => s.snapshot);
@@ -380,6 +398,17 @@ export function ReviewPane() {
   // The scroller is state, not a ref: CodeView mounts after the empty / error branches and remounts per
   // theme, and the effects that listen to it must re-run for each element, not only when the snapshot appears.
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!scroller) return;
+    scroller.scrollTo({ top: useStore.getState().paneScroll });
+    const save = () => useStore.setState({ paneScroll: scroller.scrollTop });
+    scroller.addEventListener('scroll', save, { passive: true });
+    return () => {
+      save();
+      scroller.removeEventListener('scroll', save);
+    };
+  }, [scroller, useStore]);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const attachScroller = useCallback((el: HTMLDivElement | null) => {
     containerRef.current = el;
@@ -402,17 +431,25 @@ export function ReviewPane() {
   useEffect(() => {
     setViewer(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null);
     return () => setViewer(() => null);
-  }, []);
+  }, [setViewer]);
   // Search-match highlights read the same rendered DOM; the scroller drives re-paints as rows virtualize.
   useEffect(() => {
     if (!scroller) return;
-    return installSearchHighlights(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null, scroller);
-  }, [scroller]);
+    return installSearchHighlights(
+      () => viewerRef.current as CodeViewHandle<unknown, undefined> | null,
+      scroller,
+      useStore,
+    );
+  }, [scroller, useStore]);
   // So do the tints on the lines saved and draft comments refer to.
   useEffect(() => {
     if (!scroller) return;
-    return installCommentHighlights(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null, scroller);
-  }, [scroller]);
+    return installCommentHighlights(
+      () => viewerRef.current as CodeViewHandle<unknown, undefined> | null,
+      scroller,
+      useStore,
+    );
+  }, [scroller, useStore]);
   // And the visible spaces and tabs.
   useEffect(() => {
     if (!scroller) return;
@@ -421,8 +458,12 @@ export function ReviewPane() {
   // And the occurrences of the focused or hovered symbol.
   useEffect(() => {
     if (!scroller) return;
-    return installOccurrenceHighlights(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null, scroller);
-  }, [scroller]);
+    return installOccurrenceHighlights(
+      () => viewerRef.current as CodeViewHandle<unknown, undefined> | null,
+      scroller,
+      useStore,
+    );
+  }, [scroller, useStore]);
   // Sideways wheel gestures move both columns of a split diff together; see installInlineWheel.
   useEffect(() => {
     if (!scroller) return;
@@ -430,7 +471,7 @@ export function ReviewPane() {
   }, [scroller]);
   useEffect(() => {
     onSelectionChanged(selection);
-  }, [selection]);
+  }, [selection, onSelectionChanged]);
   // The tree's selected row mirrors the file under the reader's eyes, so wheel scrolling must move it too.
   // Not while a line or hunk is focused: the cursor names the file then, wherever the reader has scrolled
   // to, and letting the gaze point override it made the tree flip back and forth (issue #10). Without a
@@ -511,7 +552,7 @@ export function ReviewPane() {
       resize?.disconnect();
       state.pending = null;
     };
-  }, [scroller, geometry, items, workerPool, theme, windowed]);
+  }, [scroller, geometry, items, workerPool, theme, windowed, useStore]);
 
   // A display toggle re-lays the rows out (split / unified, wrap, the pane resizing as the tree or the
   // side panel hides, or as a view with another panel shows) or remounts the viewer (theme). Neither is
@@ -559,7 +600,7 @@ export function ReviewPane() {
       offViews();
       offStore();
     };
-  }, [geometry]);
+  }, [geometry, useStore, useViews]);
 
   // Reveal a line hidden in collapsed context: bring the item into the virtual window,
   // ask its instance to expand around the line, then center it.
@@ -585,7 +626,7 @@ export function ReviewPane() {
           return;
         }
         // The cursor lands before the expansion renders and reports itself.
-        reportRevealed(reveal.id, rendered.item.fileDiff, inst);
+        reportRevealed(reveal.id, rendered.item.fileDiff, inst, useStore);
         // Let the expansion render, then center the line.
         setTimeout(() => {
           if (cancelled) return;
@@ -609,7 +650,7 @@ export function ReviewPane() {
     return () => {
       cancelled = true;
     };
-  }, [reveal]);
+  }, [reveal, useStore]);
   // The scroll request for a target: eye/top/bottom/keep pin the line at a fixed height ('start' plus an
   // offset below the sticky header); the landing in the effect below measures the row and makes it exact.
   const scrollPlan = useCallback(
@@ -867,6 +908,7 @@ export function ReviewPane() {
   const options = useMemo(
     () => ({
       ...codeViewOptions,
+      loadDiffFiles: (diff: FileDiffMetadata) => loadDiffFiles(diff, useStore),
       theme: { light: appearance.light, dark: appearance.dark },
       unsafeCSS: HEADER_CSS + WHITESPACE_CSS + geometry.css,
       layout: geometry.layout,
@@ -884,7 +926,8 @@ export function ReviewPane() {
           | { type: 'file' }
           | { type: 'diff'; item: CodeViewDiffItem<Annot>; instance: { isLineRenderable(line: number): boolean } },
       ) => {
-        if (phase !== 'unmount' && ctx.type === 'diff') reportRevealed(ctx.item.id, ctx.item.fileDiff, ctx.instance);
+        if (phase !== 'unmount' && ctx.type === 'diff')
+          reportRevealed(ctx.item.id, ctx.item.fileDiff, ctx.instance, useStore);
       },
       onLineSelectionEnd: () => {
         const sel = viewerRef.current?.getSelectedLines();
@@ -900,7 +943,7 @@ export function ReviewPane() {
         // of the previous token already ran, so nothing is targeted when the pointer arrives.
         let shown: TokenTarget | null = null;
         const point = (e: PointerEvent) => {
-          const t = targetOf(props, ctx.item.id, e);
+          const t = targetOf(props, ctx.item.id, e, useStore);
           if (t?.col === shown?.col) return;
           shown = t;
           lspTarget.set(t, props.tokenElement);
@@ -942,7 +985,7 @@ export function ReviewPane() {
         event: MouseEvent,
         ctx: { item: { id: string } },
       ) => {
-        const target = targetOf(props, ctx.item.id, event);
+        const target = targetOf(props, ctx.item.id, event, useStore);
         if (!target || hoverOnly(useStore.getState().lsp, target.path)) return;
         markHover(props.tokenElement, false);
         hoverControl.cancel();
@@ -966,19 +1009,27 @@ export function ReviewPane() {
       lineWrap,
       geometry,
       appearance,
+      useStore,
+      focusToken,
+      hoverControl,
+      occurrenceControl,
+      lspTarget,
     ],
   );
 
-  const renderAnnotation = useCallback((...[annotation]: CodeViewAnnotationArgs<Annot>) => {
-    const meta = annotation.metadata;
-    if (meta.kind === 'placeholder') return <PlaceholderBanner kind={meta.placeholder} message={meta.message} />;
-    if (meta.kind === 'image') return <ImageDiff path={meta.path} sides={meta.sides} />;
-    if (meta.kind === 'draft') {
-      const range = draftRange(useStore.getState());
-      return <CommentComposer label={range ? rangeLabel(range) : 'whole file'} />;
-    }
-    return <CommentCard thread={meta.thread} />;
-  }, []);
+  const renderAnnotation = useCallback(
+    (...[annotation]: CodeViewAnnotationArgs<Annot>) => {
+      const meta = annotation.metadata;
+      if (meta.kind === 'placeholder') return <PlaceholderBanner kind={meta.placeholder} message={meta.message} />;
+      if (meta.kind === 'image') return <ImageDiff path={meta.path} sides={meta.sides} />;
+      if (meta.kind === 'draft') {
+        const range = draftRange(useStore.getState());
+        return <CommentComposer label={range ? rangeLabel(range) : 'whole file'} />;
+      }
+      return <CommentCard thread={meta.thread} />;
+    },
+    [useStore],
+  );
 
   const resizeHeader = useCallback(
     (id: string, height: number) => {
@@ -1015,14 +1066,16 @@ export function ReviewPane() {
   if (!snapshot)
     return (
       <main className="relative flex min-h-0 min-w-0 flex-col outline-none">
-        <div className="p-10 text-center text-muted">Loading snapshot…</div>
+        <div className="p-10 text-center text-muted">{uiText('Loading snapshot…')}</div>
       </main>
     );
   if (snapshot.changed.length === 0 && !fileView) {
     return (
       <main className="relative flex min-h-0 min-w-0 flex-col outline-none">
         <div className="p-10 text-center text-muted">
-          No changes for <code>{comparisonLabel(snapshot.review)}</code>. Open any file from the tree to comment on it.
+          {uiText('No changes for ')}
+          <code>{comparisonLabel(snapshot.review)}</code>
+          {uiText('. Open any file from the tree to comment on it.')}
         </div>
       </main>
     );
@@ -1033,8 +1086,12 @@ export function ReviewPane() {
       {error && (
         <div role="alert" className="flex items-center gap-2 border-b border-border bg-hover px-3 py-2 text-danger">
           <span className="flex-1">{error}</span>
-          <button type="button" aria-label="Dismiss review error" onClick={() => useStore.setState({ error: null })}>
-            Dismiss
+          <button
+            type="button"
+            aria-label={uiText('Dismiss review error')}
+            onClick={() => useStore.setState({ error: null })}
+          >
+            {uiText('Dismiss')}
           </button>
         </div>
       )}
@@ -1046,10 +1103,13 @@ export function ReviewPane() {
       {fileView && <FileViewBar path={fileView.path} />}
       {fileView
         ? !fileView.item && (
-            <div className="border-b border-b-border bg-hover px-3 py-2 text-muted">Loading {fileView.path}…</div>
+            <div className="border-b border-b-border bg-hover px-3 py-2 text-muted">
+              {uiText('Loading ')}
+              {fileView.path}…
+            </div>
           )
         : patchesLoading && (
-            <div className="border-b border-b-border bg-hover px-3 py-2 text-muted">Loading diffs…</div>
+            <div className="border-b border-b-border bg-hover px-3 py-2 text-muted">{uiText('Loading diffs…')}</div>
           )}
       <CodeView<Annot>
         key={`${theme}:${appearance.light}:${appearance.dark}:${appearance.codeFont}:${appearance.codeSize}`}
@@ -1084,7 +1144,7 @@ function FileViewBar({ path }: { path: string }) {
       )}
       {external && (
         <span className="inline-flex items-center gap-2.5 font-mono text-[0.75rem]">
-          outside the repository, read-only
+          {uiText('outside the repository, read-only')}
         </span>
       )}
     </div>
@@ -1271,8 +1331,8 @@ function CopyPathButton({ path }: { path: string }) {
       variant="ghost"
       icon
       className={twMerge('shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100', done && 'opacity-100')}
-      title="Copy path (yp)"
-      aria-label="Copy path"
+      title={uiText('Copy path (yp)')}
+      aria-label={uiText('Copy path')}
       onClick={async () => {
         if (!(await copy(path))) flash('The browser blocked clipboard access');
       }}
@@ -1346,45 +1406,55 @@ function FileHeaderMeta({ path }: { path: string }) {
       {file?.generated && (
         <span
           className="inline-flex items-center gap-0.75 rounded-[0.625rem] bg-hover px-1.75 py-0 font-sans text-muted"
-          title="Detected as generated: starts collapsed and ranks low"
+          title={uiText('Detected as generated: starts collapsed and ranks low')}
         >
-          generated
+          {uiText('generated')}
         </span>
       )}
       {file?.submodule && (
         <span
           className="inline-flex items-center gap-0.75 rounded-[0.625rem] bg-hover px-1.75 py-0 font-sans text-muted"
-          title="Submodule: only the recorded commit changes"
+          title={uiText('Submodule: only the recorded commit changes')}
         >
-          submodule
+          {uiText('submodule')}
         </span>
       )}
       {!full && (patchKind === 'oversized' || patchKind === 'error') && (
         <Button
           variant="ghost"
           onClick={() => void loadPatch(path)}
-          title={patchKind === 'error' ? 'Try loading this diff again (zo)' : 'Large diff, not loaded yet (zo)'}
+          title={
+            patchKind === 'error'
+              ? uiText('Try loading this diff again (zo)')
+              : uiText('Large diff, not loaded yet (zo)')
+          }
         >
           {patchKind === 'error' ? <RefreshCw size="0.875rem" /> : <Download size="0.875rem" />}
-          {patchKind === 'error' ? 'Retry diff' : 'Load diff'}
+          {patchKind === 'error' ? uiText('Retry diff') : uiText('Load diff')}
         </Button>
       )}
       {file && vs === 'restale' && (
         <span
           className="inline-flex items-center gap-0.75 rounded-[0.625rem] bg-hover px-1.75 py-0 font-sans text-warn"
-          title="You marked this viewed, then its contents changed"
+          title={uiText('You marked this viewed, then its contents changed')}
         >
-          <RefreshCw size="0.75rem" /> changed since viewed
+          <RefreshCw size="0.75rem" />
+          {uiText(' changed since viewed')}
         </span>
       )}
       {!external && commentable && (
-        <Button variant="ghost" icon onClick={() => openFileDraft(path)} title="Comment on this file as a whole (C)">
+        <Button
+          variant="ghost"
+          icon
+          onClick={() => openFileDraft(path)}
+          title={uiText('Comment on this file as a whole (C)')}
+        >
           <MessageSquarePlus size="0.875rem" />
         </Button>
       )}
       {/* In the file view the bar above already carries the way back, so the header offers no second button. */}
       {!full && (!file || (!file.binary && !file.submodule && file.status !== 'D')) && (
-        <Button variant="ghost" icon onClick={() => void openFullFile(path)} title="View full file (F)">
+        <Button variant="ghost" icon onClick={() => void openFullFile(path)} title={uiText('View full file (F)')}>
           <FileText size="0.875rem" />
         </Button>
       )}
@@ -1394,17 +1464,17 @@ function FileHeaderMeta({ path }: { path: string }) {
             className="inline-flex cursor-pointer items-center gap-1 font-sans"
             title={
               vs === 'restale'
-                ? 'Mark viewed again and collapse the file (v)'
-                : 'Mark as viewed and collapse the file (v)'
+                ? uiText('Mark viewed again and collapse the file (v)')
+                : uiText('Mark as viewed and collapse the file (v)')
             }
           >
             <input type="checkbox" checked={vs === 'viewed'} onChange={(e) => void setViewed(path, e.target.checked)} />
-            Viewed
+            {uiText('Viewed')}
           </label>
         </>
       )}
       {!full && (
-        <Button variant="ghost" icon onClick={() => toggleCollapsed(path)} title="Collapse / expand">
+        <Button variant="ghost" icon onClick={() => toggleCollapsed(path)} title={uiText('Collapse / expand')}>
           {collapsedNow ? <ChevronRight size="0.875rem" /> : <ChevronDown size="0.875rem" />}
         </Button>
       )}

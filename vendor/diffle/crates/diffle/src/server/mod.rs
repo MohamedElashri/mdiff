@@ -5,6 +5,7 @@ pub mod guard;
 pub mod hub;
 pub mod image;
 mod listen;
+pub mod repository;
 mod routes;
 
 use std::net::SocketAddr;
@@ -62,7 +63,8 @@ pub fn desktop_router(deps: ApiDeps) -> Router {
     routes::router()
         .layer(middleware::from_fn_with_state(deps.clone(), wait_ready))
         .layer(middleware::from_fn(limit_body))
-        .with_state(deps)
+        .with_state(deps.clone())
+        .merge(repository::router(deps.session.history.clone()))
 }
 
 struct App {
@@ -146,7 +148,9 @@ fn router(app: Arc<App>) -> Router {
         .layer(middleware::from_fn(limit_body))
         .layer(middleware::from_fn_with_state(app.clone(), check_guard))
         .with_state(app.deps.clone());
-    Router::new().merge(api).route("/ws", get(ws)).fallback(fallback).with_state(app)
+    let history = repository::router(app.deps.session.history.clone())
+        .layer(middleware::from_fn_with_state(app.clone(), check_guard));
+    Router::new().route("/ws", get(ws)).fallback(fallback).with_state(app).merge(api).merge(history)
 }
 
 /// Unknown API paths answer JSON behind the guard; everything else is the client.

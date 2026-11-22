@@ -6,11 +6,13 @@ mod commits;
 pub mod exec;
 mod files;
 mod grep;
+pub mod operations;
 mod patch;
 pub(crate) mod patch_cache;
 mod refs;
 #[cfg(unix)]
 mod worktree;
+pub mod worktrees;
 
 use std::path::{Path, PathBuf};
 
@@ -37,8 +39,15 @@ pub struct GitRepo {
     pub git_dir: PathBuf,
     /// Shared dir for worktrees (refs, packed-refs). Equals `git_dir` for the main worktree.
     pub common_dir: PathBuf,
+    /// Persistence parent (containing `diffle/`). Defaults to this worktree's Git dir;
+    /// managed remote reviews inject a durable root independent of checkout lifetime.
+    pub data_git_dir: PathBuf,
+    /// Optional stable range identity for managed remote reviews / pinned reconstruction.
+    pub range_identity: Option<String>,
+    pub resume_iterations: bool,
     /// Where this run fetches pull requests; unique, so two servers never share refs.
     pub review_refs: String,
+    pub(crate) retained_refs: tokio::sync::Mutex<Vec<Option<String>>>,
     git_auth: Option<auth::GitAuth>,
     #[cfg(unix)]
     worktree: std::sync::Arc<std::fs::File>,
@@ -49,25 +58,7 @@ pub struct GitRepo {
 
 impl GitRepo {
     pub async fn open(dir: &Path) -> Result<Self> {
-        let out = exec_git(
-            dir,
-            &["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"],
-            ExecOptions::default(),
-        )
-        .await?;
-        let out = text(out);
-        let mut lines = out.trim().lines();
-        let (Some(root), Some(git_dir)) = (lines.next(), lines.next()) else {
-            return Err(GitError {
-                code: Some(128),
-                ..GitError::refused(format!("not a git repository: {}", dir.display()), &[])
-            }
-            .into());
-        };
-        // Git prints POSIX separators even on Windows; normalise them to native ones.
-        let root = native(root);
-        let git_dir = native(git_dir);
-        let common_dir = lines.next().map_or_else(|| git_dir.clone(), |common| native_path(&root.join(native(common))));
+        let (root, git_dir, common_dir) = repository_paths(dir).await?;
         Ok(Self {
             #[cfg(unix)]
             worktree: std::sync::Arc::new(std::fs::File::open(&root)?),
@@ -75,8 +66,12 @@ impl GitRepo {
             cat_file: CatFileBatch::new(root.clone()),
             hashed_files: std::sync::atomic::AtomicUsize::new(0),
             patches: Default::default(),
+            retained_refs: tokio::sync::Mutex::new(Vec::new()),
             review_refs: format!("refs/diffle/{}", uuid::Uuid::new_v4()),
             root,
+            data_git_dir: git_dir.clone(),
+            range_identity: None,
+            resume_iterations: false,
             git_dir,
             common_dir,
         })
@@ -90,6 +85,16 @@ impl GitRepo {
     pub fn with_git_auth(mut self, auth: Option<auth::GitAuth>) -> Self {
         self.git_auth = auth;
         self
+    }
+
+    pub fn with_data_root(mut self, root: PathBuf) -> Self {
+        self.data_git_dir = root;
+        self
+    }
+
+    /// Another owned checkout of these objects; credentials remain in memory.
+    pub async fn reopen_at(&self, root: &Path) -> Result<Self> {
+        Ok(Self::open(root).await?.with_git_auth(self.git_auth.clone()))
     }
 
     pub(crate) fn has_git_auth(&self) -> bool {
@@ -112,6 +117,11 @@ impl GitRepo {
         args.extend(["--", url, "."]);
         exec_git(dir, &args, opts).await?;
         Ok(Self::open(dir).await?.with_git_auth(auth))
+    }
+
+    pub async fn clear_payloads(&self) {
+        self.patches.clear();
+        self.cat_file.close().await;
     }
 
     /// How many `cat-file --batch` processes this repository has started. Diagnostics and tests.
@@ -142,8 +152,54 @@ impl GitRepo {
     }
 }
 
+#[cfg(not(unix))]
 fn native(path: &str) -> PathBuf {
     native_path(Path::new(path))
+}
+
+/// Preserve raw repository paths. The common fast path remains one process; unusual
+/// line breaks use separate fields because rev-parse has no NUL path-output mode.
+pub async fn repository_paths(dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    async fn discover(dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let bytes = exec_git(
+            dir,
+            &["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"],
+            ExecOptions::default(),
+        )
+        .await?;
+        let fields = bytes.split(|b| *b == b'\n').collect::<Vec<_>>();
+        let (root, git, common) = if fields.len() == 4 && fields[3].is_empty() && !bytes.contains(&b'\r') {
+            (path_bytes(fields[0])?, path_bytes(fields[1])?, path_bytes(fields[2])?)
+        } else {
+            let mut paths = vec![];
+            for flag in ["--show-toplevel", "--absolute-git-dir", "--git-common-dir"] {
+                let bytes = exec_git(dir, &["rev-parse", flag], ExecOptions::default()).await?;
+                paths.push(path_bytes(bytes.strip_suffix(b"\n").unwrap_or(&bytes))?);
+            }
+            (paths.remove(0), paths.remove(0), paths.remove(0))
+        };
+        Ok((native_path(&root), native_path(&git), native_path(&dir.canonicalize()?.join(common))))
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), discover(dir))
+        .await
+        .map_err(|_| GitError::refused("Repository discovery timed out", &["rev-parse"]))?
+}
+fn path_bytes(bytes: &[u8]) -> Result<PathBuf> {
+    if bytes.is_empty() || bytes.contains(&0) {
+        return Err(GitError::refused("Invalid repository path", &["rev-parse"]).into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(native(
+            std::str::from_utf8(bytes)
+                .map_err(|_| GitError::refused("Repository path is not UTF-8", &["rev-parse"]))?,
+        ))
+    }
 }
 
 /// Separators as the platform writes them, and `.`/`..` folded, so paths compare equal to joined ones.

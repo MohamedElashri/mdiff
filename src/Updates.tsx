@@ -1,3 +1,4 @@
+import { uiText } from "../vendor/diffle/src/client/i18n/runtime";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
@@ -16,7 +17,36 @@ import { UpdateController, type UpdateInfo } from "./update-controller";
 // Closing Preferences does not cancel an update or allow a second installation.
 export const updates = new UpdateController({
   info: () => invoke<UpdateInfo>("updater_info"),
-  check: () => check({ timeout: 20_000 }),
+  check: async () => {
+    await invoke("updater_lease", { acquire: true });
+    try {
+      const update = await check({ timeout: 20_000 });
+      if (!update) return null;
+      return {
+        version: update.version,
+        body: update.body,
+        async download(progress, options) {
+          await invoke("updater_lease", { acquire: true });
+          try {
+            await update.download(progress, options);
+          } catch (error) {
+            await invoke("updater_lease", { acquire: false }).catch(() => {});
+            throw error;
+          }
+        },
+        async install() {
+          try {
+            await update.install();
+          } finally {
+            await invoke("updater_lease", { acquire: false });
+          }
+        },
+        close: () => update.close(),
+      };
+    } finally {
+      await invoke("updater_lease", { acquire: false });
+    }
+  },
   restart: () => invoke("restart_after_update"),
 });
 
@@ -46,31 +76,44 @@ export function Updates() {
     ? Math.min(100, Math.round((state.downloaded / state.total) * 100))
     : undefined;
   const title = {
-    idle: failed ? "Couldn’t check for updates" : "Ready when you are",
-    checking: "Checking for updates…",
-    current: "You’re up to date",
+    idle: failed
+      ? uiText("Couldn’t check for updates")
+      : uiText("Ready when you are"),
+    checking: uiText("Checking for updates…"),
+    current: uiText("You’re up to date"),
     available: failed
-      ? "Update couldn’t finish"
-      : `mdiff ${state.version} is available`,
-    downloading: `Downloading mdiff ${state.version}`,
-    installing: "Installing your update…",
-    ready: "Ready to restart",
-    restarting: "Restarting mdiff…",
+      ? uiText("Update couldn’t finish")
+      : uiText("mdiff {value0} is available", {
+          value0: String(state.version),
+        }),
+    downloading: uiText("Downloading mdiff {value0}", {
+      value0: String(state.version),
+    }),
+    installing: uiText("Installing your update…"),
+    ready: uiText("Ready to restart"),
+    restarting: uiText("Restarting mdiff…"),
   }[state.phase];
   const description = {
     idle: failed
-      ? "The update service is unavailable. Check your connection or try again later."
-      : "Check GitHub for the latest stable release.",
-    checking: "Looking for a newer version of mdiff.",
-    current: `You’re running the latest available version${info ? `, ${info.version}` : ""}.`,
+      ? uiText(
+          "The update service is unavailable. Check your connection or try again later.",
+        )
+      : uiText("Check GitHub for the latest stable release."),
+    checking: uiText("Looking for a newer version of mdiff."),
+    current: uiText("You’re running the latest available version{value0}.", {
+      value0: String(info ? `, ${info.version}` : ""),
+    }),
     available: failed
-      ? "Review the error below, then try again."
-      : "Review what’s changed, then install when it suits you.",
-    downloading: "You can close Preferences while the download finishes.",
-    installing: "The download was verified. Please keep mdiff open.",
-    ready:
+      ? uiText("Review the error below, then try again.")
+      : uiText("Review what’s changed, then install when it suits you."),
+    downloading: uiText(
+      "You can close Preferences while the download finishes.",
+    ),
+    installing: uiText("The download was verified. Please keep mdiff open."),
+    ready: uiText(
       "Save any unfinished comment before restarting. Your saved reviews stay in place.",
-    restarting: "Closing the current review and its language servers.",
+    ),
+    restarting: uiText("Closing the current review and its language servers."),
   }[state.phase];
   const Icon = failed
     ? AlertCircle
@@ -81,26 +124,29 @@ export function Updates() {
         : Download;
   const primaryLabel =
     state.phase === "ready"
-      ? "Restart mdiff"
+      ? uiText("Restart mdiff")
       : state.phase === "available"
-        ? "Download and install"
+        ? uiText("Download and install")
         : state.phase === "checking"
-          ? "Checking…"
-          : "Check for updates";
+          ? uiText("Checking…")
+          : uiText("Check for updates");
   function primaryAction() {
     if (state.phase === "ready") void updates.restart();
     else if (state.phase === "available") void updates.install();
     else void updates.check();
   }
   return (
-    <section className="update-page" aria-label="App updates">
+    <section className="update-page" aria-label={uiText("App updates")}>
       <header className="settings-page-heading">
-        <h3>App updates</h3>
+        <h3>{uiText("App updates")}</h3>
         {info && (
-          <span className="app-version">Installed · {info.version}</span>
+          <span className="app-version">
+            {uiText("Installed · ")}
+            {info.version}
+          </span>
         )}
       </header>
-      <div className={`update-status${failed ? " has-error" : ""}`}>
+      <div className={`update-status${String(failed ? " has-error" : "")}`}>
         <div className="update-status-icon">
           <Icon size={22} className={busy ? "spin" : undefined} />
         </div>
@@ -112,13 +158,15 @@ export function Updates() {
           {state.phase === "downloading" && (
             <div className="update-progress">
               <progress
-                aria-label="Update download"
+                aria-label={uiText("Update download")}
                 max={100}
                 value={progress}
               />
               <span>
                 {progress === undefined
-                  ? `${(state.downloaded / 1048576).toFixed(1)} MB downloaded`
+                  ? uiText("{value0} MB downloaded", {
+                      value0: String((state.downloaded / 1048576).toFixed(1)),
+                    })
                   : `${progress}%`}
               </span>
             </div>
@@ -141,15 +189,21 @@ export function Updates() {
           )}
           {failed && (
             <details className="update-error" role="alert">
-              <summary>Error details</summary>
+              <summary>{uiText("Error details")}</summary>
               <p>{state.error || infoError}</p>
             </details>
           )}
         </div>
       </div>
       {state.notes && (
-        <section className="update-release-notes" aria-label="Release notes">
-          <h4>What’s new in {state.version}</h4>
+        <section
+          className="update-release-notes"
+          aria-label={uiText("Release notes")}
+        >
+          <h4>
+            {uiText("What’s new in ")}
+            {state.version}
+          </h4>
           <div>
             <Markdown>{state.notes}</Markdown>
           </div>
@@ -158,10 +212,10 @@ export function Updates() {
       <footer className="update-footer">
         <span>
           <ShieldCheck size={15} />
-          Signed updates. Always your choice.
+          {uiText("Signed updates. Always your choice.")}
         </span>
         <a href="https://github.com/MohamedElashri/mdiff/releases">
-          All releases
+          {uiText("All releases")}
           <ArrowUpRight size={14} />
         </a>
       </footer>

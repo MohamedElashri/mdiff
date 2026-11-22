@@ -43,6 +43,7 @@ fn start_lsp(session: &Arc<Session>, overrides: std::collections::HashMap<Langua
         preload: Vec::new(),
         lookup: Arc::new(|_| None),
         max_open: None,
+        max_servers: None,
     });
     let tracking = Arc::downgrade(&pool);
     session.on_snapshot(move |snap| {

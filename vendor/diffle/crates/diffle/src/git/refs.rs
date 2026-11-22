@@ -20,7 +20,38 @@ pub struct Upstream {
 
 impl GitRepo {
     /// Remove only refs owned by this review, never another running instance's.
+    /// Retain the live comparison's objects in this run's own namespace, independently of
+    /// moving user refs. Replacing these pins cannot touch another review's objects or refs.
+    pub async fn retain_review(&self, objects: &[&str]) -> Result<(), GitError> {
+        let desired: Vec<_> = objects
+            .iter()
+            .map(|sha| {
+                ([40, 64].contains(&sha.len()) && sha.bytes().all(|b| b.is_ascii_hexdigit())).then(|| (*sha).to_owned())
+            })
+            .collect();
+        let mut retained = self.retained_refs.lock().await;
+        if *retained == desired {
+            return Ok(());
+        }
+        let mut input = String::new();
+        for (i, sha) in desired.iter().enumerate() {
+            let name = format!("{}/snapshot/{i}", self.review_refs);
+            match sha {
+                Some(sha) => input += &format!("update {name} {sha}\n"),
+                None if retained.get(i).is_some_and(Option::is_some) => input += &format!("delete {name}\n"),
+                None => {}
+            }
+        }
+        if !input.is_empty() {
+            self.exec(&["update-ref", "--stdin"], ExecOptions { input: Some(input.as_bytes()), ..Default::default() })
+                .await?;
+        }
+        *retained = desired;
+        Ok(())
+    }
+
     pub async fn clean_review_refs(&self) -> Result<(), GitError> {
+        self.retained_refs.lock().await.clear();
         let prefix = format!("{}/", self.review_refs);
         let refs = self.text(&["for-each-ref", "--format=%(refname)", &prefix]).await?;
         let input: String = refs.lines().filter(|r| !r.is_empty()).map(|r| format!("delete {r}\n")).collect();

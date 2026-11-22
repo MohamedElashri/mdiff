@@ -43,7 +43,10 @@ it('requires an explicit trust action even when the old global preference was en
   await act(() => button('Enable code intelligence').click());
   await act(() => button('Trust and enable').click());
   expect(invoke).toHaveBeenCalledExactlyOnceWith('enable_review_lsp', { id: 'one' });
-  expect(useStore.getState().lsp.enabled).toBe(true);
+  expect(button('Code intelligence enabled').disabled).toBe(true);
+  // The trust control does not write to the standalone/default store. Its owning native
+  // review receives the LSP status on the scoped event subscription.
+  expect(useStore.getState().lsp.enabled).toBe(false);
 });
 
 it('requires trust again when the review changes', async () => {

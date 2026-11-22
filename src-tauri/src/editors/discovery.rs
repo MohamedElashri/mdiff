@@ -63,6 +63,7 @@ impl Locations {
         }
         if cfg!(target_os = "macos") {
             applications.push("/Applications".into());
+            applications.push("/System/Applications/Utilities".into());
         }
         if cfg!(target_os = "linux") {
             let data = std::env::var_os("XDG_DATA_DIRS")
@@ -86,7 +87,7 @@ impl Locations {
             desktops,
         }
     }
-    fn executable(&self, name: &str) -> Option<PathBuf> {
+    pub(super) fn executable(&self, name: &str) -> Option<PathBuf> {
         self.binaries
             .iter()
             .map(|p| p.join(name))

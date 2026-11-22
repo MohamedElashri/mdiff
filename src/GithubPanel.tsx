@@ -1,8 +1,8 @@
+import { uiText } from "../vendor/diffle/src/client/i18n/runtime";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, GitPullRequest, RefreshCw, X } from "lucide-react";
-import { api } from "../vendor/diffle/src/client/api";
-import { request } from "../vendor/diffle/src/client/transport";
-import { useStore } from "../vendor/diffle/src/client/store";
+import { useApi, type ReviewApi } from "../vendor/diffle/src/client/api";
+import { useStore, useReviewStore } from "../vendor/diffle/src/client/store";
 import type { GithubExportResponse } from "../vendor/diffle/src/shared/protocol";
 
 type Context = {
@@ -17,8 +17,12 @@ type Context = {
   reason: string | null;
 };
 type Pull = { url: string; number: number; existing: boolean };
-async function call<T>(body?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await request("api/desktop/github", {
+async function callApi<T>(
+  api: ReviewApi,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await api.request("api/desktop/github", {
     method: body ? "POST" : "GET",
     headers: { "content-type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
@@ -36,6 +40,11 @@ export function GithubPanel({
   onClose: () => void;
   onConnections: () => void;
 }) {
+  const useStore = useReviewStore();
+  const api = useApi();
+  const call = <T,>(body?: unknown, signal?: AbortSignal) =>
+    callApi<T>(api, body, signal);
+  const authGeneration = useStore((s) => s.authGeneration);
   const github = useStore((s) => s.github);
   const threads = useStore((s) => s.threads);
   const snapshot = useStore((s) => s.snapshot);
@@ -93,6 +102,14 @@ export function GithubPanel({
     }
   }
   useEffect(() => {
+    if (!authGeneration) return;
+    controller.current?.abort();
+    setContext(undefined);
+    setPull(undefined);
+    setExported(undefined);
+    void refresh();
+  }, [authGeneration]);
+  useEffect(() => {
     live.current = true;
     panel.current?.focus();
     void refresh();
@@ -125,7 +142,7 @@ export function GithubPanel({
     <aside
       id="desktop-github-panel"
       className="gitlab-panel github-panel"
-      aria-label="GitHub review"
+      aria-label={uiText("GitHub review")}
       ref={panel}
       tabIndex={-1}
       onKeyDown={(event) => {
@@ -138,23 +155,25 @@ export function GithubPanel({
     >
       <div className="github-heading">
         <h2>
-          <GitPullRequest size={18} /> GitHub
+          <GitPullRequest size={18} />
+          {uiText(" GitHub")}
         </h2>
-        <button onClick={onClose} aria-label="Close GitHub panel">
+        <button onClick={onClose} aria-label={uiText("Close GitHub panel")}>
           <X size={16} />
         </button>
       </div>
       <div className="actions">
         <button disabled={!!busy} onClick={() => void refresh()}>
-          <RefreshCw size={14} /> Refresh
+          <RefreshCw size={14} />
+          {uiText(" Refresh")}
         </button>
-        <button onClick={onConnections}>Connection settings</button>
+        <button onClick={onConnections}>{uiText("Connection settings")}</button>
       </div>
       {metadata?.repositoryUrl && (
         <a href={metadata.repositoryUrl}>{metadata.repository}</a>
       )}
       <section>
-        <h3>Pull request</h3>
+        <h3>{uiText("Pull request")}</h3>
         {pr ? (
           <>
             <a href={pr.url} className="github-pr-link">
@@ -163,19 +182,21 @@ export function GithubPanel({
             <small>
               {pr.state === "OPEN"
                 ? pr.isDraft
-                  ? "Draft"
-                  : "Open"
+                  ? uiText("Draft")
+                  : uiText("Open")
                 : pr.state === "MERGED"
-                  ? "Merged"
-                  : "Closed"}
+                  ? uiText("Merged")
+                  : uiText("Closed")}
             </small>
           </>
         ) : (
           <p>
             {github.status === "loading"
-              ? "Finding the pull request…"
+              ? uiText("Finding the pull request…")
               : reason ||
-                "Open an existing PR or create one from your current branch."}
+                uiText(
+                  "Open an existing PR or create one from your current branch.",
+                )}
           </p>
         )}
         {github.status === "error" && <p role="alert">{github.error}</p>}
@@ -191,32 +212,39 @@ export function GithubPanel({
           }}
         >
           <label>
-            Open an existing PR
+            {uiText("Open an existing PR")}
             <input
               required
               value={selector}
               onChange={(e) => setSelector(e.target.value)}
-              placeholder="PR URL or number"
+              placeholder={uiText("PR URL or number")}
             />
           </label>
           <button disabled={!!busy || !selector.trim() || !context?.connected}>
-            {busy === "open" ? "Opening…" : "Open PR in mdiff"}
+            {busy === "open" ? uiText("Opening…") : uiText("Open PR in mdiff")}
           </button>
         </form>
       </section>
       <section>
-        <h3>Transfer comments</h3>
+        <h3>{uiText("Transfer comments")}</h3>
         <p>
-          {eligible} open {eligible === 1 ? "thread" : "threads"} ready
-          {stale > 0 ? ` · ${stale} stale skipped` : ""}.
+          {eligible}
+          {uiText(" open ")}
+          {eligible === 1 ? uiText("thread") : uiText("threads")}
+          {uiText(" ready")}
+          {stale > 0
+            ? uiText(" · {value0} stale skipped", { value0: String(stale) })
+            : ""}
+          .
         </p>
         <p>
-          Save comments to a pending GitHub review. Review and submit them on
-          GitHub when you’re ready.
+          {uiText(
+            "Save comments to a pending GitHub review. Review and submit them on GitHub when you’re ready.",
+          )}
         </p>
         {!canExport && (
           <p className="github-hint">
-            {reason || "Open the PR comparison to transfer comments."}
+            {reason || uiText("Open the PR comparison to transfer comments.")}
           </p>
         )}
         <button
@@ -231,17 +259,22 @@ export function GithubPanel({
             })
           }
         >
-          {busy === "export" ? "Saving comments…" : "Save comments to GitHub"}
+          {busy === "export"
+            ? uiText("Saving comments…")
+            : uiText("Save comments to GitHub")}
         </button>
         {exported && (
           <div role="status" className="github-result">
             <p>
-              {exported.posted} added · {exported.updated} updated ·{" "}
-              {exported.skipped.length} skipped. Local comments are kept.
+              {exported.posted}
+              {uiText(" added · ")}
+              {exported.updated}
+              {uiText(" updated ·")} {exported.skipped.length}
+              {uiText(" skipped. Local comments are kept.")}
             </p>
             {exported.skipped.length > 0 && (
               <details>
-                <summary>Skipped threads</summary>
+                <summary>{uiText("Skipped threads")}</summary>
                 <ul>
                   {exported.skipped.map((s) => (
                     <li key={s.id}>
@@ -253,14 +286,15 @@ export function GithubPanel({
               </details>
             )}
             <a href={exported.url}>
-              Review and submit on GitHub <ExternalLink size={13} />
+              {uiText("Review and submit on GitHub ")}
+              <ExternalLink size={13} />
             </a>
           </div>
         )}
       </section>
       <section>
         <button aria-expanded={creating} onClick={() => setCreating((v) => !v)}>
-          Create a pull request
+          {uiText("Create a pull request")}
         </button>
         {creating && (
           <form
@@ -282,31 +316,37 @@ export function GithubPanel({
               });
             }}
           >
-            {!context && !error && <p>Checking your pushed branch…</p>}
+            {!context && !error && (
+              <p>{uiText("Checking your pushed branch…")}</p>
+            )}
             {context?.reason && <p className="github-hint">{context.reason}</p>}
             {context?.branch && (
               <p>
-                From {context.headRepository}:{context.branch} on {context.host}
+                {uiText("From ")}
+                {context.headRepository}:{context.branch}
+                {uiText(" on ")}
+                {context.host}
               </p>
             )}
             <p>
-              Includes pushed commits from the checked-out branch. Commit and
-              push local changes in Git first.
+              {uiText(
+                "Includes pushed commits from the checked-out branch. Commit and push local changes in Git first.",
+              )}
             </p>
             <fieldset
               disabled={!!busy || !!context?.reason || !context || !!pull}
             >
               <label>
-                Destination repository
+                {uiText("Destination repository")}
                 <input
                   required
                   value={repository}
-                  placeholder="owner/repository"
+                  placeholder={uiText("owner/repository")}
                   onChange={(e) => setRepository(e.target.value)}
                 />
               </label>
               <label>
-                Base branch
+                {uiText("Base branch")}
                 <input
                   required
                   value={base}
@@ -314,7 +354,7 @@ export function GithubPanel({
                 />
               </label>
               <label>
-                Title
+                {uiText("Title")}
                 <input
                   required
                   maxLength={256}
@@ -323,12 +363,12 @@ export function GithubPanel({
                 />
               </label>
               <label>
-                Description
+                {uiText("Description")}
                 <textarea
                   value={body}
                   maxLength={65536}
                   onChange={(e) => setBody(e.target.value)}
-                  placeholder="What changed and how was it tested?"
+                  placeholder={uiText("What changed and how was it tested?")}
                 />
               </label>
               <label className="checkbox">
@@ -337,7 +377,7 @@ export function GithubPanel({
                   checked={draft}
                   onChange={(e) => setDraft(e.target.checked)}
                 />
-                Create as draft
+                {uiText("Create as draft")}
               </label>
               <button
                 className="primary"
@@ -349,22 +389,23 @@ export function GithubPanel({
                 }
               >
                 {busy === "create"
-                  ? "Creating…"
+                  ? uiText("Creating…")
                   : draft
-                    ? "Create draft PR"
-                    : "Create PR"}
+                    ? uiText("Create draft PR")
+                    : uiText("Create PR")}
               </button>
             </fieldset>
             {pull && (
               <div role="status" className="github-result">
                 <p>
                   {pull.existing
-                    ? "An open pull request already exists"
-                    : "Pull request created"}
+                    ? uiText("An open pull request already exists")
+                    : uiText("Pull request created")}
                   : #{pull.number}.
                 </p>
                 <a href={pull.url}>
-                  Open on GitHub <ExternalLink size={13} />
+                  {uiText("Open on GitHub ")}
+                  <ExternalLink size={13} />
                 </a>
                 <button
                   type="button"
@@ -381,7 +422,7 @@ export function GithubPanel({
                     })
                   }
                 >
-                  Review this PR in mdiff
+                  {uiText("Review this PR in mdiff")}
                 </button>
               </div>
             )}

@@ -1,3 +1,5 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewStore } from '@/client/store.js';
 import { LayerArrowDown, LayerArrowUp, Link2, MoveDown } from 'lucide-react';
 import { useMemo } from 'react';
 import { KIND_LABEL, kindGroup } from '@/client/lsp/symbolKind.js';
@@ -29,7 +31,7 @@ export function GraphDetails() {
   if (!node)
     return (
       <aside className={PANEL}>
-        <p className={`m-0 pt-6 text-center ${META}`}>Select a box or an arrow to see its links.</p>
+        <p className={`m-0 pt-6 text-center ${String(META)}`}>{uiText('Select a box or an arrow to see its links.')}</p>
         {cut.length > 0 && <NotShown cut={cut} />}
       </aside>
     );
@@ -42,6 +44,7 @@ export function GraphDetails() {
  * on `Content`.
  */
 function NodeDetails({ view, node }: { view: View; node: GraphNode }) {
+  const useStore = useReviewStore();
   const { graph } = view;
   const byId = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph]);
   const uses = useMemo(() => graph.edges.filter((e) => e.from === node.id), [graph, node]);
@@ -64,26 +67,30 @@ function NodeDetails({ view, node }: { view: View; node: GraphNode }) {
       </div>
       <Links
         icon={LayerArrowUp}
-        title="Used by"
+        title={uiText('Used by')}
         edges={usedBy}
         other={(e) => byId.get(e.from)}
         site={(n) => n.path}
         used={used}
         signatures={signatures}
-        onPeek={(entries) => void peekLinks('references', node, entries)}
+        onPeek={(entries) => void peekLinks('references', node, entries, useStore)}
       />
       <Links
         icon={LayerArrowDown}
-        title="Uses"
+        title={uiText('Uses')}
         edges={uses}
         other={(e) => byId.get(e.to)}
         site={() => node.path}
         used={used}
         signatures={signatures}
-        onPeek={(entries) => void peekLinks('uses', node, entries)}
+        onPeek={(entries) => void peekLinks('uses', node, entries, useStore)}
       />
       {node.moreConsumers ? (
-        <p className={META}>and {node.moreConsumers} more unchanged dependents, not drawn</p>
+        <p className={META}>
+          {uiText('and ')}
+          {node.moreConsumers}
+          {uiText(' more unchanged dependents, not drawn')}
+        </p>
       ) : null}
     </aside>
   );
@@ -130,7 +137,7 @@ function EdgeDetails({ view, edge }: { view: View; edge: string }) {
     <aside className={PANEL}>
       <Pair user={from} used={to} className="pt-4" />
       <SectionHeading icon={Link2} count={behind.length}>
-        Links
+        {uiText('Links')}
       </SectionHeading>
       <div className="flex flex-col gap-2">
         {behind.map((e) => {
@@ -157,10 +164,10 @@ function EdgeDetails({ view, edge }: { view: View; edge: string }) {
 /** One end above the other, as a call stack reads: the user, then what it calls or uses. */
 function Pair({ user, used, className = '' }: { user: GraphNode; used: GraphNode; className?: string }) {
   return (
-    <div className={`flex flex-col items-start gap-1 ${className}`}>
+    <div className={`flex flex-col items-start gap-1 ${String(className)}`}>
       <Name node={user} />
-      <span className={`inline-flex items-center gap-1 ${META}`}>
-        <MoveDown size="0.8125rem" /> {kindGroup(used.kind) === 'callable' ? 'calls' : 'uses'}
+      <span className={`inline-flex items-center gap-1 ${String(META)}`}>
+        <MoveDown size="0.8125rem" /> {kindGroup(used.kind) === 'callable' ? uiText('calls') : uiText('uses')}
       </span>
       <Name node={used} />
     </div>

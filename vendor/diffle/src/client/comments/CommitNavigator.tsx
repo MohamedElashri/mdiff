@@ -1,3 +1,5 @@
+import { formatLocale } from '@/client/i18n/locale.js';
+import { uiText } from '@/client/i18n/runtime.js';
 import { Check, ChevronDown, ChevronUp, Circle, CircleDashed, GitCommitHorizontal, Layers } from 'lucide-react';
 import { type ComponentProps, type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -16,8 +18,8 @@ import { commitBody, listsWorktree, rangeStep } from '@/client/model.js';
 import { useStore } from '@/client/store.js';
 import { Button } from '@/client/ui/Button.js';
 
-const DATE = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
-const DATE_TIME = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'long' });
+const DATE = new Intl.DateTimeFormat(formatLocale, { dateStyle: 'medium' });
+const DATE_TIME = new Intl.DateTimeFormat(formatLocale, { dateStyle: 'full', timeStyle: 'long' });
 
 /** Hover this long before a commit's card shows, so sweeping the pointer across the list stays quiet. */
 const HOVER_DELAY_MS = 250;
@@ -100,17 +102,18 @@ export function CommitNavigator({ snapshot }: { snapshot: Snapshot }) {
   return (
     <section
       className="flex max-h-[40%] shrink-0 flex-col border-b border-b-border text-[0.8125rem]"
-      aria-label="Commits"
+      aria-label={uiText('Commits')}
     >
       <div className="flex min-h-10 flex-none items-center gap-0.5 pr-1.5">
         <Button
           variant="ghost"
           className="min-w-0 flex-1 gap-1.5 self-stretch rounded-none px-2.5 py-1.5 text-left font-semibold outline-none focus-visible:bg-hover"
           aria-expanded={open}
-          title={open ? 'Collapse the commits' : 'Expand the commits'}
+          title={open ? uiText('Collapse the commits') : uiText('Expand the commits')}
           onClick={() => setOpen(!open)}
         >
-          <GitCommitHorizontal size="0.9375rem" /> Commits
+          <GitCommitHorizontal size="0.9375rem" />
+          {uiText(' Commits')}
           <span className="rounded-[0.625rem] bg-hover px-1.75 py-0 font-medium text-muted">
             {interdiff ? interdiff.pairs.length : commits.total}
           </span>
@@ -123,8 +126,8 @@ export function CommitNavigator({ snapshot }: { snapshot: Snapshot }) {
               className="outline-none focus-visible:bg-hover"
               disabled={rangeStep(snapshot, -1) === undefined}
               onClick={() => stepCommit(-1)}
-              title="Older commit (<)"
-              aria-label="Older commit"
+              title={uiText('Older commit (<)')}
+              aria-label={uiText('Older commit')}
             >
               <ChevronDown size="0.875rem" />
             </Button>
@@ -134,8 +137,8 @@ export function CommitNavigator({ snapshot }: { snapshot: Snapshot }) {
               className="outline-none focus-visible:bg-hover"
               disabled={rangeStep(snapshot, 1) === undefined}
               onClick={() => stepCommit(1)}
-              title="Newer commit (>)"
-              aria-label="Newer commit"
+              title={uiText('Newer commit (>)')}
+              aria-label={uiText('Newer commit')}
             >
               <ChevronUp size="0.875rem" />
             </Button>
@@ -197,11 +200,14 @@ export function CommitNavigator({ snapshot }: { snapshot: Snapshot }) {
                   ))}
           </ol>
           {range && !interdiff && commits.total === 0 && !onlyUncommitted && (
-            <p className="m-0 px-2.5 py-1 text-[0.75rem] text-muted">No commits</p>
+            <p className="m-0 px-2.5 py-1 text-[0.75rem] text-muted">{uiText('No commits')}</p>
           )}
           {!interdiff && older > 0 && (
             <p className="m-0 px-2.5 py-1 text-[0.75rem] text-muted">
-              {older} older {older === 1 ? 'commit' : 'commits'} not shown
+              {older}
+              {uiText(' older ')}
+              {older === 1 ? uiText('commit') : uiText('commits')}
+              {uiText(' not shown')}
             </p>
           )}
         </div>
@@ -214,11 +220,11 @@ export function CommitNavigator({ snapshot }: { snapshot: Snapshot }) {
 
 /** How each pair state reads and looks in the list. */
 const PAIR_STATUS: Record<PairStatus, { glyph: string; label: string; className: string }> = {
-  identical: { glyph: '=', label: 'identical', className: 'text-muted' },
-  changed: { glyph: '!', label: 'amended', className: 'text-accent' },
-  message: { glyph: '!', label: 'reworded', className: 'text-accent' },
-  added: { glyph: '+', label: 'added', className: 'text-add' },
-  dropped: { glyph: '−', label: 'dropped', className: 'text-del' },
+  identical: { glyph: '=', label: uiText('identical'), className: 'text-muted' },
+  changed: { glyph: '!', label: uiText('amended'), className: 'text-accent' },
+  message: { glyph: '!', label: uiText('reworded'), className: 'text-accent' },
+  added: { glyph: '+', label: uiText('added'), className: 'text-add' },
+  dropped: { glyph: '−', label: uiText('dropped'), className: 'text-del' },
 };
 
 /** A pair's glyph, subject and state, laid out alike whether the pair opens or not. */
@@ -299,7 +305,7 @@ function PairRow({
           <CommitDetails commit={commit} />
           {reworded && pair.old && (
             <div className="mt-1 border-l-2 border-border pl-2 text-muted">
-              <div className="text-[0.75rem] font-semibold">Previous message</div>
+              <div className="text-[0.75rem] font-semibold">{uiText('Previous message')}</div>
               <div className="wrap-anywhere">{subjectOf(pair.old)}</div>
               {commitBody(pair.old.message).map((paragraph, i) => (
                 <p key={i} className="m-0 mt-1 wrap-anywhere whitespace-pre-wrap">
@@ -448,7 +454,11 @@ export function CopyHash({ commit }: { commit: Pick<RangeCommit, 'sha' | 'short'
     <Button
       variant="ghost"
       className="relative mt-0.5 flex-none px-1 py-px font-mono text-[0.75rem] text-muted hover:text-foreground"
-      aria-label={done ? `Copied ${commit.short}` : `Copy hash ${commit.short}`}
+      aria-label={
+        done
+          ? uiText('Copied {value0}', { value0: String(commit.short) })
+          : uiText('Copy hash {value0}', { value0: String(commit.short) })
+      }
       onClick={() => void copy(commit.sha)}
     >
       <span className={twMerge(transition, done && '[transform:scale(0.6)] opacity-0')}>{commit.short}</span>
@@ -487,7 +497,10 @@ function CommitDetails({ commit, full = false }: { commit: RangeCommit; full?: b
       {full ? (
         <div className="text-[0.75rem] text-muted">
           <p className="m-0 wrap-anywhere">
-            {commit.author} &lt;{commit.email}&gt;
+            {commit.author}
+            {' <'}
+            {commit.email}
+            {'>'}
           </p>
           <p className="m-0 flex items-center gap-1.5">
             {time}

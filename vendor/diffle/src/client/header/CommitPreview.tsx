@@ -1,7 +1,8 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useApi } from '@/client/api.js';
 import { twMerge } from 'tailwind-merge';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { LastCommitsPreview } from '@/shared/protocol.js';
-import { api } from '@/client/api.js';
 
 /** Live endpoint messages; obsolete requests cannot replace a newer count's preview. */
 export function CommitPreview({
@@ -13,6 +14,8 @@ export function CommitPreview({
   newOffset: number | null;
   version: number;
 }) {
+  const api = useApi();
+
   const [state, setState] = useState<{
     oldOffset: number;
     newOffset: number;
@@ -49,7 +52,7 @@ export function CommitPreview({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [oldOffset, newOffset, version]);
+  }, [oldOffset, newOffset, version, api]);
 
   const current =
     state?.oldOffset === oldOffset && state.newOffset === newOffset && state.version === version ? state : null;
@@ -86,7 +89,9 @@ export function CommitPreview({
                 {commit && <span title={commit.sha}>{commit.short}</span>}
               </div>
               <p className="mt-0.5 mb-0 max-h-24 overflow-auto font-sans text-[0.75rem] leading-[1.5] wrap-anywhere whitespace-pre-wrap">
-                {commit ? commit.message || '(Empty commit message)' : 'Commit unavailable at this offset.'}
+                {commit
+                  ? commit.message || uiText('(Empty commit message)')
+                  : uiText('Commit unavailable at this offset.')}
               </p>
             </div>
           ))}

@@ -8,7 +8,10 @@ import { Button } from './Button.js';
  */
 export function SegmentedControl({ className, ...props }: ComponentProps<'div'>) {
   return (
-    <div {...props} className={twMerge('inline-flex items-center gap-0.5 rounded-md bg-hover p-0.5', className)} />
+    <div
+      {...props}
+      className={twMerge('review-segmented inline-flex items-center gap-0.5 rounded-md bg-hover p-0.5', className)}
+    />
   );
 }
 

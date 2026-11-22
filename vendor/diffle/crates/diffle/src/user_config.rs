@@ -35,6 +35,7 @@ pub struct UserConfigStore {
     file: PathBuf,
     config: Mutex<UserConfig>,
     writing: tokio::sync::Mutex<()>,
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl UserConfigStore {
@@ -58,7 +59,16 @@ impl UserConfigStore {
                 UserConfig::default()
             }
         };
-        Self { file, config: Mutex::new(config), writing: tokio::sync::Mutex::new(()) }
+        Self {
+            file,
+            config: Mutex::new(config),
+            writing: tokio::sync::Mutex::new(()),
+            changes: tokio::sync::watch::channel(0).0,
+        }
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     pub fn file(&self) -> &Path {
@@ -81,6 +91,7 @@ impl UserConfigStore {
         config.github_hosts = hosts;
         write_file_atomic(&self.file, &(serde_json::to_string_pretty(&config)? + "\n")).await?;
         *self.config.lock().unwrap() = config;
+        self.changes.send_modify(|revision| *revision += 1);
         Ok(())
     }
 
@@ -102,6 +113,7 @@ impl UserConfigStore {
         // May hold a shell command: the write is owner-only.
         write_file_atomic(&self.file, &(serde_json::to_string_pretty(&config)? + "\n")).await?;
         *self.config.lock().unwrap() = config.clone();
+        self.changes.send_modify(|revision| *revision += 1);
         Ok(config)
     }
 }

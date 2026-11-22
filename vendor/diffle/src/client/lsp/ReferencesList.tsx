@@ -1,3 +1,6 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewViews } from '@/client/views/state.js';
+import { useReviewStore } from '@/client/store.js';
 import { Dialog, DialogContent } from '@/client/ui/dialog.js';
 import { twMerge } from 'tailwind-merge';
 import { FileCode2 } from 'lucide-react';
@@ -5,8 +8,8 @@ import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { FilePath } from '@/client/FilePath.js';
 import { focusReview } from '@/client/keyboard/useKeymap.js';
 import { overflow } from '@/client/review/geometry.js';
-import { type Match, useStore } from '@/client/store.js';
-import { useViews } from '@/client/views/state.js';
+import { type Match } from '@/client/store.js';
+
 import { CodeLine, type HlToken, useHighlighted } from './highlight.js';
 import { ReferencePeek } from './ReferencePeek.js';
 import { kindColor, KindIcon } from './symbolKind.js';
@@ -23,6 +26,9 @@ interface Row {
  * jumps there, Esc leaves the peek, then closes.
  */
 export function ReferencesList() {
+  const useStore = useReviewStore();
+  const useViews = useReviewViews();
+
   const refs = useStore((s) => s.references);
   const theme = useStore((s) => s.theme);
   const close = useStore((s) => s.closeReferences);
@@ -46,7 +52,7 @@ export function ReferencesList() {
       useStore.setState((s) => ({ references: { ...s.references, index: i } }));
       pick();
     },
-    [pick],
+    [pick, useStore],
   );
 
   useLayoutEffect(() => {
@@ -74,7 +80,7 @@ export function ReferencesList() {
     // Escape is the keymap's: it leaves a peek before it closes the list. A click outside still closes.
     <Dialog open onOpenChange={(_, { reason }) => reason !== 'escape-key' && close()}>
       <DialogContent
-        aria-label="References"
+        aria-label={uiText('References')}
         // The review pane is not tabbable, so Base UI would hand focus to a file header's button instead.
         // Over another view, focus returns to the button that opened the list.
         finalFocus={() => {
@@ -94,18 +100,26 @@ export function ReferencesList() {
                 <code className="rounded-[0.3125rem] bg-hover px-1.5 py-[1px] font-mono text-foreground">
                   {refs.symbol}
                 </code>{' '}
-                has {items.length} types in its signature; pick one
+                {uiText('has ')}
+                {items.length}
+                {uiText(' types in its signature; pick one')}
               </>
             ) : refs.kind === 'uses' ? (
               <>
-                {items.length} reference{items.length === 1 ? '' : 's'} from{' '}
+                {items.length}
+                {uiText(' reference')}
+                {items.length === 1 ? '' : 's'}
+                {uiText(' from')}{' '}
                 <code className="rounded-[0.3125rem] bg-hover px-1.5 py-[1px] font-mono text-foreground">
                   {refs.symbol}
                 </code>
               </>
             ) : (
               <>
-                {items.length} reference{items.length === 1 ? '' : 's'} to{' '}
+                {items.length}
+                {uiText(' reference')}
+                {items.length === 1 ? '' : 's'}
+                {uiText(' to')}{' '}
                 <code className="rounded-[0.3125rem] bg-hover px-1.5 py-[1px] font-mono text-foreground">
                   {refs.symbol}
                 </code>
@@ -113,14 +127,20 @@ export function ReferencesList() {
             )}
           </h3>
           <span className="ml-auto text-[0.6875rem] whitespace-nowrap text-muted">
-            <kbd>j</kbd> <kbd>k</kbd> move · <kbd>Space</kbd> peek
+            <kbd>j</kbd> <kbd>k</kbd>
+            {uiText(' move · ')}
+            <kbd>Space</kbd>
+            {uiText(' peek')}
             {refs.peek && (
               <>
                 {' '}
-                · <kbd>J</kbd> <kbd>K</kbd> scroll
+                · <kbd>J</kbd> <kbd>K</kbd>
+                {uiText(' scroll')}
               </>
             )}{' '}
-            · <kbd>Enter</kbd> jump · <kbd>Esc</kbd> {refs.peek ? 'back' : 'close'}
+            · <kbd>Enter</kbd>
+            {uiText(' jump · ')}
+            <kbd>Esc</kbd> {refs.peek ? uiText('back') : uiText('close')}
           </span>
         </div>
         <div className={twMerge('flex min-h-0 flex-1', !refs.peek && 'contents')}>

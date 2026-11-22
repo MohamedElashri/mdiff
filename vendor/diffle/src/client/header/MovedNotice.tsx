@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { RefreshCw } from 'lucide-react';
 import { movedLabel } from '@/client/model.js';
 import { useStore } from '@/client/store.js';
@@ -19,8 +20,13 @@ export function MovedNotice() {
       className="inline-flex min-w-0 items-center gap-2 rounded-md border border-border bg-hover py-0.5 pr-0.5 pl-2 text-[0.8125rem]"
     >
       <span className="truncate font-mono text-[0.75rem]">{movedLabel(snapshot, moved)}</span>
-      <Button variant="primary" onClick={() => void reload()} title="Recompute the review where the refs point now">
-        <RefreshCw size="0.875rem" /> Reload
+      <Button
+        variant="primary"
+        onClick={() => void reload()}
+        title={uiText('Recompute the review where the refs point now')}
+      >
+        <RefreshCw size="0.875rem" />
+        {uiText(' Reload')}
       </Button>
     </span>
   );

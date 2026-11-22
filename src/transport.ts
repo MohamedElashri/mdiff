@@ -3,11 +3,12 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   configureTransport,
   type ReviewResponse,
+  type ReviewTransport,
 } from "../vendor/diffle/src/client/transport";
 
 const decoder = new TextDecoder();
 
-function decodeResponse(packet: ArrayBuffer): ReviewResponse {
+export function decodeResponse(packet: ArrayBuffer): ReviewResponse {
   if (packet.byteLength < 4) throw new Error("Invalid native response");
   const length = new DataView(packet).getUint32(0, true);
   if (length > packet.byteLength - 4)
@@ -28,8 +29,8 @@ function decodeResponse(packet: ArrayBuffer): ReviewResponse {
   };
 }
 
-export function bindReview(id: string) {
-  configureTransport({
+export function nativeReviewTransport(id: string): ReviewTransport {
+  return {
     async request(path, init) {
       const signal = init?.signal;
       signal?.throwIfAborted();
@@ -78,5 +79,9 @@ export function bindReview(id: string) {
         unlisten = undefined;
       };
     },
-  });
+  };
+}
+
+export function bindReview(id: string) {
+  configureTransport(nativeReviewTransport(id));
 }

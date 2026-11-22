@@ -1,15 +1,18 @@
+import { uiText } from "../vendor/diffle/src/client/i18n/runtime";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Code2, Copy, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { Dialog, DialogContent } from "../vendor/diffle/src/client/ui/dialog";
-import { api } from "../vendor/diffle/src/client/api";
-import { useStore } from "../vendor/diffle/src/client/store";
+import { useApi } from "../vendor/diffle/src/client/api";
+import { useReviewStore } from "../vendor/diffle/src/client/store";
 
 type Editor = { id: string; name: string };
 type EditorList = { editors: Editor[]; temporary: boolean };
 
 export function OpenInEditor({ id }: { id: string }) {
+  const api = useApi();
+  const useStore = useReviewStore();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<EditorList>({
     editors: [],
@@ -119,11 +122,11 @@ export function OpenInEditor({ id }: { id: string }) {
     <>
       <button
         onClick={() => setOpen(true)}
-        title="Open repository in an IDE"
-        aria-label="Open in IDE"
+        title={uiText("Open repository in an IDE")}
+        aria-label={uiText("Open in IDE")}
       >
         <Code2 size={15} />
-        <span className="editor-button-label">Open in IDE</span>
+        <span className="editor-button-label">{uiText("Open in IDE")}</span>
       </button>
       {open && (
         <Dialog open onOpenChange={setOpen}>
@@ -132,24 +135,25 @@ export function OpenInEditor({ id }: { id: string }) {
             aria-labelledby="editor-title"
           >
             <div className="editor-heading">
-              <h2 id="editor-title">Open in IDE</h2>
+              <h2 id="editor-title">{uiText("Open in IDE")}</h2>
               <button
-                aria-label="Close editor picker"
+                aria-label={uiText("Close editor picker")}
                 onClick={() => setOpen(false)}
               >
                 <X size={18} />
               </button>
             </div>
-            <p>Open the working folder in an installed editor.</p>
+            <p>{uiText("Open the working folder in an installed editor.")}</p>
             {data.temporary && (
               <p className="editor-warning">
-                This is a temporary clone. Keep this review open while using
-                your editor.
+                {uiText(
+                  "This is a downloaded review checkout. mdiff retains editor checkouts for recovery; your original repository is unchanged.",
+                )}
               </p>
             )}
             <div className="editor-list" aria-busy={loading}>
               {loading ? (
-                <p role="status">Finding editors…</p>
+                <p role="status">{uiText("Finding editors…")}</p>
               ) : editors.length ? (
                 editors.map((editor) => (
                   <button
@@ -163,23 +167,28 @@ export function OpenInEditor({ id }: { id: string }) {
                       <Code2 size={17} />
                     )}
                     <span>{editor.name}</span>
-                    {editor.id === lastEditor && <small>Last used</small>}
+                    {editor.id === lastEditor && (
+                      <small>{uiText("Last used")}</small>
+                    )}
                   </button>
                 ))
               ) : (
                 <p>
-                  No supported editors found. Install an editor or enable its
-                  command-line launcher, then refresh.
+                  {uiText(
+                    "No supported editors found. Install an editor or enable its command-line launcher, then refresh.",
+                  )}
                 </p>
               )}
             </div>
             <button onClick={() => void refresh()} disabled={loading || !!busy}>
               <RefreshCw size={14} />
-              Refresh editors
+              {uiText("Refresh editors")}
             </button>
             <div className="editor-agent">
-              <h3>AI agents</h3>
-              <p>Copy open comments as a prompt for any coding agent.</p>
+              <h3>{uiText("AI agents")}</h3>
+              <p>
+                {uiText("Copy open comments as a prompt for any coding agent.")}
+              </p>
               <label className="checkbox">
                 <input
                   type="checkbox"
@@ -187,17 +196,19 @@ export function OpenInEditor({ id }: { id: string }) {
                   disabled={!hasComments || !!busy}
                   onChange={(e) => setCopyOnOpen(e.target.checked)}
                 />
-                Copy prompt when opening an editor
+                {uiText("Copy prompt when opening an editor")}
               </label>
               <button
                 onClick={() => void act()}
                 disabled={!hasComments || !!busy}
               >
                 <Copy size={15} />
-                Copy agent prompt
+                {uiText("Copy agent prompt")}
               </button>
               {!hasComments && (
-                <small>Add an open comment to create a prompt.</small>
+                <small>
+                  {uiText("Add an open comment to create a prompt.")}
+                </small>
               )}
             </div>
             {error && (

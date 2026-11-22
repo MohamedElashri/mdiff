@@ -37,8 +37,9 @@ body {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  padding: var(--space-control-y) var(--space-control-x);
+  min-height: var(--control-height);
 }
 :where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
   button:hover {
@@ -57,7 +58,7 @@ body {
   textarea:focus-visible,
 :where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel)
   select:focus-visible {
-  outline: 2px solid #4269cd;
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 :where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel) svg {
@@ -70,29 +71,29 @@ body {
   min-width: 0;
 }
 .desktop-chrome {
-  height: 55px;
+  height: var(--desktop-toolbar-height);
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  padding: 0 18px;
-  gap: 16px;
-  background: var(--surface);
+  padding: 0 12px;
+  gap: 12px;
+  background: var(--surface-toolbar);
   border-bottom: 1px solid var(--line);
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px;
+  gap: 7px;
+  padding: 0 4px;
 }
 .brand svg {
-  width: 25px;
-  height: 25px;
+  width: 20px;
+  height: 20px;
   color: var(--accent);
 }
 .brand strong {
-  font-size: 22px;
-  letter-spacing: -1px;
+  font-size: 1rem;
+  letter-spacing: -0.025em;
 }
 .header-divider {
   height: 20px;
@@ -104,11 +105,20 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 0.75rem;
+  min-width: 0;
+}
+.repository-name {
+  min-width: 0;
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
 }
 .window-actions {
   display: flex;
-  gap: 8px;
+  gap: 4px;
   margin-left: auto;
   flex-shrink: 0;
 }
@@ -149,7 +159,7 @@ body {
   color: var(--accent);
 }
 :where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel) h1 {
-  font-size: 26px;
+  font-size: 1.625rem;
   line-height: 1.15;
   letter-spacing: -1px;
   font-weight: 600;
@@ -157,7 +167,7 @@ body {
 }
 .intro p {
   color: var(--fg-2);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.65;
   margin: 0 0 20px;
 }
@@ -173,7 +183,7 @@ body {
 .intro > small {
   color: var(--fg-2);
   margin-left: 12px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .home-columns {
   display: grid;
@@ -183,7 +193,7 @@ body {
   padding-top: 20px;
 }
 :where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel) h2 {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -191,7 +201,7 @@ body {
   margin: 0 0 20px;
 }
 :where(.desktop-chrome, .home, .settings, .loading, .error, .gitlab-panel) h3 {
-  font-size: 14px;
+  font-size: 0.875rem;
   margin: 22px 0 12px;
 }
 .review-form label,
@@ -201,7 +211,7 @@ body {
   gap: 7px;
   margin-bottom: 14px;
   color: var(--secondary);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .review-form input,
 .review-form select,
@@ -215,7 +225,7 @@ body {
   color: var(--ink);
 }
 .review-form small {
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.5;
   color: var(--fg-2);
 }
@@ -233,7 +243,7 @@ body {
   width: 100%;
   justify-content: flex-start;
   text-align: left;
-  border-bottom: 1px solid #e2e7f0;
+  border-bottom: 1px solid var(--line);
   border-radius: 0;
   padding: 12px 4px;
   align-items: flex-start;
@@ -255,21 +265,21 @@ body {
   max-width: 340px;
 }
 .recent .recent-path {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--fg-2);
 }
 .recent p {
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.7;
   color: var(--fg-2);
 }
 .feature-note {
   margin-top: 25px;
-  border-left: 2px solid #9db2df;
+  border-left: 2px solid var(--accent);
   padding-left: 15px;
 }
 .feature-note strong {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
 }
 .attribution {
@@ -277,8 +287,8 @@ body {
   margin-top: 30px;
 }
 .error {
-  background: #fff0e9;
-  color: #9c4938;
+  background: color-mix(in srgb, var(--danger) 8%, var(--canvas));
+  color: var(--danger);
   padding: 10px 20px;
   display: flex;
   align-items: center;
@@ -298,7 +308,7 @@ body {
 }
 .loading h2 {
   margin-top: 18px;
-  color: #4b617f;
+  color: var(--fg);
 }
 .spin {
   animation: spin 1.4s linear infinite;
@@ -312,7 +322,7 @@ body {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: #17253d55;
+  background: #0005;
   display: grid;
   place-items: center;
 }
@@ -320,7 +330,8 @@ body {
   background: var(--canvas);
   padding: 26px 30px;
   border-radius: 12px;
-  box-shadow: 0 20px 80px #14233c55;
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 56px #0003;
   width: 600px;
   max-width: calc(100vw - 24px);
   max-height: calc(100dvh - 32px);
@@ -328,7 +339,7 @@ body {
 }
 .settings > p {
   color: var(--fg-2);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.6;
 }
 .settings textarea {
@@ -355,8 +366,8 @@ body {
   gap: 15px;
 }
 .settings-footer span {
-  font-size: 11px;
-  color: #608577;
+  font-size: 0.6875rem;
+  color: var(--add);
 }
 .settings summary {
   cursor: pointer;
@@ -413,7 +424,7 @@ body {
 .gitlab-panel p {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .gitlab-panel textarea {
   width: 100%;
@@ -435,7 +446,7 @@ body {
   width: 370px;
   position: absolute;
   right: 0;
-  top: 40px;
+  top: var(--review-toolbar-height);
   bottom: 0;
   z-index: 35;
   box-shadow: -8px 0 24px #0003;
@@ -472,7 +483,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  font-size: 12px;
+  font-size: 0.75rem;
   margin: 12px 0;
 }
 .github-panel .checkbox {
@@ -517,29 +528,14 @@ body {
   color: var(--danger, #c44);
 }
 
-.reviewing .desktop-chrome {
-  height: 38px;
-  gap: 12px;
-  padding: 0 14px;
-}
-.reviewing .brand strong {
-  font-size: 17px;
-  letter-spacing: -0.5px;
-}
-.reviewing .brand svg {
-  width: 20px;
-  height: 20px;
-}
-.reviewing .desktop-chrome button {
-  padding: 4px 8px;
-}
 .gitlab-control {
   color: var(--fg);
   font: inherit;
-  background: var(--bg-2);
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 3px 7px;
+  border-radius: var(--radius-control);
+  min-height: var(--control-height);
+  padding: var(--space-control-y) var(--space-control-x);
   cursor: pointer;
 }
 
@@ -588,11 +584,11 @@ body {
     gap: 24px;
   }
   .intro h1 {
-    font-size: 23px;
+    font-size: 1.4375rem;
     margin-bottom: 8px;
   }
   .intro p {
-    font-size: 13px;
+    font-size: 0.8125rem;
     margin-bottom: 12px;
   }
   .intro > small {
@@ -600,7 +596,6 @@ body {
     margin: 8px 0 0;
   }
   .desktop-chrome {
-    height: 44px;
     gap: 8px;
     padding: 0 10px;
   }
@@ -608,11 +603,13 @@ body {
     gap: 2px;
   }
   .window-actions button {
-    padding: 6px;
-    font-size: 12px;
+    padding-inline: 6px;
   }
   .brand strong {
-    font-size: 18px;
+    font-size: 1rem;
+  }
+  .window-actions .action-label {
+    display: none;
   }
   .header-divider {
     display: none;
@@ -635,7 +632,7 @@ body {
 }
 .review-opening {
   position: fixed;
-  inset: 38px 0 0;
+  inset: var(--desktop-toolbar-height) 0 0;
   z-index: 70;
   background: var(--canvas);
 }
@@ -689,7 +686,7 @@ body {
 .settings .settings-error {
   color: var(--danger);
   margin: 12px 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .editor-picker {
@@ -718,7 +715,7 @@ body {
 .editor-list small {
   margin-left: auto;
   color: var(--fg-2);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .editor-agent {
   border-top: 1px solid var(--line);
@@ -760,12 +757,12 @@ body {
 }
 .settings .settings-page-heading h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .app-version {
   margin-left: auto;
   color: var(--fg-2);
-  font-size: 12px;
+  font-size: 0.75rem;
   white-space: nowrap;
 }
 .update-status {
@@ -791,7 +788,7 @@ body {
 .settings .about-credits h4,
 .settings .update-release-notes h4 {
   margin: 0 0 8px;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 .settings .update-status p {
@@ -805,7 +802,7 @@ body {
 .update-progress {
   display: grid;
   gap: 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--fg-2);
 }
 .update-progress progress {
@@ -819,11 +816,11 @@ body {
 }
 .settings .update-error summary {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .settings .update-error p {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--danger);
 }
 .update-release-notes {
@@ -833,12 +830,12 @@ body {
 .update-release-notes > div {
   max-height: 180px;
   overflow: auto;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.65;
   overflow-wrap: anywhere;
 }
 .settings .update-release-notes h3 {
-  font-size: 13px;
+  font-size: 0.8125rem;
   margin: 14px 0 6px;
 }
 .settings .update-release-notes p {
@@ -856,7 +853,7 @@ body {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--fg-2);
 }
 .update-footer > span,
@@ -900,7 +897,7 @@ body {
   height: 100%;
 }
 .settings .about-brand h3 {
-  font-size: 30px;
+  font-size: 1.875rem;
   line-height: 1.1;
   letter-spacing: -1px;
   margin: 0;
@@ -919,7 +916,7 @@ body {
   flex-wrap: wrap;
   gap: 12px 22px;
   margin: 0 0 24px;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .about-credits {
   border-top: 1px solid var(--line);
@@ -927,7 +924,7 @@ body {
 }
 .settings .about-credits p {
   color: var(--fg-2);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.7;
   margin: 8px 0 12px;
 }
@@ -950,7 +947,7 @@ body {
   }
   .settings .preferences-tabs button {
     padding: 7px 9px;
-    font-size: 12px;
+    font-size: 0.75rem;
   }
   .update-footer a,
   .about-license a {
@@ -958,5 +955,292 @@ body {
   }
   .update-status {
     gap: 12px;
+  }
+}
+
+.desktop-content,
+.desktop-history {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.desktop-content[hidden],
+.desktop-history[hidden] {
+  display: none;
+}
+.desktop-content > .home,
+.desktop-content > .review-workspace {
+  flex: 1;
+  min-height: 0;
+}
+
+.review-body-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.review-body-content > [data-review-shell] {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+.desktop-review-runtime {
+  height: 100%;
+}
+
+/* Workspace navigation shares the review's density, palette and type scale. */
+.workspace-bar {
+  --workspace-blue: #759acb;
+  --workspace-green: #78af8d;
+  --workspace-amber: #c5a568;
+  --workspace-purple: #a58ec4;
+  --workspace-rose: #c88e9e;
+  --workspace-gray: #9c9fa5;
+  display: flex;
+  flex-shrink: 0;
+  align-items: stretch;
+  gap: 3px;
+  min-height: calc(var(--control-height) + 6px);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-toolbar);
+  padding: 0 6px;
+  font-size: inherit;
+  min-width: 0;
+}
+.workspace-bar button,
+.workspace-bar select {
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.workspace-bar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.workspace-bar button:focus-visible,
+.workspace-bar select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.workspace-bar button:hover {
+  background: var(--bg-3);
+}
+.workspace-selector {
+  display: flex;
+  align-items: center;
+  border-right: 1px solid var(--border);
+  max-width: 210px;
+  flex-shrink: 0;
+}
+.workspace-selector select {
+  max-width: 170px;
+  padding: 6px;
+  min-width: 80px;
+}
+.workspace-selector > button,
+.workspace-bar > button {
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.workspace-tabs {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  min-width: 0;
+  flex: 1;
+  scrollbar-width: thin;
+}
+.workspace-tab {
+  display: flex;
+  align-items: stretch;
+  border-right: 1px solid var(--border);
+  min-width: 100px;
+  max-width: 280px;
+  flex-shrink: 0;
+}
+.workspace-tab.is-active {
+  background: var(--bg);
+  box-shadow: inset 0 -2px var(--accent);
+}
+.workspace-tab > [role="tab"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  min-width: 0;
+  max-width: 235px;
+  text-align: left;
+}
+.workspace-tab [role="tab"] > span:not(.tab-draft),
+.workspace-tab small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-tab [role="tab"] > small {
+  max-width: 100px;
+  color: var(--fg-2);
+  font-size: 0.85em;
+}
+.workspace-tab .tab-close,
+.workspace-tab .tab-options {
+  display: flex;
+  align-items: center;
+  padding: 3px;
+}
+.tab-draft {
+  color: var(--accent);
+  font-size: 1.25em;
+}
+.tab-group {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 2px solid var(--group-color);
+  flex-shrink: 0;
+}
+.group-toggle {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  padding: 4px 7px;
+  max-width: 170px;
+  overflow: hidden;
+}
+.group-toggle small {
+  color: var(--fg-2);
+}
+.group-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+.workspace-dialog {
+  width: min(580px, calc(100vw - 32px));
+  max-height: 85vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px;
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+.workspace-dialog :is(h2, h3, p) {
+  margin: 0;
+}
+.workspace-dialog p {
+  color: var(--fg-2);
+  line-height: 1.5;
+  font-size: 0.9em;
+}
+.workspace-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+.workspace-dialog :is(input, select, textarea) {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 7px;
+  min-width: 0;
+  max-width: 100%;
+}
+.workspace-dialog textarea {
+  font: 12px var(--mono);
+  min-height: 90px;
+  resize: vertical;
+}
+.workspace-dialog label > span {
+  overflow-wrap: anywhere;
+}
+.workspace-dialog button {
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-3);
+  color: var(--fg);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.workspace-dialog button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.workspace-dialog :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.workspace-dialog form,
+.group-editor,
+.tab-dialog-actions {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.workspace-dialog h3 {
+  font-size: 1em;
+}
+.workspace-dialog details p {
+  margin: 10px 0;
+}
+.tab-source {
+  overflow-wrap: anywhere;
+}
+.workspace-notice,
+.workspace-error {
+  padding: 7px 12px;
+  flex-shrink: 0;
+  font-size: 0.875em;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--fg-2);
+}
+.workspace-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.workspace-notice > span {
+  flex: 1;
+}
+.workspace-notice button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+}
+.workspace-error {
+  color: var(--danger);
+}
+@media (max-width: 760px) {
+  .workspace-selector {
+    max-width: 130px;
+  }
+  .workspace-selector select {
+    max-width: 100px;
+  }
+  .workspace-tab small {
+    display: none;
+  }
+  .workspace-tab {
+    max-width: 190px;
+  }
+  .workspace-dialog form {
+    align-items: stretch;
+  }
+  .workspace-dialog label {
+    flex-basis: 100%;
   }
 }

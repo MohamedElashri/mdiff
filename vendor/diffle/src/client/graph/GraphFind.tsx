@@ -1,7 +1,9 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewGraph } from '@/client/graph/state.js';
 import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
 import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@/client/ui/Button.js';
-import { findMatches, useGraph } from './state.js';
+import { findMatches } from './state.js';
 
 /**
  * The graph's find, top left over the canvas while open (`/` or Ctrl/⌘+F): it matches box names as
@@ -9,6 +11,8 @@ import { findMatches, useGraph } from './state.js';
  * matches, as they do through a search in the diff. Escape closes it.
  */
 export function GraphFind() {
+  const useGraph = useReviewGraph();
+
   const find = useGraph((s) => s.find);
   const view = useGraph((s) => s.view);
   const selected = useGraph((s) => s.selected);
@@ -32,20 +36,20 @@ export function GraphFind() {
           if (matches.length && at < 0) graph.stepFind(1);
           e.currentTarget.blur();
         }}
-        placeholder="Find a box… (Enter, then n / N)"
-        aria-label="Find in the graph"
+        placeholder={uiText('Find a box… (Enter, then n / N)')}
+        aria-label={uiText('Find in the graph')}
         className="w-44 border-0 bg-transparent px-1 py-1 text-[0.8125rem] text-foreground outline-none placeholder:text-muted"
       />
       <span className="min-w-[4.5rem] text-right font-mono text-[0.75rem] text-muted tabular-nums">
-        {!find.trim() ? '' : matches.length ? `${at < 0 ? '–' : at + 1} / ${matches.length}` : 'No matches'}
+        {!find.trim() ? '' : matches.length ? `${at < 0 ? '–' : at + 1} / ${matches.length}` : uiText('No matches')}
       </span>
       <Button
         variant="ghost"
         icon
         disabled={!matches.length}
         onClick={() => graph.stepFind(-1)}
-        title="Previous (N)"
-        aria-label="Previous match"
+        title={uiText('Previous (N)')}
+        aria-label={uiText('Previous match')}
       >
         <ChevronUp size="0.875rem" />
       </Button>
@@ -54,12 +58,18 @@ export function GraphFind() {
         icon
         disabled={!matches.length}
         onClick={() => graph.stepFind(1)}
-        title="Next (n)"
-        aria-label="Next match"
+        title={uiText('Next (n)')}
+        aria-label={uiText('Next match')}
       >
         <ChevronDown size="0.875rem" />
       </Button>
-      <Button variant="ghost" icon onClick={graph.closeFind} title="Close (Esc)" aria-label="Close find">
+      <Button
+        variant="ghost"
+        icon
+        onClick={graph.closeFind}
+        title={uiText('Close (Esc)')}
+        aria-label={uiText('Close find')}
+      >
         <X size="0.875rem" />
       </Button>
     </div>

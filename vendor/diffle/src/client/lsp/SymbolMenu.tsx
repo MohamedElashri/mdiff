@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { Button } from '@/client/ui/Button.js';
 import { Crosshair, Link2, Shapes } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
@@ -50,23 +51,29 @@ export function SymbolMenu() {
       <Button
         className="flex cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-2 py-1 font-sans text-[0.75rem] leading-[normal] text-foreground hover:bg-hover"
         onClick={() => void goToDefinition(menu.target)}
-        title="Go to definition (gd)"
+        title={uiText('Go to definition (gd)')}
       >
-        <Crosshair size="0.8125rem" /> Definition <kbd className="ml-[2px]">gd</kbd>
+        <Crosshair size="0.8125rem" />
+        {uiText(' Definition ')}
+        <kbd className="ml-[2px]">gd</kbd>
       </Button>
       <Button
         className="flex cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-2 py-1 font-sans text-[0.75rem] leading-[normal] text-foreground hover:bg-hover"
         onClick={() => void findReferences(menu.target)}
-        title="Find references (gA)"
+        title={uiText('Find references (gA)')}
       >
-        <Link2 size="0.8125rem" /> References <kbd className="ml-[2px]">gA</kbd>
+        <Link2 size="0.8125rem" />
+        {uiText(' References ')}
+        <kbd className="ml-[2px]">gA</kbd>
       </Button>
       <Button
         className="flex cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-2 py-1 font-sans text-[0.75rem] leading-[normal] text-foreground hover:bg-hover"
         onClick={() => void goToTypeDefinition(menu.target)}
-        title="Go to type definition (gy)"
+        title={uiText('Go to type definition (gy)')}
       >
-        <Shapes size="0.8125rem" /> Type <kbd className="ml-[2px]">gy</kbd>
+        <Shapes size="0.8125rem" />
+        {uiText(' Type ')}
+        <kbd className="ml-[2px]">gy</kbd>
       </Button>
       <span
         className="ml-1 max-w-55 self-center truncate border-l border-l-border px-2 py-0.75 font-mono text-[0.75rem] leading-[normal] text-foreground"

@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { Unplug } from 'lucide-react';
 
 /**
@@ -13,8 +14,9 @@ export function ServerLost() {
     >
       <Unplug size="1rem" className="shrink-0 text-danger" />
       <span>
-        The review connection was interrupted. Use Reviews in the mdiff window bar to reopen this review. Saved comments
-        are preserved.
+        {uiText(
+          'The review connection was interrupted. Use Reviews in the mdiff window bar to reopen this review. Saved comments are preserved.',
+        )}
       </span>
     </div>
   );

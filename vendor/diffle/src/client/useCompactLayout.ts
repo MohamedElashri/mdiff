@@ -1,6 +1,12 @@
+import { useReviewStore } from '@/client/store.js';
 import { useEffect, useState } from 'react';
-import { useStore } from './store.js';
+
+import { useCommands } from './commands/CommandProvider.js';
+import { keyboardTarget } from './commands/shortcuts.js';
 export function useCompactLayout() {
+  const useStore = useReviewStore();
+
+  const registry = useCommands();
   const [compact, setCompact] = useState(
     () => typeof matchMedia === 'function' && matchMedia('(max-width: 980px)').matches,
   );
@@ -19,12 +25,13 @@ export function useCompactLayout() {
       useStore.subscribe((next, prev) => {
         if (next.activePath !== prev.activePath) setDrawer((current) => (current === 'tree' ? null : current));
       }),
-    [],
+    [useStore],
   );
   useEffect(() => {
     if (!compact) return;
     const key = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+      if (e.defaultPrevented || keyboardTarget(e).blocked) return;
+      if (!registry && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         e.stopImmediatePropagation();
         const pane = e.shiftKey ? 'panel' : 'tree';
@@ -38,6 +45,6 @@ export function useCompactLayout() {
     };
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
-  }, [compact, drawer]);
+  }, [compact, drawer, registry]);
   return { compact, drawer, setDrawer };
 }

@@ -1,13 +1,17 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewStore } from '@/client/store.js';
 import { twMerge } from 'tailwind-merge';
 import { Button } from '@/client/ui/Button.js';
 import { Hash, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { FilePath } from '@/client/FilePath.js';
-import { useStore } from '@/client/store.js';
+
 import { KIND_LABEL, kindGroup } from './symbolKind.js';
 
 /** Symbol search (gs: current file, gS: repository). Type to filter, ↑/↓ or Ctrl+n/p to move, Enter to jump. */
 export function SymbolPicker() {
+  const useStore = useReviewStore();
+
   const symbols = useStore((s) => s.symbols);
   const querySymbols = useStore((s) => s.querySymbols);
   const moveSymbol = useStore((s) => s.moveSymbol);
@@ -66,7 +70,7 @@ export function SymbolPicker() {
     <div
       className="absolute top-0 right-0 left-0 z-30 flex max-h-[60%] flex-col border-b border-b-border bg-surface shadow-[0_0.625rem_1.875rem_rgba(0,_0,_0,_0.18)]"
       role="dialog"
-      aria-label="Symbols"
+      aria-label={uiText('Symbols')}
     >
       <div className="flex items-center gap-2 border-b border-b-border bg-surface px-2.5 py-1.5">
         <Hash size="0.875rem" />
@@ -80,12 +84,12 @@ export function SymbolPicker() {
           spellCheck={false}
         />
         <span className="min-w-17.5 text-right font-mono text-[0.75rem] leading-[normal] text-muted">{status}</span>
-        <Button type="button" variant="ghost" icon onClick={closeSymbols} title="Close (Esc)">
+        <Button type="button" variant="ghost" icon onClick={closeSymbols} title={uiText('Close (Esc)')}>
           <X size="0.875rem" />
         </Button>
       </div>
       {symbols.items.length > 0 ? (
-        <ul role="listbox" aria-label="Symbols" className="m-0 list-none overflow-auto p-1" ref={listRef}>
+        <ul role="listbox" aria-label={uiText('Symbols')} className="m-0 list-none overflow-auto p-1" ref={listRef}>
           {symbols.items.map((sym, i) => (
             <li
               role="option"
@@ -102,7 +106,7 @@ export function SymbolPicker() {
               }}
             >
               <span className={twMerge(`text-[0.6875rem] text-muted lowercase ${kindColor[kindGroup(sym.kind)]}`)}>
-                {KIND_LABEL[sym.kind] ?? 'symbol'}
+                {KIND_LABEL[sym.kind] ?? uiText('symbol')}
               </span>
               <span>
                 {sym.name}
@@ -118,7 +122,11 @@ export function SymbolPicker() {
         </ul>
       ) : (
         <div className="p-3">
-          {symbols.loading ? '' : symbols.scope === 'workspace' && !q.trim() ? 'Type to search' : 'No symbols'}
+          {symbols.loading
+            ? ''
+            : symbols.scope === 'workspace' && !q.trim()
+              ? uiText('Type to search')
+              : uiText('No symbols')}
         </div>
       )}
     </div>

@@ -1,3 +1,5 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useApi } from '@/client/api.js';
 import { useEffect, useReducer, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { imageKey, type Side } from '@/shared/protocol.js';
 import { api } from '@/client/api.js';
@@ -89,6 +91,8 @@ function caption(side: Side, image: Decoded | null | undefined): string {
  * difference shows what changed. The chosen comparison applies to every image.
  */
 export function ImageDiff({ path, sides }: { path: string; sides: ImageSides }) {
+  const api = useApi();
+
   const ref = useRef<HTMLDivElement>(null);
   useStandIn(ref, 'image');
   const snapshot = useStore((s) => s.snapshot);
@@ -121,7 +125,7 @@ function Compare({ path, url }: { path: string; url: Record<Side, string | null>
   const mode = pair ? compare : 'side-by-side';
   return (
     <>
-      <SegmentedControl className="self-start" role="group" aria-label="Image comparison">
+      <SegmentedControl className="self-start" role="group" aria-label={uiText('Image comparison')}>
         {IMAGE_COMPARES.map((c) => (
           <ToggleButton key={c} selected={mode === c} disabled={!pair} onClick={() => setCompare(c)}>
             {LABEL[c]}
@@ -144,9 +148,9 @@ function Figure({ path, side, image }: { path: string; side: Side; image: Decode
   return (
     <figure className="m-0 flex min-w-0 flex-col gap-1">
       {image === undefined ? (
-        <span className="text-muted">Loading image…</span>
+        <span className="text-muted">{uiText('Loading image…')}</span>
       ) : image === null ? (
-        <span className="text-muted">Binary file: not a displayable image</span>
+        <span className="text-muted">{uiText('Binary file: not a displayable image')}</span>
       ) : (
         <img
           src={image.url}
@@ -194,7 +198,7 @@ function Stack({
   return (
     <div className="flex flex-col gap-1">
       <div
-        className={`relative isolate overflow-hidden ${mode === 'difference' ? 'bg-black' : 'image-checker'} ${mode === 'swipe' ? 'cursor-ew-resize touch-none' : ''}`}
+        className={`relative isolate overflow-hidden ${String(mode === 'difference' ? 'bg-black' : 'image-checker')} ${String(mode === 'swipe' ? 'cursor-ew-resize touch-none' : '')}`}
         style={frame(canvas)}
         data-stack={mode}
         onPointerDown={
@@ -212,7 +216,7 @@ function Stack({
       >
         <img
           src={pair.old.url}
-          alt={`${path} (old)`}
+          alt={uiText('{value0} (old)', { value0: String(path) })}
           draggable={false}
           className="absolute top-0 left-0"
           style={place(pair.old.size)}
@@ -221,7 +225,7 @@ function Stack({
         <div className="absolute inset-0" style={top} data-layer="new">
           <img
             src={pair.new.url}
-            alt={`${path} (new)`}
+            alt={uiText('{value0} (new)', { value0: String(path) })}
             draggable={false}
             className="absolute top-0 left-0"
             style={place(pair.new.size)}
@@ -240,12 +244,12 @@ function Stack({
             max={100}
             value={amount}
             onChange={(e) => setAmount(Number(e.target.value))}
-            aria-label="New side opacity"
+            aria-label={uiText('New side opacity')}
             className="w-40 accent-accent"
           />
         )}
         <span>{caption('new', pair.new)}</span>
-        {mode === 'difference' && <span className="font-sans">Unchanged pixels are black.</span>}
+        {mode === 'difference' && <span className="font-sans">{uiText('Unchanged pixels are black.')}</span>}
       </div>
     </div>
   );

@@ -7,6 +7,9 @@ import '../../../../src/main';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 
+import { workspaceFixture } from './workspaceFixture.js';
+let native: ReturnType<typeof workspaceFixture>;
+vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 const events = vi.hoisted(() => [] as string[]);
 const entry = vi.hoisted(() => ({ node: null as unknown }));
 vi.mock('react-dom/client', () => ({
@@ -21,12 +24,19 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ writeText: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
-  getCurrentWebviewWindow: () => ({ onDragDropEvent: async () => vi.fn() }),
+  getCurrentWebviewWindow: () => ({ label: 'main', onDragDropEvent: async () => vi.fn() }),
 }));
 vi.mock('../../../../src/transport', () => ({ bindReview: (id: string) => events.push(`bind:${id}`) }));
 vi.mock('../../../../src/ReviewWorkspace', async () => {
   const React = await import('react');
   return {
+    closeWorkspace: vi.fn(),
+    acknowledgeWorkspaceSaved: () => {},
+    initializeWorkspace: vi.fn(),
+    captureWorkspace: () => null,
+    subscribeWorkspace: () => () => {},
+    ReviewChrome: () => null,
+    ReviewEnvironment: ({ children }: { children: ReactNode }) => children,
     ReviewWorkspace: () => {
       React.useEffect(() => {
         events.push('mount');
@@ -47,9 +57,10 @@ beforeEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   events.length = 0;
   localStorage.clear();
+  native = workspaceFixture();
   vi.mocked(invoke)
     .mockReset()
-    .mockImplementation(async (command) => (command === 'open_review' ? { id: 'one', root: '/first' } : {}));
+    .mockImplementation((command, args) => native.invoke(command, args as Record<string, unknown>));
   vi.mocked(open).mockResolvedValue('/first');
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {} });
   host = document.createElement('div');
@@ -69,7 +80,7 @@ it('preserves the mounted workspace and its unsent draft after a failed open', a
   const draft = host.querySelector<HTMLTextAreaElement>('[aria-label="Unsent draft"]')!;
   expect(draft).not.toBeNull();
   let fail!: (error: Error) => void;
-  vi.mocked(invoke).mockImplementation(
+  native.setActivate(
     async () =>
       new Promise((_resolve, reject) => {
         fail = reject;
@@ -85,9 +96,9 @@ it('preserves the mounted workspace and its unsent draft after a failed open', a
   expect(host.textContent).toContain('not a repository');
 });
 
-it('unmounts the previous workspace before binding a successful replacement', async () => {
-  let finish!: (value: unknown) => void;
-  vi.mocked(invoke).mockImplementation(
+it('unmounts the previous workspace before mounting a different scoped review', async () => {
+  let finish!: (value: ReturnType<typeof native.activated>) => void;
+  native.setActivate(
     async () =>
       new Promise((resolve) => {
         finish = resolve;
@@ -96,6 +107,6 @@ it('unmounts the previous workspace before binding a successful replacement', as
   vi.mocked(open).mockResolvedValue('/second');
   await act(() => choose().click());
   expect(host.querySelector('[aria-label="Unsent draft"]')).not.toBeNull();
-  await act(() => finish({ id: 'two', root: '/second' }));
-  expect(events).toEqual(['bind:one', 'mount', 'unmount', 'bind:two', 'mount']);
+  await act(() => finish(native.activated(native.document.workspaces[0]!.active!)));
+  expect(events).toEqual(['mount', 'unmount', 'mount']);
 });

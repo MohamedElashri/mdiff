@@ -1,10 +1,12 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useApi } from '@/client/api.js';
 import { Dialog, DialogContent } from '@/client/ui/dialog.js';
 import { CopyIcon } from '@/client/ui/CopyIcon.js';
 import { Button } from '@/client/ui/Button.js';
 import { AlertTriangle, Check, ClipboardCopy, GitPullRequestArrow, MessageSquare, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { rangeKey, type CommentThread } from '@/shared/protocol.js';
-import { api } from '@/client/api.js';
+
 import { copyText, useCopied } from '@/client/clipboard.js';
 import { commentsOff, exportLabel, type ExportOutcome, visibleThreads } from '@/client/model.js';
 import { useStore } from '@/client/store.js';
@@ -16,6 +18,8 @@ import { IterationList } from './IterationList.js';
 import { ThreadRow } from './ThreadRow.js';
 
 export function CommentPanel() {
+  const api = useApi();
+
   const threads = useStore((s) => s.threads);
   const showResolved = useStore((s) => s.showResolved);
   const setShowResolved = useStore((s) => s.setShowResolved);
@@ -76,7 +80,7 @@ export function CommentPanel() {
   };
 
   return (
-    <aside className="flex min-h-0 flex-col bg-surface">
+    <aside className="review-inspector flex min-h-0 flex-col">
       {snapshot && (
         // Keyed by the range, so focusing one of its commits keeps the list as it was.
         <CommitNavigator key={rangeKey(snapshot.review)} snapshot={snapshot} />
@@ -84,7 +88,8 @@ export function CommentPanel() {
       {snapshot && <IterationList snapshot={snapshot} />}
       <div className="flex min-h-10 items-center gap-1.5 border-b border-b-border px-2.5 py-1.5 [&_button]:flex-none [&_button]:px-2 [&_button]:whitespace-nowrap">
         <span className="mr-auto inline-flex min-w-0 items-center gap-1.5 truncate font-semibold">
-          <MessageSquare size="0.9375rem" /> Threads
+          <MessageSquare size="0.9375rem" />
+          {uiText(' Threads')}
           {open.length > 0 && (
             <span className="rounded-[0.625rem] bg-hover px-1.75 py-0 font-medium text-muted">{open.length}</span>
           )}
@@ -94,7 +99,7 @@ export function CommentPanel() {
           icon={<ClipboardCopy size="0.875rem" />}
           primary
           disabled={open.length === 0}
-          title="Copy all open threads as a prompt (yy)"
+          title={uiText('Copy all open threads as a prompt (yy)')}
           onCopy={() => copy()}
           pulse={copiedAll}
         />
@@ -106,13 +111,13 @@ export function CommentPanel() {
             disabled={posting || (open.length === 0 && !posted)}
             title={
               post.armed
-                ? 'Click again to add all open threads to the pending review'
-                : 'Add all open threads to a pending review on the GitHub pull request; you submit it on GitHub'
+                ? uiText('Click again to add all open threads to the pending review')
+                : uiText('Add all open threads to a pending review on the GitHub pull request; you submit it on GitHub')
             }
             aria-label={
               post.armed
-                ? 'Add all open threads to the pending review? Click again to confirm'
-                : 'Add all open threads to a pending review on the GitHub pull request'
+                ? uiText('Add all open threads to the pending review? Click again to confirm')
+                : uiText('Add all open threads to a pending review on the GitHub pull request')
             }
             onClick={post.fire}
           >
@@ -126,7 +131,7 @@ export function CommentPanel() {
           icon={!clear.armed}
           feedback={clear.armed ? 'confirm' : undefined}
           disabled={threads.length === 0}
-          title={clear.armed ? 'Click again to delete all threads' : 'Delete all threads for this mode'}
+          title={clear.armed ? uiText('Click again to delete all threads') : uiText('Delete all threads for this mode')}
           onClick={clear.fire}
         >
           <Trash2 size="0.875rem" />
@@ -137,10 +142,11 @@ export function CommentPanel() {
       {staleCount > 0 && (
         <div
           className="flex cursor-default items-center gap-1.5 border-b border-b-border px-2.5 py-1 text-[0.75rem] text-warn"
-          title="Stale threads no longer point into the diff: their text changed or left the changed lines"
+          title={uiText('Stale threads no longer point into the diff: their text changed or left the changed lines')}
         >
           <AlertTriangle size="0.75rem" />
-          {staleCount} stale
+          {staleCount}
+          {uiText(' stale')}
           <Button
             variant="ghost"
             danger
@@ -156,19 +162,23 @@ export function CommentPanel() {
       {resolvedCount > 0 && (
         <label
           className="flex cursor-pointer items-center gap-1.5 border-b border-b-border px-2.5 py-1 text-[0.75rem] text-muted"
-          title="Resolved threads are kept but left out of the prompt"
+          title={uiText('Resolved threads are kept but left out of the prompt')}
         >
           <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} />
-          Show {resolvedCount} resolved
+          {uiText('Show ')}
+          {resolvedCount}
+          {uiText(' resolved')}
         </label>
       )}
       <div className="flex flex-1 flex-col gap-3.5 overflow-auto p-2.5">
         {groups.length === 0 && (
           <div className="px-3 py-6 text-center text-muted [&>p]:mt-0 [&>p]:mr-0 [&>p]:mb-1.5 [&>p]:ml-0">
-            <p>{threads.length ? 'Every thread is resolved.' : 'No comments yet.'}</p>
+            <p>{threads.length ? uiText('Every thread is resolved.') : uiText('No comments yet.')}</p>
             <p>
               {off ??
-                'Click a line number to comment, drag across line numbers for a block, or press C for a whole file.'}
+                uiText(
+                  'Click a line number to comment, drag across line numbers for a block, or press C for a whole file.',
+                )}
             </p>
           </div>
         )}
@@ -194,10 +204,10 @@ export function CommentPanel() {
       </div>
       {manual && (
         <Dialog open onOpenChange={() => setManual(null)}>
-          <DialogContent aria-label="Copy manually">
-            <h3 className="m-0 mb-2">Copy manually</h3>
+          <DialogContent aria-label={uiText('Copy manually')}>
+            <h3 className="m-0 mb-2">{uiText('Copy manually')}</h3>
             <p className="m-0 mb-2 text-muted">
-              The browser blocked clipboard access. Select the text below and press Ctrl/⌘+c.
+              {uiText('The browser blocked clipboard access. Select the text below and press Ctrl/⌘+c.')}
             </p>
             <textarea
               className="min-h-40 w-full rounded-md border border-border bg-surface p-2 font-mono text-[0.75rem]"
@@ -207,7 +217,7 @@ export function CommentPanel() {
               onFocus={(e) => e.currentTarget.select()}
             />
             <div className="mt-2.5 flex justify-end gap-1.5">
-              <Button onClick={() => setManual(null)}>Close</Button>
+              <Button onClick={() => setManual(null)}>{uiText('Close')}</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -269,6 +279,8 @@ function cmp(a: CommentThread, b: CommentThread): number {
 }
 
 function DiscussionSearch() {
+  const api = useApi();
+
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Awaited<ReturnType<typeof api.searchHistory>>>([]);
   const [error, setError] = useState('');
@@ -302,12 +314,12 @@ function DiscussionSearch() {
       current = false;
       clearTimeout(timer);
     };
-  }, [query, snapshot, threads]);
+  }, [query, snapshot, threads, api]);
   return (
     <div className="border-b border-border p-2">
       <input
-        aria-label="Search saved discussions"
-        placeholder="Search saved discussions…"
+        aria-label={uiText('Search saved discussions')}
+        placeholder={uiText('Search saved discussions…')}
         value={query}
         maxLength={500}
         onChange={(e) => setQuery(e.target.value)}
@@ -316,16 +328,16 @@ function DiscussionSearch() {
       {query.trim() && (
         <div className="max-h-60 overflow-auto text-xs" aria-live="polite">
           {loading ? (
-            <p>Searching…</p>
+            <p>{uiText('Searching…')}</p>
           ) : error ? (
             <p>{error}</p>
           ) : results.length === 0 ? (
-            <p>No discussions found.</p>
+            <p>{uiText('No discussions found.')}</p>
           ) : (
             results.map(({ review, current, thread }) => (
               <div key={`${review}:${thread.id}`} className="border-t border-border py-2">
                 <p className="break-all text-muted">
-                  {current ? 'Current review' : review} · {thread.anchor.path}
+                  {current ? uiText('Current review') : review} · {thread.anchor.path}
                 </p>
                 <p className="break-words whitespace-pre-wrap">{thread.messages.map((m) => m.body).join('\n')}</p>
                 {current && (
@@ -342,7 +354,7 @@ function DiscussionSearch() {
                       focusThread(thread.id);
                     }}
                   >
-                    Open thread
+                    {uiText('Open thread')}
                   </Button>
                 )}
               </div>

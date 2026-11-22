@@ -1,3 +1,5 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { formatLocale } from '@/client/i18n/locale.js';
 import type { CodeViewLineSelection } from '@pierre/diffs';
 import picomatch from 'picomatch/posix';
 import {
@@ -466,7 +468,7 @@ export function movedLabel(snapshot: Snapshot, moved: Moved): string {
   return ends.join(', ');
 }
 
-const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+const RELATIVE = new Intl.RelativeTimeFormat(formatLocale, { numeric: 'auto' });
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
   ['day', 86_400_000],
   ['hour', 3_600_000],
@@ -477,7 +479,7 @@ const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
 export function relativeTime(at: number, now = Date.now()): string {
   const elapsed = now - at;
   for (const [unit, ms] of UNITS) if (elapsed >= ms) return RELATIVE.format(-Math.round(elapsed / ms), unit);
-  return 'just now';
+  return uiText('just now');
 }
 
 /**

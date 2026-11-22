@@ -35,6 +35,9 @@ pub async fn resolve_range(repo: &GitRepo, old: &str, new: &str, base: Compariso
     let resolve = |rev: &str| {
         let rev = rev.to_owned();
         async move {
+            if rev == ":empty-tree:" && base == ComparisonBase::Direct {
+                return Ok(repo.empty_tree().await?);
+            }
             if rev == WORKTREE {
                 return Ok(rev);
             }
@@ -56,7 +59,8 @@ pub async fn resolve_range(repo: &GitRepo, old: &str, new: &str, base: Compariso
             .await
             .map_err(|_| Error::revspec(format!("no merge base between {old} and {new}")))?;
     }
-    let pinned = |rev: &str, sha: &str| rev.len() >= 7 && sha.starts_with(&rev.to_lowercase());
+    let pinned =
+        |rev: &str, sha: &str| rev == ":empty-tree:" || (rev.len() >= 7 && sha.starts_with(&rev.to_lowercase()));
     let live = if has_worktree {
         Live::Worktree
     } else if pinned(old, &old_rev) && pinned(new, &new_rev) {
@@ -104,6 +108,16 @@ pub fn range(old: impl Into<String>, new: impl Into<String>, base: ComparisonBas
 /// checked now, so invalid input fails before anything is served.
 pub async fn resolve_review(req: &EnterRequest, repo: &GitRepo, github: &Github) -> Result<Review> {
     let parsed = match req {
+        EnterRequest::Comparison { old, new, base } => {
+            let new = repo.resolve(new).await?;
+            let old = match old {
+                Some(old) => repo.resolve(old).await?,
+                None if *base == ComparisonBase::Direct => ":empty-tree:".to_owned(),
+                None => return Err(Error::revspec("Merge-base comparison requires two commits")),
+            };
+            resolve_range(repo, &old, &new, *base).await?;
+            return Ok(range(old, new, *base));
+        }
         EnterRequest::Pr { pr } => return super::pr::resolve_pr(pr.as_deref(), repo, github).await,
         EnterRequest::RangeDiff { args } => return range_diff_review(repo, parse_range_diff(args)?).await,
         EnterRequest::Working => return Ok(range("HEAD", WORKTREE, ComparisonBase::Direct)),

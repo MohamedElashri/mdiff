@@ -1,7 +1,9 @@
 import type { LucideIcon } from 'lucide-react';
 import type { ComponentType } from 'react';
-import { create } from 'zustand';
-import { type LayoutState, type ReviewState, useStore, type ViewPlace } from '@/client/store.js';
+import { create, useStore as useZustand } from 'zustand';
+import { createContext, useContext } from 'react';
+import type { GraphController } from '@/client/graph/state.js';
+import { type LayoutState, type ReviewState, defaultStore, type ReviewStore, type ViewPlace } from '@/client/store.js';
 
 export type ViewId = 'diff' | 'graph';
 
@@ -34,19 +36,19 @@ export interface ViewDef {
   panelWidth: string;
   /** Why the view cannot be shown now, or null. */
   blocked?(s: ReviewState): string | null;
-  enter?(): void;
-  leave?(): void;
+  enter?(scope: ViewScope): void;
+  leave?(scope: ViewScope): void;
   /** Where the reader is in the view, for the jump list; Ctrl+o after a jump into the diff restores it. */
-  place?(): ViewPlace;
+  place?(scope: ViewScope): ViewPlace;
   /** The view's own keys; true when `e` was one. Unless `passes` holds it, any other key does nothing. */
-  keys?(e: KeyboardEvent): boolean;
+  keys?(e: KeyboardEvent, scope: ViewScope): boolean;
   passes?: ReadonlySet<string>;
   /** Escape within the view; true when it used the key. `inField` when a text field has focus. */
-  escape?(inField: boolean): boolean;
+  escape?(inField: boolean, scope: ViewScope): boolean;
   /** Ctrl/⌘+F: the view's own find, in place of the browser's. */
-  find?(): void;
+  find?(scope: ViewScope): void;
   /** The reader picked `path` in the file tree again while the view shows. */
-  pickFile?(path: string): void;
+  pickFile?(path: string, scope: ViewScope): void;
 }
 
 interface ViewsState {
@@ -55,10 +57,54 @@ interface ViewsState {
   mounted: ViewId[];
 }
 
-export const useViews = create<ViewsState>(() => ({
-  active: 'diff',
-  mounted: ['diff'],
-}));
+export interface ViewScope {
+  graph(): GraphController;
+}
+export function createViews(review: ReviewStore = defaultStore) {
+  const useViews = create<ViewsState>(() => ({ active: 'diff', mounted: ['diff'] }));
+  let scope: ViewScope;
+  const bind = (view: ViewDef) => ({
+    ...view,
+    enter: view.enter ? () => view.enter!(scope) : undefined,
+    leave: view.leave ? () => view.leave!(scope) : undefined,
+    place: view.place ? () => view.place!(scope) : undefined,
+    keys: view.keys ? (e: KeyboardEvent) => view.keys!(e, scope) : undefined,
+    escape: view.escape ? (field: boolean) => view.escape!(field, scope) : undefined,
+    find: view.find ? () => view.find!(scope) : undefined,
+    pickFile: view.pickFile ? (path: string) => view.pickFile!(path, scope) : undefined,
+  });
+  const activeView = () => bind(viewOf(useViews.getState().active));
+  const showView = (id: ViewId) => {
+    const { active, mounted } = useViews.getState();
+    if (id === active) return;
+    const next = bind(viewOf(id));
+    const blocked = next.blocked?.(review.getState());
+    if (blocked) return review.getState().flash(blocked);
+    bind(viewOf(active)).leave?.();
+    useViews.setState({ active: id, mounted: mounted.includes(id) ? mounted : [...mounted, id] });
+    next.enter?.();
+  };
+  return {
+    store: useViews,
+    activeView,
+    showView,
+    toggleView: (id: ViewId) => showView(useViews.getState().active === id ? 'diff' : id),
+    attach(value: ViewScope) {
+      scope = value;
+    },
+    reset() {
+      useViews.setState({ active: 'diff', mounted: ['diff'] });
+    },
+  };
+}
+export type ViewController = ReturnType<typeof createViews>;
+export const defaultViews = createViews();
+export const ViewsContext = createContext<ViewController | null>(null);
+export const useViewActions = () => useContext(ViewsContext) ?? defaultViews;
+export const useReviewViews = () => useViewActions().store;
+export const useViews = Object.assign(function useViews<T>(selector: (state: ViewsState) => T): T {
+  return useZustand(useReviewViews(), selector);
+}, defaultViews.store);
 
 const defs = new Map<ViewId, ViewDef>();
 
@@ -77,34 +123,17 @@ function viewOf(id: ViewId): ViewDef {
   return view;
 }
 
-export function activeView(): ViewDef {
-  return viewOf(useViews.getState().active);
+export const activeView = () => defaultViews.activeView();
+export function useActiveView() {
+  const views = useViewActions();
+  useViews((s) => s.active);
+  return views.activeView();
 }
-
-/** The shown view, re-rendering when another shows. */
-export function useActiveView(): ViewDef {
-  return useViews((s) => viewOf(s.active));
-}
-
-/** Shows `id`, or says why it cannot be shown. */
-export function showView(id: ViewId): void {
-  const { active, mounted } = useViews.getState();
-  if (id === active) return;
-  const next = viewOf(id);
-  const review = useStore.getState();
-  const blocked = next.blocked?.(review);
-  if (blocked) return review.flash(blocked);
-  defs.get(active)?.leave?.();
-  useViews.setState({
-    active: id,
-    mounted: mounted.includes(id) ? mounted : [...mounted, id],
-  });
-  next.enter?.();
-}
+export const showView = (id: ViewId) => defaultViews.showView(id);
 
 /** Shows `id`, or the diff again when `id` already shows. */
 export function toggleView(id: ViewId): void {
-  showView(useViews.getState().active === id ? 'diff' : id);
+  defaultViews.toggleView(id);
 }
 
 const NO_PANEL = { width: null, visible: true };

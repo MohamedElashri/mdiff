@@ -1,14 +1,29 @@
-import { useEffect, useRef } from 'react';
+import { useApi } from '@/client/api.js';
+import { useReviewDom, useReviewActive, useReviewRoot } from '@/client/runtime.js';
+import type { ReviewStore } from '@/client/store.js';
+import type { ReviewApi } from '@/client/api.js';
+import type { ViewController } from '@/client/views/state.js';
+import { useViewActions } from '@/client/views/state.js';
+import { useReviewViews } from '@/client/views/state.js';
+import { useReviewStore } from '@/client/store.js';
+import { useEffect, useRef, useMemo } from 'react';
 import { copyText } from '@/client/clipboard.js';
-import { api } from '@/client/api.js';
-import { clearWordFocus, focusedWord, moveWord, moveWordToEdge, scrollCursorInline } from '@/client/lsp/wordNav.js';
+
 import { currentPath, MODE_PANES } from '@/client/model.js';
 import { remPx } from '@/client/scale.js';
 import { escapeRegex } from '@/client/search/highlight.js';
-import { activeView, panelOf, toggleView, useViews } from '@/client/views/state.js';
+import { panelOf } from '@/client/views/state.js';
 import { copyCursorPermalink } from '@/client/review/permalink.js';
-import { useStore, type ReviewState } from '@/client/store.js';
+import { type ReviewState } from '@/client/store.js';
 import { nextTheme } from '@/client/theme.js';
+import { useCommands } from '@/client/commands/CommandProvider.js';
+import { COMMANDS, COMMAND_BY_KEY } from '@/client/commands/catalogue.js';
+import { reviewSources } from '@/client/commands/reviewSources.js';
+import { keyboardTarget } from '@/client/commands/shortcuts.js';
+import { messages, translate } from '@/client/i18n/messages.js';
+import { commentsOff, canJumpBack, canJumpForward, rangeStep } from '@/client/model.js';
+import { listViews } from '@/client/views/state.js';
+import type { CommandHandler } from '@/client/commands/registry.js';
 
 const CHORD_MS = 800;
 const PREFIXES = new Set(['g', 'd', 'y', 'z', 'i']);
@@ -29,81 +44,9 @@ const COUNTED: Record<string, (s: ReviewState, count: number) => unknown> = {
 };
 
 /** Single keys and two-key chords, by the key string(s) of the keydown events. */
-const KEYMAP: Record<string, Action> = {
-  w: () => moveWord(1),
-  b: () => moveWord(-1),
-  '0': () => moveWordToEdge('first'),
-  $: () => moveWordToEdge('last'),
-  j: (s) => s.moveCursor(1),
-  k: (s) => s.moveCursor(-1),
-  J: (s) => s.moveFile(1),
-  K: (s) => s.moveFile(-1),
-  ']': (s) => s.moveHunk(1),
-  '[': (s) => s.moveHunk(-1),
-  '*': (s) => s.searchWord(1),
-  '#': (s) => s.searchWord(-1),
-  n: (s) => (s.search.matches.length ? s.moveMatch(1) : s.moveHunk(1)),
-  N: (s) => (s.search.matches.length ? s.moveMatch(-1) : s.moveHunk(-1)),
-  gg: (s) => s.moveFile('first'),
-  G: (s) => s.moveFile('last'),
-  V: (s) => s.toggleVisual(),
-  c: (s) => s.selection && s.openDraft(s.selection),
-  C: (s) => {
-    const path = currentPath(s);
-    if (path) s.openFileDraft(path);
-  },
-  e: (s) => s.editCommentAtCursor(),
-  dd: (s) => s.deleteCommentAtCursor(),
-  R: (s) => s.toggleResolvedAtCursor(),
-  v: (s) => s.toggleViewedAtCursor(),
-  gv: (s) => s.toggleViewedAbove(),
-  zo: (s) => s.setCollapsedAtCursor(false),
-  zc: (s) => s.setCollapsedAtCursor(true),
-  zC: (s) => s.setAllCollapsed(true),
-  zO: (s) => s.setAllCollapsed(false),
-  zt: (s) => s.scrollCursorTo('top'),
-  zb: (s) => s.scrollCursorTo('bottom'),
-  zz: (s) => s.scrollCursorTo('eye'),
-  zw: (s) => s.saveConfig({ lineWrap: !s.config.lineWrap }),
-  zh: () => scrollCursorInline(-1),
-  zl: () => scrollCursorInline(1),
-  s: (s) => s.setDiffStyle(s.diffStyle === 'split' ? 'unified' : 'split'),
-  t: (s) => s.setTheme(nextTheme(s.theme)),
-  yy: () => void copyComments(),
-  Y: () => void copyComments(),
-  yp: (s) => void copyPath(s),
-  yl: () => void copyCursorPermalink(),
-  '/': (s) => s.openSearch('file', selectedQuery(s)),
-  'g/': (s) => s.openSearch('diff', selectedQuery(s)),
-  gf: () => focusFileSearch(),
-  gd: (s) => s.goToDefinition(),
-  gy: (s) => s.goToTypeDefinition(),
-  gh: (s) => s.showHover(),
-  gA: (s) => s.findReferences(),
-  gs: (s) => s.openSymbols('document'),
-  gS: (s) => s.openSymbols('workspace'),
-  F: (s) => {
-    const path = currentPath(s);
-    if (!s.fileView && path) void s.openFullFile(path);
-  },
-  o: (s) => s.setGithubMenuOpen(!s.githubMenuOpen),
-  m: (s) => s.setModeMenuOpen(!s.modeMenuOpen),
-  '<': (s) => s.stepCommit(-1),
-  '>': (s) => s.stepCommit(1),
-  // Iterations mirror the list's mouse rule: plain keys move the span's lower end, shifted ones its higher.
-  ii: (s) => s.toggleInterdiff(),
-  ij: (s) => s.stepIteration('lower', -1),
-  ik: (s) => s.stepIteration('lower', 1),
-  iJ: (s) => s.stepIteration('higher', -1),
-  iK: (s) => s.stepIteration('higher', 1),
-  ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`i${n}`, (s: ReviewState) => s.pickIteration(n)])),
-  r: (s) => s.reloadIfMoved(),
-  '?': (s) => s.setHelpOpen(!s.helpOpen),
-  M: () => toggleView('graph'),
-};
 
 /** The page's text selection, else the focused word (`w`), as a search query: one line only, escaped when regex search is on. */
-function selectedQuery(s: ReviewState): string | undefined {
+function selectedQueryFor(s: ReviewState, focusedWord: () => string | null): string | undefined {
   const text = window.getSelection()?.toString().trim() || focusedWord();
   if (!text || text.includes('\n')) return undefined;
   return s.search.regex ? escapeRegex(text) : text;
@@ -142,7 +85,31 @@ function isEditable(el: HTMLElement | null): boolean {
  * every key pressed resolves against it, so holding `z` makes `h` / `l` repeat
  * `zh` / `zl`. Ignored while typing in a field, except Escape.
  */
-export function useKeymap(): void {
+export function useKeymap(
+  options: {
+    toggleTree?: () => unknown;
+    togglePanel?: () => unknown;
+    revealTree?: () => void;
+    githubAvailable?: boolean;
+  } = {},
+): void {
+  const useStore = useReviewStore();
+  const api = useApi();
+  const useViews = useReviewViews();
+  const { showView, activeView } = useViewActions();
+
+  const dom = useReviewDom();
+  const enabled = useReviewActive();
+  const root = useReviewRoot();
+  const views = useViewActions();
+  const { clearWordFocus } = dom.words;
+  const { KEYMAP, focusModeEntry, focusModeConfig, focusFileSearch, focusTree, focusReview } = useMemo(
+    () => createBindings(useStore, api, views, dom, root),
+    [useStore, api, views, dom, root],
+  );
+  const registry = useCommands();
+  const currentOptions = useRef(options);
+  currentOptions.current = options;
   const pending = useRef<{ key: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   // The prefix key physically down, from its press to its release.
   const held = useRef<string | null>(null);
@@ -150,16 +117,162 @@ export function useKeymap(): void {
   const count = useRef('');
 
   useEffect(() => {
+    if (!registry || !enabled) return;
+    let live = true;
+    const extras: Record<string, Action> = {
+      'review.tree': (s) => {
+        if (currentOptions.current.toggleTree) return currentOptions.current.toggleTree();
+        s.setLayout({ treeVisible: !s.layout.treeVisible });
+      },
+      'review.panel': (s) => {
+        if (currentOptions.current.togglePanel) return currentOptions.current.togglePanel();
+        const view = useViews.getState().active;
+        s.setPanel(view, { visible: !panelOf(s.layout, view).visible });
+      },
+      'review.focusTree': () => {
+        currentOptions.current.revealTree?.();
+        requestAnimationFrame(focusTree);
+      },
+      'review.files': () => {
+        if (currentOptions.current.revealTree) {
+          currentOptions.current.revealTree();
+          requestAnimationFrame(focusFileSearch);
+          return;
+        }
+        const s = useStore.getState();
+        if (!s.layout.treeVisible) {
+          s.setLayout({ treeVisible: true });
+          requestAnimationFrame(focusFileSearch);
+        } else focusFileSearch();
+      },
+      'review.back': (s) => s.jumpBack(),
+      'review.forward': (s) => s.jumpForward(),
+      'review.find': (s) => (activeView().find ? activeView().find!() : KEYMAP['/']!(s)),
+      'review.split': (s) => s.setDiffStyle('split'),
+      'review.unified': (s) => s.setDiffStyle('unified'),
+      'review.showGraph': () => showView('graph'),
+      'review.showDiff': () => showView('diff'),
+    };
+    const unavailable = (id: string): string | null => {
+      const s = useStore.getState();
+      if (!s.snapshot) return translate(messages.unavailable);
+      if (['review.github', 'review.permalink'].includes(id) && currentOptions.current.githubAvailable === false)
+        return translate(messages.githubUnavailable);
+      if (['review.graph', 'review.showGraph'].includes(id))
+        return (
+          listViews()
+            .find((view) => view.id === 'graph')
+            ?.blocked?.(s) ?? null
+        );
+      if (
+        [
+          'review.symbols',
+          'review.workspaceSymbols',
+          'review.definition',
+          'review.typeDefinition',
+          'review.references',
+          'review.hover',
+        ].includes(id) &&
+        !s.lsp.enabled
+      )
+        return translate(messages.lspRequired);
+      if (id === 'review.comment' && !s.selection) return translate(messages.selectionRequired);
+      if (
+        [
+          'review.fullFile',
+          'review.viewed',
+          'review.viewedAbove',
+          'review.expand',
+          'review.collapse',
+          'review.commentFile',
+          'review.copyPath',
+        ].includes(id) &&
+        !currentPath(s)
+      )
+        return translate(messages.fileRequired);
+      if (['review.nextCommit', 'review.previousCommit'].includes(id)) {
+        const direction = id === 'review.nextCommit' ? 1 : -1;
+        const target =
+          s.snapshot.review.kind === 'range'
+            ? rangeStep(s.snapshot, direction)
+            : direction < 0
+              ? s.snapshot.commit?.parent
+              : s.snapshot.commit?.child;
+        if (s.snapshot.review.kind === 'range' ? target === undefined : !target)
+          return translate(direction < 0 ? messages.noOlderCommit : messages.noNewerCommit);
+      }
+      if (['review.comment', 'review.commentFile'].includes(id)) return commentsOff(s.snapshot.review);
+      if (id === 'review.back' && !canJumpBack(s)) return translate(messages.noPrevious);
+      if (id === 'review.forward' && !canJumpForward(s)) return translate(messages.noNext);
+      if (id === 'review.copyComments' && !s.threads.some((thread) => !thread.resolved))
+        return translate(messages.noComments);
+      if (id === 'review.reload' && !s.moved) return translate(messages.notMoved);
+      return null;
+    };
+    const handlers: Record<string, CommandHandler> = {};
+    for (const command of COMMANDS) {
+      const action = extras[command.id] ?? (command.key ? KEYMAP[command.key] : undefined);
+      if (command.scope === 'review' && action)
+        handlers[command.id] = { run: () => action(useStore.getState()), unavailable: () => unavailable(command.id) };
+    }
+    const remove = registry.register(handlers);
+    const removeSources = reviewSources(
+      useStore.getState,
+      () =>
+        requestAnimationFrame(() => {
+          // A full-file load can replace the diff pane; focus the mounted destination.
+          if (live) focusReview();
+        }),
+      api,
+    ).map((source) => registry.registerSource(source));
+    const stop = useStore.subscribe((s, previous) => {
+      if (s.snapshot !== previous.snapshot) registry.invalidateSources();
+      else if (s.lsp !== previous.lsp || s.github !== previous.github) registry.refresh();
+    });
+    return () => {
+      live = false;
+      stop();
+      remove();
+      removeSources.forEach((dispose) => dispose());
+    };
+  }, [
+    registry,
+    enabled,
+    useStore,
+    api,
+    views,
+    dom,
+    root,
+    focusTree,
+    activeView,
+    showView,
+    focusReview,
+    KEYMAP,
+    useViews,
+    focusFileSearch,
+  ]);
+  useEffect(() => {
+    registry?.refresh();
+  }, [registry, options.githubAvailable]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let escapeOwned = false;
     const clearPending = () => {
       if (pending.current) clearTimeout(pending.current.timer);
       pending.current = null;
     };
     const dispatch = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') escapeOwned = false;
+      if (e.defaultPrevented || e.isComposing) return;
       // Modifier presses (e.g. Shift before `M` in `zM`) must not consume a pending chord.
       if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta' || e.key === 'CapsLock')
         return;
       const s = useStore.getState();
       const target = realTarget(e);
+      if (target?.closest('[data-history-surface]')) return;
+      if (keyboardTarget(e).blocked && !s.helpOpen && !target?.closest('#mode-picker')) return;
+      if (registry?.manages(e)) return;
       // The count belongs to this press: every path below either uses it or, by
       // leaving it taken, drops it as vim does on a key that takes no count.
       const typed = count.current;
@@ -173,6 +286,7 @@ export function useKeymap(): void {
       )
         return;
       if (e.key === 'Escape') {
+        escapeOwned = true;
         // Leaving a configuration pane returns to the entry list, not the diff.
         if (s.modePane && !s.helpOpen) {
           s.escape();
@@ -241,7 +355,7 @@ export function useKeymap(): void {
         if (e.key === 'Enter') return s.pickReference();
         if (e.key === ' ') return s.togglePeek();
         if (s.references.peek && (e.key === 'J' || e.key === 'K' || (e.ctrlKey && (e.key === 'd' || e.key === 'u')))) {
-          const pane = document.querySelector<HTMLElement>('[aria-label="Peek"]');
+          const pane = root.querySelector<HTMLElement>('[aria-label="Peek"]');
           if (!pane) return;
           const step = e.ctrlKey ? pane.clientHeight / 2 : 3 * parseFloat(getComputedStyle(pane).lineHeight);
           pane.scrollBy({ top: e.key === 'J' || e.key === 'd' ? step : -step });
@@ -270,7 +384,7 @@ export function useKeymap(): void {
       }
       if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'd' || e.key === 'u') && !isEditable(target)) {
         e.preventDefault();
-        const h = document.querySelector('.codeview')?.clientHeight ?? 800;
+        const h = root.querySelector('.codeview')?.clientHeight ?? 800;
         const rows = Math.max(5, Math.floor(h / 2 / (1.25 * remPx()))); // 1.25rem: the diff row height
         s.moveCursorBy(e.key === 'd' ? rows : -rows);
         return;
@@ -341,7 +455,8 @@ export function useKeymap(): void {
       }
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        focusTree();
+        if (registry) registry.execute('review.focusTree');
+        else focusTree();
         return;
       }
       if (s.helpOpen && e.key !== '?') {
@@ -376,7 +491,14 @@ export function useKeymap(): void {
       if (!counted && !action) return;
       e.preventDefault();
       if (counted) counted(s, n);
-      else action!(s);
+      else {
+        const command = COMMAND_BY_KEY.get(chord);
+        if (registry && command && registry.handler(command.id)) {
+          const reason = registry.reason(command.id);
+          if (reason) s.flash(reason);
+          else registry.execute(command.id);
+        } else action!(s);
+      }
     };
     // A key we acted on is ours alone: the viewer cancels its pending programmatic scroll on any
     // keydown reaching it, which would cancel the very jump the key requested.
@@ -390,7 +512,7 @@ export function useKeymap(): void {
       const s = useStore.getState();
       if (!s.search.open || !s.search.editing) return;
       s.blurSearchInput();
-      document.querySelector<HTMLInputElement>('[data-content-search]')?.blur();
+      root.querySelector<HTMLInputElement>('[data-content-search]')?.blur();
       clearPending();
       count.current = '';
     };
@@ -403,6 +525,7 @@ export function useKeymap(): void {
     };
     // The tree closes its search on Escape key-up and re-focuses its input; take focus back after that.
     const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !escapeOwned) return;
       if (e.key !== 'Escape' || realTarget(e)?.getAttribute('role') === 'combobox') return;
       // Escape that only closed a configuration pane leaves focus on the entry list.
       if (useStore.getState().modeMenuOpen && document.activeElement?.closest('#mode-picker')) return;
@@ -414,77 +537,195 @@ export function useKeymap(): void {
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keyup', onKeyUp);
     document.addEventListener('keyup', onRelease, true);
+    const resetOnFocus = () => {
+      clearPending();
+      count.current = '';
+      held.current = null;
+    };
+    document.addEventListener('focusin', resetOnFocus);
     window.addEventListener('blur', onBlur);
     return () => {
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keyup', onKeyUp);
       document.removeEventListener('keyup', onRelease, true);
+      document.removeEventListener('focusin', resetOnFocus);
       window.removeEventListener('blur', onBlur);
       clearPending();
       count.current = '';
     };
-  }, []);
-}
-
-function focusModeEntry(): void {
-  document.querySelector<HTMLElement>(`[data-mode-entry="${useStore.getState().modeEntry}"]`)?.focus();
-}
-
-function focusModeConfig(): void {
-  document.querySelector<HTMLElement>('#mode-config :is(input, [tabindex="0"])')?.focus();
-}
-
-/** Re-focus filename search without discarding its current filter. */
-function focusFileSearch(): void {
-  const model = useStore.getState().treeModel;
-  model?.openSearch(model.getSearchValue());
-  document
-    .querySelector('file-tree-container')
-    ?.shadowRoot?.querySelector<HTMLInputElement>('[data-file-tree-search-input]')
-    ?.focus({ preventScroll: true });
-}
-
-/** Focus the file tree on the active file so its own arrow keys walk the files. */
-function focusTree(): void {
-  const s = useStore.getState();
-  if (!s.layout.treeVisible) s.setLayout({ treeVisible: true });
-  const model = s.treeModel;
-  const host = document.querySelector<HTMLElement>('file-tree-container');
-  requestAnimationFrame(() => {
-    const path =
-      s.activePath && model?.getItem(s.activePath) ? s.activePath : model?.focusNearestPath(s.activePath ?? null);
-    if (path && model) model.focusPath(path);
-    // The tree keeps one focusable row (tabindex=0); DOM focus must land on it for its arrow keys to work.
-    const row =
-      host?.shadowRoot?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]') ??
-      host?.shadowRoot?.querySelector<HTMLElement>('[role="tree"]');
-    (row ?? host)?.focus();
-  });
-}
-
-async function copyPath(s: ReviewState): Promise<void> {
-  const path = currentPath(s);
-  if (!path) return;
-  s.flash((await copyText(path)) ? `Copied ${path}` : 'The browser blocked clipboard access');
+  }, [
+    registry,
+    enabled,
+    useStore,
+    api,
+    views,
+    dom,
+    root,
+    focusTree,
+    focusModeConfig,
+    clearWordFocus,
+    focusFileSearch,
+    activeView,
+    focusReview,
+    KEYMAP,
+    useViews,
+    focusModeEntry,
+  ]);
 }
 
 /** Move keyboard focus to the review pane, so the vim keys reach the cursor instead of the tree or a field. */
-export function focusReview(): void {
+export function focusReview(root: Pick<ParentNode, 'querySelector' | 'querySelectorAll'> = document): void {
   (document.activeElement as HTMLElement | null)?.blur?.();
-  document.querySelector<HTMLElement>('main[tabindex]')?.focus({ preventScroll: true });
+  root.querySelector<HTMLElement>('main[tabindex]')?.focus({ preventScroll: true });
 }
 
-async function copyComments(): Promise<void> {
-  const s = useStore.getState();
-  let text: string;
-  try {
-    text = await api.exportComments();
-  } catch (e) {
-    // A silent failure leaves the previous clipboard to be pasted into the agent.
-    return s.report('Copying comments', e);
+function createBindings(
+  useStore: ReviewStore,
+  api: ReviewApi,
+  views: ViewController,
+  dom: ReturnType<typeof useReviewDom>,
+  root: Pick<ParentNode, 'querySelector' | 'querySelectorAll'>,
+) {
+  const { moveWord, moveWordToEdge, scrollCursorInline, focusedWord } = dom.words;
+  const toggleView = views.toggleView;
+  const selectedQuery = (s: ReviewState) => selectedQueryFor(s, focusedWord);
+  function focusModeEntry(): void {
+    root.querySelector<HTMLElement>(`[data-mode-entry="${useStore.getState().modeEntry}"]`)?.focus();
   }
-  const ok = await copyText(text);
-  if (ok) s.noteCopiedAll();
-  s.flash(ok ? 'Copied all comments' : 'Clipboard blocked; use the panel buttons');
+
+  function focusModeConfig(): void {
+    root.querySelector<HTMLElement>('#mode-config :is(input, [tabindex="0"])')?.focus();
+  }
+
+  /** Re-focus filename search without discarding its current filter. */
+  function focusFileSearch(): void {
+    const model = useStore.getState().treeModel;
+    model?.openSearch(model.getSearchValue());
+    root
+      .querySelector('file-tree-container')
+      ?.shadowRoot?.querySelector<HTMLInputElement>('[data-file-tree-search-input]')
+      ?.focus({ preventScroll: true });
+  }
+
+  /** Focus the file tree on the active file so its own arrow keys walk the files. */
+  function focusTree(): void {
+    const s = useStore.getState();
+    if (!s.layout.treeVisible) s.setLayout({ treeVisible: true });
+    const model = s.treeModel;
+    const host = root.querySelector<HTMLElement>('file-tree-container');
+    requestAnimationFrame(() => {
+      const path =
+        s.activePath && model?.getItem(s.activePath) ? s.activePath : model?.focusNearestPath(s.activePath ?? null);
+      if (path && model) model.focusPath(path);
+      // The tree keeps one focusable row (tabindex=0); DOM focus must land on it for its arrow keys to work.
+      const row =
+        host?.shadowRoot?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]') ??
+        host?.shadowRoot?.querySelector<HTMLElement>('[role="tree"]');
+      (row ?? host)?.focus();
+    });
+  }
+
+  async function copyPath(s: ReviewState): Promise<void> {
+    const path = currentPath(s);
+    if (!path) return;
+    s.flash((await copyText(path)) ? `Copied ${path}` : 'The browser blocked clipboard access');
+  }
+
+  async function copyComments(): Promise<void> {
+    const s = useStore.getState();
+    let text: string;
+    try {
+      text = await api.exportComments();
+    } catch (e) {
+      // A silent failure leaves the previous clipboard to be pasted into the agent.
+      return s.report('Copying comments', e);
+    }
+    const ok = await copyText(text);
+    if (ok) s.noteCopiedAll();
+    s.flash(ok ? 'Copied all comments' : 'Clipboard blocked; use the panel buttons');
+  }
+
+  const KEYMAP: Record<string, Action> = {
+    w: () => moveWord(1),
+    b: () => moveWord(-1),
+    '0': () => moveWordToEdge('first'),
+    $: () => moveWordToEdge('last'),
+    j: (s) => s.moveCursor(1),
+    k: (s) => s.moveCursor(-1),
+    J: (s) => s.moveFile(1),
+    K: (s) => s.moveFile(-1),
+    ']': (s) => s.moveHunk(1),
+    '[': (s) => s.moveHunk(-1),
+    '*': (s) => s.searchWord(1),
+    '#': (s) => s.searchWord(-1),
+    n: (s) => (s.search.matches.length ? s.moveMatch(1) : s.moveHunk(1)),
+    N: (s) => (s.search.matches.length ? s.moveMatch(-1) : s.moveHunk(-1)),
+    gg: (s) => s.moveFile('first'),
+    G: (s) => s.moveFile('last'),
+    V: (s) => s.toggleVisual(),
+    c: (s) => s.selection && s.openDraft(s.selection),
+    C: (s) => {
+      const path = currentPath(s);
+      if (path) s.openFileDraft(path);
+    },
+    e: (s) => s.editCommentAtCursor(),
+    dd: (s) => s.deleteCommentAtCursor(),
+    R: (s) => s.toggleResolvedAtCursor(),
+    v: (s) => s.toggleViewedAtCursor(),
+    gv: (s) => s.toggleViewedAbove(),
+    zo: (s) => s.setCollapsedAtCursor(false),
+    zc: (s) => s.setCollapsedAtCursor(true),
+    zC: (s) => s.setAllCollapsed(true),
+    zO: (s) => s.setAllCollapsed(false),
+    zt: (s) => s.scrollCursorTo('top'),
+    zb: (s) => s.scrollCursorTo('bottom'),
+    zz: (s) => s.scrollCursorTo('eye'),
+    zw: (s) => s.saveConfig({ lineWrap: !s.config.lineWrap }),
+    zh: () => scrollCursorInline(-1),
+    zl: () => scrollCursorInline(1),
+    s: (s) => s.setDiffStyle(s.diffStyle === 'split' ? 'unified' : 'split'),
+    t: (s) => s.setTheme(nextTheme(s.theme)),
+    yy: () => void copyComments(),
+    Y: () => void copyComments(),
+    yp: (s) => void copyPath(s),
+    yl: () => void copyCursorPermalink(useStore, api),
+    '/': (s) => s.openSearch('file', selectedQuery(s)),
+    'g/': (s) => s.openSearch('diff', selectedQuery(s)),
+    gf: () => focusFileSearch(),
+    gd: (s) => s.goToDefinition(),
+    gy: (s) => s.goToTypeDefinition(),
+    gh: (s) => s.showHover(),
+    gA: (s) => s.findReferences(),
+    gs: (s) => s.openSymbols('document'),
+    gS: (s) => s.openSymbols('workspace'),
+    F: (s) => {
+      const path = currentPath(s);
+      if (!s.fileView && path) void s.openFullFile(path);
+    },
+    o: (s) => s.setGithubMenuOpen(!s.githubMenuOpen),
+    m: (s) => s.setModeMenuOpen(!s.modeMenuOpen),
+    '<': (s) => s.stepCommit(-1),
+    '>': (s) => s.stepCommit(1),
+    // Iterations mirror the list's mouse rule: plain keys move the span's lower end, shifted ones its higher.
+    ii: (s) => s.toggleInterdiff(),
+    ij: (s) => s.stepIteration('lower', -1),
+    ik: (s) => s.stepIteration('lower', 1),
+    iJ: (s) => s.stepIteration('higher', -1),
+    iK: (s) => s.stepIteration('higher', 1),
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`i${n}`, (s: ReviewState) => s.pickIteration(n)])),
+    r: (s) => s.reloadIfMoved(),
+    '?': (s) => s.setHelpOpen(!s.helpOpen),
+    M: () => toggleView('graph'),
+  };
+
+  return {
+    KEYMAP,
+    focusModeEntry,
+    focusModeConfig,
+    focusFileSearch,
+    focusTree,
+    copyComments,
+    focusReview: () => focusReview(root),
+  };
 }

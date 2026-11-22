@@ -1,9 +1,10 @@
+import { paintHighlight, clearHighlight } from '@/client/review/highlights.js';
 import type { CodeViewHandle } from '@pierre/diffs/react';
 import { pathFromItemId } from '@/client/model.js';
 import { revealInline } from '@/client/review/inline.js';
 import { isDeletionRow, watchRenderedRows } from '@/client/review/rows.js';
 import type { SearchMatch } from '@/shared/protocol.js';
-import { useStore, type SearchState } from '@/client/store.js';
+import { defaultStore, type ReviewStore, type SearchState } from '@/client/store.js';
 
 /**
  * Paint every occurrence of the current verbatim search (g/ text, * / # word)
@@ -112,7 +113,9 @@ const supported = (): boolean => typeof CSS !== 'undefined' && 'highlights' in C
 export function installSearchHighlights(
   viewer: () => CodeViewHandle<unknown, undefined> | null,
   scroller: HTMLElement,
+  useStore: ReviewStore = defaultStore,
 ): () => void {
+  const highlightOwner = {};
   if (!supported()) return () => {};
   const cache = new MatchCache();
   // The match last scrolled into view sideways; later passes leave the reader's horizontal scroll alone.
@@ -128,8 +131,8 @@ export function installSearchHighlights(
       const search = useStore.getState().search;
       const pattern = matchPattern(search);
       if (!pattern) {
-        CSS.highlights.delete(ALL);
-        CSS.highlights.delete(CURRENT);
+        clearHighlight(highlightOwner, ALL);
+        clearHighlight(highlightOwner, CURRENT);
         return;
       }
       const current = search.matches[search.index];
@@ -148,8 +151,8 @@ export function installSearchHighlights(
           for (const r of cache.rangesFor(row, pattern)) (here ? cur : all).push(r);
         }
       }
-      CSS.highlights.set(ALL, new Highlight(...all));
-      CSS.highlights.set(CURRENT, new Highlight(...cur));
+      paintHighlight(highlightOwner, ALL, all);
+      paintHighlight(highlightOwner, CURRENT, cur);
       if (current && current !== revealed && cur[0]) {
         revealed = current;
         revealInline(cur[0]);
@@ -161,7 +164,7 @@ export function installSearchHighlights(
   );
   return () => {
     stop();
-    CSS.highlights.delete(ALL);
-    CSS.highlights.delete(CURRENT);
+    clearHighlight(highlightOwner, ALL);
+    clearHighlight(highlightOwner, CURRENT);
   };
 }

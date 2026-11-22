@@ -18,12 +18,6 @@ pub struct Gitlab {
     writes: tokio::sync::Mutex<()>,
 }
 impl Gitlab {
-    pub fn shares_checkout(&self, input: &str) -> bool {
-        parse(input).is_ok_and(|(origin, project, iid)| {
-            origin == self.origin && project == self.project && iid == self.iid
-        })
-    }
-
     pub async fn connect(input: &str, token: Option<String>, host: Option<&str>) -> Result<Self> {
         let (origin, project, iid) = parse(input)?;
         let token = token.filter(|s| !s.trim().is_empty());
@@ -133,12 +127,22 @@ impl Gitlab {
         Ok(result)
     }
     pub fn request(&self) -> diffle::protocol::EnterRequest {
-        diffle::protocol::EnterRequest::Revspec {
-            args: vec!["refs/mdiff/base".into(), "refs/mdiff/head".into()],
+        diffle::protocol::EnterRequest::Comparison {
+            old: Some(
+                self.metadata["diff_refs"]["base_sha"]
+                    .as_str()
+                    .unwrap()
+                    .into(),
+            ),
+            new: self.metadata["diff_refs"]["head_sha"]
+                .as_str()
+                .unwrap()
+                .into(),
+            base: diffle::protocol::ComparisonBase::Direct,
         }
     }
 }
-fn parse(input: &str) -> Result<(Url, String, u64)> {
+pub(crate) fn parse(input: &str) -> Result<(Url, String, u64)> {
     let mut url = Url::parse(input).context("Enter a full GitLab merge request URL")?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         bail!("Use an HTTPS GitLab merge request URL without embedded credentials");
@@ -169,13 +173,14 @@ fn parse(input: &str) -> Result<(Url, String, u64)> {
 
 #[tauri::command]
 pub async fn gitlab_action(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, Engine>,
     id: String,
     action: String,
     payload: Option<Value>,
 ) -> Result<Value, String> {
+    let runtime = state.owned_runtime(&id, window.label()).await?;
     let (gitlab, router) = {
-        let runtime = state.runtime(&id).await?;
         (
             runtime
                 .gitlab
@@ -184,7 +189,8 @@ pub async fn gitlab_action(
             runtime.router.clone(),
         )
     };
-    let result = async {
+    let result = tokio::spawn(async move {
+        let _owner = runtime;
         match action.as_str() {
             "load" => {
                 let (discussions, drafts) = tokio::try_join!(gitlab.list("/discussions"), async {
@@ -209,7 +215,7 @@ pub async fn gitlab_action(
             },
             _ => bail!("Unknown GitLab operation"),
         }
-    }.await;
+    }).await.map_err(|e|e.to_string())?;
     result.map_err(|e: anyhow::Error| format!("{e:#}"))
 }
 #[cfg(test)]

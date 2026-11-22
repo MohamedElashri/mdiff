@@ -51,6 +51,10 @@ impl CatFileBatch {
         Self { cwd, live: Arc::new(Mutex::new(None)), spawns: AtomicUsize::new(0) }
     }
 
+    pub async fn close(&self) {
+        self.live.lock().await.take();
+    }
+
     pub fn spawns(&self) -> usize {
         self.spawns.load(Ordering::Relaxed)
     }

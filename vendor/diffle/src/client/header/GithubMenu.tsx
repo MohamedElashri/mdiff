@@ -1,3 +1,5 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useCommandAction } from '@/client/commands/CommandProvider.js';
 import { FloatingPanel } from '@/client/ui/FloatingPanel.js';
 import { GitPullRequest, ExternalLink } from 'lucide-react';
 import { useEffect, useRef } from 'react';
@@ -8,6 +10,7 @@ import { Button } from '@/client/ui/Button.js';
 export function GithubMenu() {
   const open = useStore((s) => s.githubMenuOpen);
   const setOpen = useStore((s) => s.setGithubMenuOpen);
+  const command = useCommandAction('review.github', () => setOpen(!open));
   const github = useStore((s) => s.github);
   const metadata = github.data;
   const repository = metadata?.repository;
@@ -39,13 +42,13 @@ export function GithubMenu() {
       <Button
         ref={trigger}
         variant="ghost"
-        title="GitHub information (o)"
-        aria-label="GitHub information"
+        title={uiText('GitHub information (o)')}
+        aria-label={uiText('GitHub information')}
         aria-expanded={open}
         aria-controls="github-menu"
-        onClick={() => setOpen(!open)}
+        onClick={command.run}
       >
-        <GitPullRequest size="1rem" /> <span className="max-lg:hidden">GitHub</span>
+        <GitPullRequest size="1rem" /> <span className="max-lg:hidden">{uiText('GitHub')}</span>
       </Button>
       {open && (
         <FloatingPanel
@@ -53,10 +56,10 @@ export function GithubMenu() {
           panelRef={panelRef}
           id="github-menu"
           role="dialog"
-          aria-label="GitHub information"
+          aria-label={uiText('GitHub information')}
           className="w-80 max-w-[85vw] rounded-lg border border-border bg-surface p-3 text-[0.8125rem] shadow-lg"
         >
-          <strong>Repository</strong>
+          <strong>{uiText('Repository')}</strong>
           <p className="mt-1 mb-3 wrap-anywhere">
             {repository && metadata?.repositoryUrl ? (
               <a
@@ -70,29 +73,42 @@ export function GithubMenu() {
               </a>
             ) : (
               <span className="text-muted">
-                {github.status === 'loading' ? 'Loading…' : metadata ? 'No GitHub origin' : 'Unavailable'}
+                {github.status === 'loading'
+                  ? uiText('Loading…')
+                  : metadata
+                    ? uiText('No GitHub origin')
+                    : uiText('Unavailable')}
               </span>
             )}
           </p>
-          <strong>Pull request</strong>
+          <strong>{uiText('Pull request')}</strong>
           <div aria-live="polite" className="mt-1">
             {github.status === 'loading' ? (
-              <p className="text-muted">Loading…</p>
+              <p className="text-muted">{uiText('Loading…')}</p>
             ) : github.status === 'error' ? (
-              <p className="text-warn">Lookup failed: {github.error}</p>
+              <p className="text-warn">
+                {uiText('Lookup failed: ')}
+                {github.error}
+              </p>
             ) : pr ? (
               <>
                 <a className="text-accent hover:underline" href={pr.url} target="_blank" rel="noreferrer">
                   #{pr.number} {pr.title}
                 </a>
                 <p className="mt-1 text-muted">
-                  {pr.state === 'OPEN' ? (pr.isDraft ? 'Draft' : 'Open') : pr.state === 'MERGED' ? 'Merged' : 'Closed'}
+                  {pr.state === 'OPEN'
+                    ? pr.isDraft
+                      ? 'Draft'
+                      : 'Open'
+                    : pr.state === 'MERGED'
+                      ? uiText('Merged')
+                      : uiText('Closed')}
                 </p>
                 {pr.repository !== repository && <p className="text-muted">{pr.repository}</p>}
                 {metadata?.reason && <p className="mt-2 text-muted">{metadata?.reason}</p>}
               </>
             ) : (
-              <p className="text-muted">{metadata?.reason ?? 'No matching pull request'}</p>
+              <p className="text-muted">{metadata?.reason ?? uiText('No matching pull request')}</p>
             )}
           </div>
         </FloatingPanel>

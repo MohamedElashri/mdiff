@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { History, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { twMerge } from 'tailwind-merge';
@@ -40,17 +41,18 @@ export function IterationList({ snapshot }: { snapshot: Snapshot }) {
   return (
     <section
       className="flex max-h-[30%] shrink-0 flex-col border-b border-b-border text-[0.8125rem]"
-      aria-label="Iterations"
+      aria-label={uiText('Iterations')}
     >
       <div className="flex min-h-10 flex-none items-center gap-1.5 pr-1.5">
         <Button
           variant="ghost"
           className="min-w-0 flex-1 gap-1.5 self-stretch rounded-none px-2.5 py-1.5 text-left font-semibold outline-none focus-visible:bg-hover"
           aria-expanded={open}
-          title={open ? 'Collapse the iterations' : 'Expand the iterations'}
+          title={open ? uiText('Collapse the iterations') : uiText('Expand the iterations')}
           onClick={() => setOpen(!open)}
         >
-          <History size="0.9375rem" /> Iterations
+          <History size="0.9375rem" />
+          {uiText(' Iterations')}
           <span className="rounded-[0.625rem] bg-hover px-1.75 py-0 font-medium text-muted">{iterations.length}</span>
         </Button>
         <Button
@@ -58,7 +60,9 @@ export function IterationList({ snapshot }: { snapshot: Snapshot }) {
           danger
           feedback={forget.armed ? 'confirm' : undefined}
           className="gap-1 px-1.5 py-px text-[0.75rem] leading-[1.2] font-normal"
-          title={forget.armed ? 'Click again to forget them' : 'Forget the recorded iterations of this range'}
+          title={
+            forget.armed ? uiText('Click again to forget them') : uiText('Forget the recorded iterations of this range')
+          }
           onClick={forget.fire}
         >
           <Trash2 size="0.875rem" />
@@ -150,8 +154,16 @@ function IterationRow({
           'px-0.75 py-[1px] text-[0.75rem] leading-[1.2] font-normal opacity-0 group-focus-within/iteration:opacity-100 group-hover/iteration:opacity-100 data-[feedback=confirm]:opacity-100',
           latest && 'invisible',
         )}
-        title={del.armed ? `Click again to forget #${it.n}` : `Forget iteration #${it.n}`}
-        aria-label={del.armed ? `Forget iteration #${it.n}? Click again to confirm` : `Forget iteration #${it.n}`}
+        title={
+          del.armed
+            ? uiText('Click again to forget #{value0}', { value0: String(it.n) })
+            : uiText('Forget iteration #{value0}', { value0: String(it.n) })
+        }
+        aria-label={
+          del.armed
+            ? uiText('Forget iteration #{value0}? Click again to confirm', { value0: String(it.n) })
+            : uiText('Forget iteration #{value0}', { value0: String(it.n) })
+        }
         onClick={del.fire}
       >
         <Trash2 size="0.75rem" />

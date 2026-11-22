@@ -11,6 +11,9 @@ static FULL_SHA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f]{40}$"
 
 /// A revision as people name it: session PR refs and `refs/heads/` or `refs/remotes/` dropped.
 pub fn ref_name(rev: &str) -> String {
+    if rev == ":empty-tree:" {
+        return "Empty tree".into();
+    }
     let rev = SESSION_REF.replace(rev, "");
     BRANCH_REF.replace(&rev, "").into_owned()
 }

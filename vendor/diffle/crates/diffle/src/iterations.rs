@@ -29,18 +29,67 @@ pub struct IterationStore {
     pub key: String,
     file: PathBuf,
     refs: String,
+    scoped: bool,
+    checked: tokio::sync::Mutex<Vec<(i64, String, String)>>,
 }
 
 impl IterationStore {
     pub fn new(repo: Arc<GitRepo>, key: String) -> Self {
-        let file = repo.git_dir.join("diffle").join("iterations.json");
-        let hash = hex::encode(Sha1::digest(key.as_bytes()));
-        Self { refs: format!("refs/diffle/iterations/{}", &hash[..16]), repo, key, file }
+        let file = repo.data_git_dir.join("diffle").join("iterations.json");
+        let scoped = repo.data_git_dir != repo.common_dir;
+        let identity = if scoped { format!("{}\0{key}", repo.data_git_dir.display()) } else { key.clone() };
+        let hash = hex::encode(Sha1::digest(identity.as_bytes()));
+        Self {
+            refs: format!("refs/diffle/iterations/{}", &hash[..16]),
+            repo,
+            key,
+            file,
+            scoped,
+            checked: tokio::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Import the legacy per-revision ranges of a single managed MR into its stable
+    /// logical range. Publish all required object pins before replacing metadata.
+    pub async fn migrate_ranges(&self) -> anyhow::Result<()> {
+        with_file_lock(&self.file, || async {
+            let mut all = self.read().await?;
+            if all.ranges.contains_key(&self.key) {
+                return Ok(());
+            }
+            let mut list: Vec<_> =
+                all.ranges.iter().filter(|(key, _)| key.starts_with("range:")).flat_map(|(_, v)| v.clone()).collect();
+            list.sort_by_key(|it| it.recorded_at);
+            list.dedup_by(|a, b| a.old_sha == b.old_sha && a.new_sha == b.new_sha);
+            let start = list.len().saturating_sub(MAX_ITERATIONS);
+            list.drain(..start);
+            for (i, it) in list.iter_mut().enumerate() {
+                it.n = i as i64 + 1;
+            }
+            let pins: Vec<_> = list
+                .iter()
+                .flat_map(|it| {
+                    [
+                        (self.pin(it.n, "old"), Some(it.old_sha.clone())),
+                        (self.pin(it.n, "new"), Some(it.new_sha.clone())),
+                    ]
+                })
+                .collect();
+            self.repo.pin(&pins).await?;
+            all.ranges.insert(self.key.clone(), list);
+            self.write(&all).await
+        })
+        .await
     }
 
     /// Oldest first.
     pub async fn list(&self) -> anyhow::Result<Vec<Iteration>> {
-        Ok(self.read().await?.ranges.remove(&self.key).unwrap_or_default())
+        with_file_lock(&self.file, || async {
+            let list = self.read().await?.ranges.remove(&self.key).unwrap_or_default();
+            self.ensure_refs(&list).await?;
+            Ok(list)
+        })
+        .await
     }
 
     pub async fn get(&self, n: i64) -> anyhow::Result<Option<Iteration>> {
@@ -53,6 +102,7 @@ impl IterationStore {
         with_file_lock(&self.file, || async {
             let mut all = self.read().await?;
             let mut list = all.ranges.remove(&self.key).unwrap_or_default();
+            self.ensure_refs(&list).await?;
             if list.last().is_some_and(|last| last.old_sha == old_sha && last.new_sha == new_sha) {
                 return Ok(list);
             }
@@ -98,6 +148,26 @@ impl IterationStore {
             self.write(&all).await
         })
         .await
+    }
+
+    async fn ensure_refs(&self, list: &[Iteration]) -> anyhow::Result<()> {
+        if !self.scoped {
+            return Ok(());
+        }
+        let desired: Vec<_> = list.iter().map(|it| (it.n, it.old_sha.clone(), it.new_sha.clone())).collect();
+        let mut checked = self.checked.lock().await;
+        if *checked == desired {
+            return Ok(());
+        }
+        let pins: Vec<_> = list
+            .iter()
+            .flat_map(|it| {
+                [(self.pin(it.n, "old"), Some(it.old_sha.clone())), (self.pin(it.n, "new"), Some(it.new_sha.clone()))]
+            })
+            .collect();
+        self.repo.pin(&pins).await?;
+        *checked = desired;
+        Ok(())
     }
 
     fn pin(&self, n: i64, side: &str) -> String {

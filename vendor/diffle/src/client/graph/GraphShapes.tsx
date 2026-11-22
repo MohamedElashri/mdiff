@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { FileCode2, Pencil, Plus } from 'lucide-react';
 import { kindColor, KindIcon } from '@/client/lsp/symbolKind.js';
 import type { GraphNode } from '@/shared/protocol.js';
@@ -167,14 +168,14 @@ export function Node({
       <text
         x={x + 26}
         y={y + 18}
-        className={`font-mono text-[12px] ${quiet ? 'fill-muted' : 'fill-foreground'}`}
+        className={`font-mono text-[12px] ${String(quiet ? 'fill-muted' : 'fill-foreground')}`}
         // A quiet box keeps its name muted, as it keeps its icon faded.
         style={quiet || !nameColor ? undefined : { fill: nameColor }}
       >
         <Marked text={shownTitle} query={mark} current={current} />
       </text>
       <text x={x + 26} y={y + 32} className="fill-muted font-sans text-[10.5px]">
-        {test && <tspan className="fill-foreground font-semibold">test · </tspan>}
+        {test && <tspan className="fill-foreground font-semibold">{uiText('test · ')}</tspan>}
         {kind}
         {kind && code && ' · '}
         {code && (
@@ -191,7 +192,7 @@ export function Node({
             width={16}
             height={16}
             rx={4}
-            fill={`color-mix(in srgb, ${badge.color} 15%, transparent)`}
+            fill={`color-mix(in srgb, ${String(badge.color)} 15%, transparent)`}
           />
           <badge.icon x={x + w - 19} y={y + 8} size={10} color={badge.color} strokeWidth={2.5} />
         </g>
@@ -216,7 +217,7 @@ export function ArrowDefs() {
           return (
             <marker
               key={`${w}${lit}`}
-              id={`graph-arrow-${w}${lit ? '-lit' : ''}`}
+              id={`graph-arrow-${String(w)}${String(lit ? '-lit' : '')}`}
               viewBox="0 0 8 8"
               refX="7"
               refY="4"

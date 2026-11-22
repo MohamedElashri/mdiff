@@ -11,7 +11,7 @@ const store = {
   }),
 };
 vi.mock('@/client/store.js', () => ({
-  useStore: {
+  defaultStore: {
     getState: () => store,
     setState: (patch: Partial<typeof store>) => Object.assign(store, patch),
   },

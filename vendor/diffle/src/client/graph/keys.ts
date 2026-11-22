@@ -1,5 +1,4 @@
-import { canvasControl } from './GraphCanvas.js';
-import { type Direction, useGraph } from './state.js';
+import { type Direction, defaultGraph, type GraphController } from './state.js';
 
 const STEPS: Record<string, Direction> = {
   h: 'left',
@@ -15,7 +14,6 @@ const STEPS: Record<string, Direction> = {
 const ZOOM_STEP = 1.25;
 /** How soon a second `z` makes `zz`, as the review's chords wait. */
 const CHORD_MS = 800;
-let zAt = -Infinity;
 
 /** Keys the graph leaves to the review: help, theme, the mode picker, and `M` back to the diff. */
 export const GRAPH_PASSES = new Set(['?', 't', 'm', 'M', 'o']);
@@ -24,15 +22,18 @@ export const GRAPH_PASSES = new Set(['?', 't', 'm', 'M', 'o']);
  * Opens the graph's find, or takes the reader back to its field, its text selected to type over. Ctrl/⌘+F
  * opens it too: the browser's find cannot see boxes panned out of view.
  */
-export function openFind(): void {
+export function openFind(controller: GraphController = defaultGraph): void {
+  const useGraph = controller.store;
   useGraph.getState().openFind();
   requestAnimationFrame(() =>
-    document.querySelector<HTMLInputElement>('input[aria-label="Find in the graph"]')?.select(),
+    controller.root()?.querySelector<HTMLInputElement>('input[aria-label="Find in the graph"]')?.select(),
   );
 }
 
 /** The graph view's own keys; true when `e` was one. The keymap calls it only while the graph shows. */
-export function graphKeys(e: KeyboardEvent): boolean {
+export function graphKeys(e: KeyboardEvent, controller: GraphController = defaultGraph): boolean {
+  const useGraph = controller.store;
+  const canvasControl = controller.canvas;
   const graph = useGraph.getState();
   const step = STEPS[e.key];
   if (step) {
@@ -55,7 +56,7 @@ export function graphKeys(e: KeyboardEvent): boolean {
       graph.setFilter('tests', !graph.filters.tests);
       return true;
     case '/':
-      openFind();
+      openFind(controller);
       return true;
     case 'n':
     case 'N':
@@ -65,11 +66,11 @@ export function graphKeys(e: KeyboardEvent): boolean {
     case 'z':
       // `zz` does what a double-click does: frames the selection with its links, else fits the graph.
       if (e.repeat) return true;
-      if (e.timeStamp - zAt > CHORD_MS) {
-        zAt = e.timeStamp;
+      if (e.timeStamp - controller.keys.zAt > CHORD_MS) {
+        controller.keys.zAt = e.timeStamp;
         return true;
       }
-      zAt = -Infinity;
+      controller.keys.zAt = -Infinity;
       if (graph.selected) canvasControl.frame(graph.selected);
       else canvasControl.fit();
       return true;

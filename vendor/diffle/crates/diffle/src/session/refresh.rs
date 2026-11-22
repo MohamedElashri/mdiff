@@ -60,17 +60,26 @@ impl Session {
     /// Queues `job` unless one is already waiting in `slot`, which the job clears when it starts.
     fn coalesced(
         &self,
-        slot: &Mutex<Option<Pending>>,
+        slot: &std::sync::Arc<Mutex<Option<Pending>>>,
         what: &'static str,
         job: impl Future<Output = Result<()>> + Send + 'static,
     ) -> Pending {
+        let failed_slot = slot.clone();
         let mut slot = slot.lock().unwrap();
         if let Some(pending) = slot.as_ref() {
             return pending.clone();
         }
-        let ran = self.run(job);
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let begin = started.clone();
+        let ran = self.run(async move {
+            begin.store(true, std::sync::atomic::Ordering::SeqCst);
+            job.await
+        });
         let pending = async move {
             if let Err(e) = ran.await {
+                if !started.load(std::sync::atomic::Ordering::SeqCst) {
+                    *failed_slot.lock().unwrap() = None;
+                }
                 crate::status!("[diffle] {what} failed: {e}");
             }
         }

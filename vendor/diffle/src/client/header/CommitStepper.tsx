@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useStore } from '@/client/store.js';
 import { Button } from '@/client/ui/Button.js';
@@ -19,8 +20,8 @@ export function CommitStepper() {
         icon
         disabled={!commit.parent}
         onClick={() => step(-1)}
-        title="Previous commit (<)"
-        aria-label="Previous commit"
+        title={uiText('Previous commit (<)')}
+        aria-label={uiText('Previous commit')}
       >
         <ChevronLeft size="1rem" />
       </Button>
@@ -29,8 +30,8 @@ export function CommitStepper() {
         icon
         disabled={!commit.child}
         onClick={() => step(1)}
-        title="Next commit toward HEAD (>)"
-        aria-label="Next commit"
+        title={uiText('Next commit toward HEAD (>)')}
+        aria-label={uiText('Next commit')}
       >
         <ChevronRight size="1rem" />
       </Button>

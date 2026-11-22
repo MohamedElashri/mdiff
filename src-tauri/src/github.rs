@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -57,6 +57,7 @@ impl Connections {
 struct GuardedClient {
     inner: Arc<dyn GithubClient>,
     enabled: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
 }
 impl GithubClient for GuardedClient {
     fn git_token(&self) -> Option<&str> {
@@ -79,18 +80,41 @@ impl GithubClient for GuardedClient {
                 ))
             });
         }
-        self.inner.graphql(query, variables, timeout)
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let query = query.to_owned();
+        Box::pin(async move {
+            let result = self.inner.graphql(&query, variables, timeout).await;
+            if !self.enabled.load(Ordering::SeqCst) || self.epoch.load(Ordering::SeqCst) != epoch {
+                return Err(diffle::error::GithubError::conflict(
+                    "GitHub connection changed; reopen this review",
+                ));
+            }
+            result
+        })
     }
 }
-pub fn guarded(mut github: Github, enabled: Arc<AtomicBool>) -> Github {
-    github.client = github
-        .client
-        .map(|inner| Arc::new(GuardedClient { inner, enabled }) as Arc<dyn GithubClient>);
+#[cfg(test)]
+pub fn guarded(github: Github, enabled: Arc<AtomicBool>) -> Github {
+    guarded_with_epoch(github, enabled, Arc::new(AtomicU64::new(0)))
+}
+pub fn guarded_with_epoch(
+    mut github: Github,
+    enabled: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+) -> Github {
+    github.client = github.client.map(|inner| {
+        Arc::new(GuardedClient {
+            inner,
+            enabled,
+            epoch,
+        }) as Arc<dyn GithubClient>
+    });
     github
 }
 
 pub struct Integration {
     pub enabled: Arc<AtomicBool>,
+    pub epoch: Arc<AtomicU64>,
     github: Github,
     repo: Arc<GitRepo>,
     writes: tokio::sync::Mutex<()>,
@@ -122,13 +146,33 @@ struct CreateRequest {
 }
 
 impl Integration {
+    #[cfg(test)]
     pub fn new(github: Github, repo: Arc<GitRepo>, enabled: Arc<AtomicBool>) -> Arc<Self> {
+        Self::with_epoch(github, repo, enabled, Arc::new(AtomicU64::new(0)))
+    }
+    pub fn with_epoch(
+        github: Github,
+        repo: Arc<GitRepo>,
+        enabled: Arc<AtomicBool>,
+        epoch: Arc<AtomicU64>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             github,
             repo,
             enabled,
+            epoch,
             writes: Default::default(),
         })
+    }
+    pub fn host(&self) -> &str {
+        &self.github.instance.host
+    }
+    pub fn invalidate(&self, enabled: bool) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.enabled.store(
+            enabled && self.enabled.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
     }
     fn client(&self) -> anyhow::Result<&dyn GithubClient> {
         if !self.enabled.load(Ordering::SeqCst) {

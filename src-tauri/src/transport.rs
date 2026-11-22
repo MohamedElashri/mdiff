@@ -28,7 +28,7 @@ struct RequestEntries {
 /// reaches Rust before its request. Tombstones and running requests have separate limits.
 #[derive(Default)]
 pub struct Requests(Mutex<RequestEntries>);
-struct RequestGuard<'a> {
+pub(crate) struct RequestGuard<'a> {
     requests: &'a Requests,
     key: RequestKey,
 }
@@ -38,7 +38,10 @@ impl Drop for RequestGuard<'_> {
     }
 }
 impl Requests {
-    fn start(&self, key: RequestKey) -> Result<(RequestGuard<'_>, oneshot::Receiver<()>), String> {
+    pub(crate) fn start(
+        &self,
+        key: RequestKey,
+    ) -> Result<(RequestGuard<'_>, oneshot::Receiver<()>), String> {
         let mut requests = self.0.lock().unwrap();
         if requests
             .early
@@ -63,7 +66,21 @@ impl Requests {
             rx,
         ))
     }
-    fn cancel(&self, key: RequestKey) {
+    pub(crate) fn cancel_owner(&self, owner: &str) {
+        let mut requests = self.0.lock().unwrap();
+        requests.active.retain(|(id, _), sender| {
+            if id == owner {
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(());
+                }
+                false
+            } else {
+                true
+            }
+        });
+        requests.early.retain(|(id, _), _| id != owner);
+    }
+    pub(crate) fn cancel(&self, key: RequestKey) {
         let mut requests = self.0.lock().unwrap();
         if let Some(sender) = requests.active.get_mut(&key) {
             if let Some(sender) = sender.take() {
@@ -84,8 +101,21 @@ impl Requests {
     }
 }
 #[tauri::command]
-pub fn cancel_review_request(requests: State<'_, Requests>, id: String, request_id: String) {
+pub async fn cancel_review_request(
+    state: State<'_, Engine>,
+    repositories: State<'_, crate::repository::Repositories>,
+    window: tauri::WebviewWindow,
+    requests: State<'_, Requests>,
+    id: String,
+    request_id: String,
+) -> Result<(), String> {
+    if id.starts_with("history-") {
+        repositories.owns(&id, window.label()).await?;
+    } else {
+        state.owns(&id, window.label()).await?;
+    }
     requests.cancel((id, request_id));
+    Ok(())
 }
 
 pub struct Reply {
@@ -112,7 +142,10 @@ pub async fn dispatch(
         .header("content-type", "application/json")
         .body(Body::from(body.unwrap_or_default()))
         .map_err(|e| e.to_string())?;
-    let response = router.oneshot(request).await.map_err(|e| e.to_string())?;
+    let response = router
+        .oneshot(request)
+        .await
+        .expect("Axum router is infallible");
     let status = response.status().as_u16();
     let content_type = response
         .headers()
@@ -131,7 +164,9 @@ pub async fn dispatch(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Window/state are injected; keep the request wire shape stable.
 pub async fn review_request(
+    window: tauri::WebviewWindow,
     state: State<'_, Engine>,
     requests: State<'_, Requests>,
     id: String,
@@ -150,10 +185,9 @@ pub async fn review_request(
     } else {
         None
     };
-    let (router, mut closing) = {
-        let runtime = state.runtime(&id).await?;
-        (runtime.router.clone(), runtime.closing())
-    };
+    let runtime = state.owned_runtime(&id, window.label()).await?;
+    let router = runtime.router.clone();
+    let mut closing = runtime.closing();
     // Mutations finish atomically even if their UI caller goes away.
     let cancellable = method == "GET"
         || (method == "POST"
@@ -168,6 +202,7 @@ pub async fn review_request(
                     | "/api/lsp/occurrences"
             ));
     let reply = if cancellable {
+        drop(runtime);
         let (_guard, cancelled) = match request_id {
             Some(request_id) => {
                 let (guard, cancelled) = requests.start((id, request_id))?;
@@ -187,13 +222,20 @@ pub async fn review_request(
             reply = dispatch(router, &method, &path, body) => reply?,
         }
     } else {
-        dispatch(router, &method, &path, body).await?
+        // A mutation owns the runtime until it settles, even if the caller drops its reply.
+        // Teardown waits for this guard; no registry lock spans the operation.
+        tokio::spawn(async move {
+            let _owner = runtime;
+            dispatch(router, &method, &path, body).await
+        })
+        .await
+        .map_err(|e| e.to_string())??
     };
     Ok(tauri::ipc::Response::new(pack(reply)?))
 }
 
 /// A little-endian header length, JSON metadata, then raw bytes. Images never become base64.
-fn pack(reply: Reply) -> Result<Vec<u8>, String> {
+pub(crate) fn pack(reply: Reply) -> Result<Vec<u8>, String> {
     let header = serde_json::to_vec(
         &serde_json::json!({"status":reply.status,"contentType":reply.content_type}),
     )

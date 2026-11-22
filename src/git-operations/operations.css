@@ -1,0 +1,281 @@
+.git-operations {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(1060px, calc(100vw - 32px));
+  height: min(740px, calc(100vh - 48px));
+  padding: 20px;
+  overflow: hidden;
+  background: var(--bg-2);
+  color: var(--fg);
+  border-radius: var(--radius-card);
+}
+.git-operations :is(h2, h3, h4, p) {
+  margin: 0;
+}
+.git-operations h2 {
+  font-size: 1.15rem;
+}
+.git-operations h3 {
+  font-size: 1rem;
+}
+.git-operations h4 {
+  font-size: 0.9rem;
+}
+.git-operations header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.git-operations header > div {
+  min-width: 0;
+}
+.git-operations header p {
+  margin-top: 5px;
+  font-size: 0.8rem;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.git-operations :where(button, select, input, textarea) {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.git-operations :where(button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--control-height);
+  padding: var(--space-control-y) var(--space-control-x);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.git-operations :is(button, select, input, textarea):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.git-operations :is(button, input, select, textarea):disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.git-operations :where(input, select, textarea) {
+  padding: 7px;
+  min-width: 0;
+  width: 100%;
+}
+.git-operations textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+.git-operations .primary {
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+.git-operations .danger {
+  color: var(--danger);
+}
+.git-operations small {
+  color: var(--fg-2);
+  font-size: 0.8rem;
+}
+.git-tabs,
+.git-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.git-tabs {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.git-tabs [aria-selected="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.git-operations fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.git-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.git-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 760px;
+}
+.git-form section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.git-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.85rem;
+}
+.git-form label:has([type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+}
+.git-form [type="checkbox"] {
+  width: auto;
+}
+.git-changes {
+  display: grid;
+  grid-template-columns: minmax(220px, 32%) minmax(0, 1fr);
+  gap: 18px;
+  height: 100%;
+}
+.git-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 10px;
+  border-right: 1px solid var(--border);
+}
+.git-files > button {
+  text-align: left;
+  justify-content: start;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.git-files > button[aria-current="true"] {
+  border-color: var(--accent);
+}
+.git-file-detail {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.git-file-detail > * {
+  flex-shrink: 0;
+}
+.git-operations pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 340px;
+  overflow: auto;
+  line-height: 1.5;
+}
+.git-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+  overflow: auto;
+}
+.git-confirm pre {
+  flex: 1;
+  min-height: 100px;
+  max-height: none;
+}
+.git-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.git-job {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.git-job p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.git-operations [role="alert"] {
+  color: var(--danger);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+.git-operations [role="status"] {
+  color: var(--fg-2);
+  font-size: 0.85rem;
+}
+@media (max-width: 700px) {
+  .git-operations {
+    padding: 14px;
+  }
+  .git-changes {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 30% minmax(0, 1fr);
+  }
+  .git-files {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+}
+.git-advanced {
+  max-width: none;
+}
+.git-conflict-sides {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.git-conflict-sides section {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+}
+.git-conflict-sides pre {
+  max-height: 190px;
+  white-space: pre;
+}
+.git-resolution {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.git-resolution textarea {
+  min-height: 220px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  tab-size: 4;
+}
+.git-rebase-todo {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding-left: 24px;
+}
+.git-rebase-todo li > div:first-child {
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.git-rebase-todo select {
+  width: auto;
+}
+@media (max-width: 700px) {
+  .git-conflict-sides {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

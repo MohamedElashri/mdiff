@@ -1,8 +1,9 @@
+import { paintHighlight, clearHighlight } from '@/client/review/highlights.js';
 import type { CodeViewHandle } from '@pierre/diffs/react';
 import type { LspOccurrence } from '@/shared/protocol.js';
 import { pathFromItemId } from '@/client/model.js';
 import { isDeletionRow, watchRenderedRows } from '@/client/review/rows.js';
-import { useStore } from '@/client/store.js';
+import { defaultStore, type ReviewStore } from '@/client/store.js';
 import type { TokenTarget } from './target.js';
 import { tokenRange } from './tokenText.js';
 
@@ -59,81 +60,91 @@ export function occurrenceRanges(
   return out;
 }
 
-// Module state, not store state: pointer enter / leave fire constantly and must not re-render.
-let focused: TokenTarget | null = null;
-let hovered: TokenTarget | null = null;
-let timer: ReturnType<typeof setTimeout> | null = null;
-let cache = new Map<string, LspOccurrence[]>();
-let cacheVersion: number | null = null;
+export function createOccurrenceControl(useStore: ReviewStore = defaultStore) {
+  // Module state, not store state: pointer enter / leave fire constantly and must not re-render.
+  let focused: TokenTarget | null = null;
+  let hovered: TokenTarget | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let cache = new Map<string, LspOccurrence[]>();
+  let cacheVersion: unknown = null;
+  let generation = 0;
 
-const keyOf = (t: TokenTarget) => `${t.path}\0${t.line}\0${t.col}`;
+  const keyOf = (t: TokenTarget) => `${t.path}\0${t.line}\0${t.col}`;
 
-function cacheFor(): Map<string, LspOccurrence[]> | null {
-  const version = useStore.getState().snapshot?.version ?? null;
-  if (version == null) return null;
-  if (version !== cacheVersion) {
-    cacheVersion = version;
-    cache = new Map();
+  function cacheFor(): Map<string, LspOccurrence[]> | null {
+    const version = useStore.getState().snapshot ?? null;
+    if (version == null) return null;
+    if (version !== cacheVersion) {
+      cacheVersion = version;
+      cache = new Map();
+    }
+    return cache;
   }
-  return cache;
-}
 
-/** The pointer's symbol wins while it rests on one; otherwise the keyboard focus. Newest target wins. */
-function retarget(pause: number): void {
-  if (timer) clearTimeout(timer);
-  timer = null;
-  const target = hovered ?? focused;
-  const s = useStore.getState();
-  if (!target) return s.clearOccurrences();
-  if (s.occurrences && keyOf(s.occurrences.target) === keyOf(target)) return;
-  // A tint still on screen belongs to another symbol: drop it rather than let it mislead.
-  s.clearOccurrences();
-  const known = cacheFor()?.get(keyOf(target));
-  if (known) {
-    if (known.length) useStore.setState({ occurrences: { target, items: known } });
-    return;
-  }
-  timer = setTimeout(() => {
-    timer = null;
-    void useStore
-      .getState()
-      .requestOccurrences(target)
-      .then((items) => {
-        // An empty answer is cheap to ask again and may be a server still warming up.
-        if (!items?.length) return;
-        const c = cacheFor();
-
-        if (!c) return;
-        c.set(keyOf(target), items);
-        for (const key of c.keys()) {
-          if (c.size <= CACHE_MAX) break;
-          c.delete(key);
-        }
-      });
-  }, pause);
-}
-
-export const occurrenceControl = {
-  /** The keyboard word focus moved to `target`, or went away. */
-  focus(target: TokenTarget | null): void {
-    focused = target;
-    if (!hovered) retarget(KEY_MS);
-  },
-  /** The pointer rests on `target`, or left its word; leaving hands back to the keyboard focus. */
-  hover(target: TokenTarget | null): void {
-    hovered = target;
-    retarget(target ? POINTER_MS : KEY_MS);
-  },
-  /** Test seam: forget both sources and any pending request. */
-  reset(): void {
-    focused = null;
-    hovered = null;
+  /** The pointer's symbol wins while it rests on one; otherwise the keyboard focus. Newest target wins. */
+  function retarget(pause: number): void {
+    ++generation;
     if (timer) clearTimeout(timer);
     timer = null;
-    cache = new Map();
-    cacheVersion = null;
-  },
-};
+    const target = hovered ?? focused;
+    const s = useStore.getState();
+    if (!target) return s.clearOccurrences();
+    if (s.occurrences && keyOf(s.occurrences.target) === keyOf(target)) return;
+    // A tint still on screen belongs to another symbol: drop it rather than let it mislead.
+    s.clearOccurrences();
+    const known = cacheFor()?.get(keyOf(target));
+    if (known) {
+      if (known.length) useStore.setState({ occurrences: { target, items: known } });
+      return;
+    }
+    const expected = generation;
+    const snapshot = s.snapshot;
+    timer = setTimeout(() => {
+      timer = null;
+      void useStore
+        .getState()
+        .requestOccurrences(target)
+        .then((items) => {
+          // An empty answer is cheap to ask again and may be a server still warming up.
+          if (!items?.length || expected !== generation || useStore.getState().snapshot !== snapshot) return;
+          const c = cacheFor();
+
+          if (!c) return;
+          c.set(keyOf(target), items);
+          for (const key of c.keys()) {
+            if (c.size <= CACHE_MAX) break;
+            c.delete(key);
+          }
+        });
+    }, pause);
+  }
+
+  const occurrenceControl = {
+    /** The keyboard word focus moved to `target`, or went away. */
+    focus(target: TokenTarget | null): void {
+      focused = target;
+      if (!hovered) retarget(KEY_MS);
+    },
+    /** The pointer rests on `target`, or left its word; leaving hands back to the keyboard focus. */
+    hover(target: TokenTarget | null): void {
+      hovered = target;
+      retarget(target ? POINTER_MS : KEY_MS);
+    },
+    /** Test seam: forget both sources and any pending request. */
+    reset(): void {
+      ++generation;
+      focused = null;
+      hovered = null;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      cache = new Map();
+      cacheVersion = null;
+    },
+  };
+
+  return occurrenceControl;
+}
+export const occurrenceControl = createOccurrenceControl();
 
 const supported = (): boolean => typeof CSS !== 'undefined' && 'highlights' in CSS && typeof Highlight !== 'undefined';
 
@@ -153,10 +164,12 @@ function byLine(items: readonly LspOccurrence[]): Map<number, LspOccurrence[]> {
 export function installOccurrenceHighlights(
   viewer: () => CodeViewHandle<unknown, undefined> | null,
   scroller: HTMLElement,
+  useStore: ReviewStore = defaultStore,
 ): () => void {
+  const highlightOwner = {};
   if (!supported()) return () => {};
   const clear = () => {
-    for (const name of Object.values(HIGHLIGHTS)) CSS.highlights.delete(name);
+    for (const name of Object.values(HIGHLIGHTS)) clearHighlight(highlightOwner, name);
   };
   const stop = watchRenderedRows(
     viewer,
@@ -183,10 +196,7 @@ export function installOccurrenceHighlights(
         }
       }
       for (const kind of Object.keys(ranges) as LspOccurrence['kind'][]) {
-        const highlight = new Highlight(...ranges[kind]);
-        // Below the word focus, which underlines the one occurrence the keyboard is on.
-        highlight.priority = 1;
-        CSS.highlights.set(HIGHLIGHTS[kind], highlight);
+        paintHighlight(highlightOwner, HIGHLIGHTS[kind], ranges[kind], 1);
       }
     },
   );

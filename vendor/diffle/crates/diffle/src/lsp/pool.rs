@@ -47,6 +47,8 @@ pub struct PoolOptions {
     pub preload: Vec<LanguageId>,
     pub lookup: Lookup,
     pub max_open: Option<usize>,
+    /// Top-level server processes admitted to this trusted review.
+    pub max_servers: Option<usize>,
 }
 
 #[derive(Default)]
@@ -60,6 +62,8 @@ struct Publish {
 /// alone. Repository-wide queries fan out to all servers, and all of them report as one status.
 pub struct LspPool {
     opts: PoolOptions,
+    admission: Mutex<()>,
+    tracking: Mutex<Option<crate::session::SnapshotSubscription>>,
     /// Servers by command line: languages resolving to one command share its process.
     entries: Mutex<IndexMap<String, Arc<PoolServer>>>,
     missing: Mutex<Vec<LspMissing>>,
@@ -77,6 +81,8 @@ impl LspPool {
         let preload: PathsByLanguage = opts.preload.iter().map(|l| (*l, Vec::new())).collect();
         let pool = Arc::new(Self {
             opts,
+            admission: Mutex::new(()),
+            tracking: Mutex::new(None),
             entries: Mutex::default(),
             missing: Mutex::default(),
             resolved: Mutex::default(),
@@ -231,7 +237,12 @@ impl LspPool {
     }
 
     /// Idempotent: the CLI's dispose can run beside a signal handler's.
+    pub fn track_subscription(&self, subscription: crate::session::SnapshotSubscription) {
+        *self.tracking.lock().unwrap() = Some(subscription);
+    }
     pub async fn close(&self) {
+        self.tracking.lock().unwrap().take();
+        self.query_cache.clear();
         self.closing.store(true, Ordering::SeqCst);
         futures::future::join_all(self.servers().iter().map(|s| async move { s.bridge.close().await })).await;
     }
@@ -280,6 +291,7 @@ impl LspPool {
 
     /// Resolves and starts servers for languages not seen before. Cheap and idempotent per language.
     fn ensure(self: &Arc<Self>, by_language: &PathsByLanguage) {
+        let _admission = self.admission.lock().unwrap();
         if self.closing.load(Ordering::SeqCst) {
             return;
         }
@@ -295,6 +307,16 @@ impl LspPool {
         self.missing.lock().unwrap().extend(resolution.missing);
         for server in resolution.servers {
             let existing = self.entries.lock().unwrap().get(&server.command).cloned();
+            if existing.is_none()
+                && self.opts.max_servers.is_some_and(|limit| self.entries.lock().unwrap().len() >= limit)
+            {
+                self.missing.lock().unwrap().extend(server.languages.iter().map(|language| LspMissing {
+                    language: *language,
+                    tried: vec![server.command.clone()],
+                    why: Some("Code intelligence process budget reached for this review".into()),
+                }));
+                continue;
+            }
             // A process already up for one of its languages (clangd for c) takes the next one (cpp).
             let entry = existing.unwrap_or_else(|| {
                 let routes =

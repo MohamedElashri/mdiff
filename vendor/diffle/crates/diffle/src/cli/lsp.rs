@@ -22,6 +22,15 @@ pub fn start(
     overrides: HashMap<LanguageId, String>,
     preload: Vec<LanguageId>,
 ) -> Arc<LspPool> {
+    start_limited(session, hub, overrides, preload, None)
+}
+pub fn start_limited(
+    session: &Arc<Session>,
+    hub: &Arc<Hub>,
+    overrides: HashMap<LanguageId, String>,
+    preload: Vec<LanguageId>,
+    max_servers: Option<usize>,
+) -> Arc<LspPool> {
     let (reader, checker) = (Arc::downgrade(session), Arc::downgrade(session));
     // Progress repeats the full status; each changed warning or error is printed once.
     let reported: Mutex<HashMap<String, String>> = Mutex::default();
@@ -71,14 +80,16 @@ pub fn start(
         preload,
         lookup: default_lookup(),
         max_open: None,
+        max_servers,
     });
     let tracking = Arc::downgrade(&pool);
     // Synchronous within `Session::start`, so the startup report sees the servers it starts.
-    session.on_snapshot(move |snap: &Arc<Snapshot>| {
+    let subscription = session.subscribe_snapshot(move |snap: &Arc<Snapshot>| {
         if let Some(pool) = tracking.upgrade() {
             tokio::spawn(pool.track(snap));
         }
     });
+    pool.track_subscription(subscription);
     pool
 }
 

@@ -11,7 +11,11 @@ import { useStore } from '@/client/store';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ writeText: vi.fn() }));
-vi.mock('@/client/api', () => ({ api: { exportComments: vi.fn() } }));
+vi.mock('@/client/api', async (original) => {
+  const actual = await original<typeof import('@/client/api')>();
+  const api = { ...actual.api, exportComments: vi.fn() };
+  return { ...actual, api, useApi: () => api };
+});
 let root: Root;
 let host: HTMLDivElement;
 const button = (name: string) =>

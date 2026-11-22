@@ -3,8 +3,10 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-vi.mock('@/client/api.js', () => ({
-  api: {
+vi.mock('@/client/api.js', async (original) => {
+  const actual = await original<typeof import('@/client/api.js')>();
+  const api = {
+    ...actual.api,
     lastCommitsPreview: vi.fn(async () => ({ old: null, new: null })),
     refs: vi.fn(async () => ({
       defaultBranch: 'main',
@@ -14,8 +16,9 @@ vi.mock('@/client/api.js', () => ({
       recent: [],
       current: 'main',
     })),
-  },
-}));
+  };
+  return { ...actual, api, useApi: () => api };
+});
 const { useStore } = await import('@/client/store.js');
 const { ModePicker } = await import('@/client/header/ModePicker.js');
 const { useKeymap } = await import('@/client/keyboard/useKeymap.js');

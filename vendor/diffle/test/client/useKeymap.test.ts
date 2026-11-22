@@ -13,7 +13,11 @@ const api = {
   lspStatus: vi.fn(async () => ({ enabled: false, servers: [], missing: [] })),
   exportComments: vi.fn(),
 };
-vi.mock('@/client/api.js', () => ({ api }));
+vi.mock('@/client/api.js', async (original) => ({
+  ...(await original<typeof import('@/client/api.js')>()),
+  api,
+  useApi: () => api,
+}));
 
 const { useStore } = await import('@/client/store.js');
 const { hasModifier, useKeymap } = await import('@/client/keyboard/useKeymap.js');

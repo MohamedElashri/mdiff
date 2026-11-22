@@ -1,13 +1,15 @@
+import { useReviewStore } from '@/client/store.js';
+import { useGraphController } from '@/client/graph/state.js';
+import { useReviewGraph } from '@/client/graph/state.js';
 import { ChevronRight, Eye, Link2, type LucideIcon } from 'lucide-react';
 import { type ComponentProps, useEffect, useMemo } from 'react';
 import { twMerge } from 'tailwind-merge';
 import type { GraphEdge, GraphNode } from '@/shared/protocol.js';
-import { canvasControl } from '@/client/graph/GraphCanvas.js';
+
 import type { PlacedNode } from '@/client/graph/layout/layout.js';
 import { bySource } from '@/client/graph/layout/order.js';
 import { edgeKey } from '@/client/graph/layout/rank.js';
-import { useGraph } from '@/client/graph/state.js';
-import { useStore } from '@/client/store.js';
+
 import { Button } from '@/client/ui/Button.js';
 import { Code, ENTRY, JumpChip, Jumps, META, Name, SectionHeading } from './GraphDetailParts.js';
 import type { PeekEntry } from './peekLinks.js';
@@ -54,9 +56,12 @@ export function Links({
   /** Lists every entry's lines in the references overlay. */
   onPeek: (entries: PeekEntry[]) => void;
 }) {
+  const useGraph = useReviewGraph();
+  const jumpTo = useJumpTo();
+
   // A card removed under the pointer never sees it leave, so its hover would outlive it and keep
   // lighting a box once the panel shows another node (Ctrl+o back from a picked link).
-  useEffect(() => () => useGraph.getState().hoverEdge(null), [edges]);
+  useEffect(() => () => useGraph.getState().hoverEdge(null), [edges, useGraph]);
   const placed = useGraph((s) => s.view?.stacked.nodes);
   const rank = useMemo(() => readingOrder(placed ?? []), [placed]);
   const rows = edges
@@ -74,9 +79,10 @@ export function Links({
             variant="ghost"
             className="-my-1 text-[0.75rem] font-normal text-muted hover:text-foreground"
             onClick={() => onPeek(rows.map(({ e, n }) => ({ node: n, path: site(n), lines: e.lines })))}
-            title="Step through every line of these links in the references list, without leaving the graph"
+            title={'Step through every line of these links in the references list, without leaving the graph'}
           >
-            <Eye size="0.8125rem" /> Peek
+            <Eye size="0.8125rem" />
+            {' Peek'}
           </Button>
         }
       >
@@ -86,7 +92,7 @@ export function Links({
         {rows.map(({ e, n }) => (
           <li
             key={`${e.from}>${e.to}`}
-            className={`${ENTRY} cursor-pointer`}
+            className={`${String(ENTRY)} cursor-pointer`}
             // The card frames its node in the graph, as a double-click there does; its own buttons and
             // a text selection in it keep their clicks.
             onClick={(ev) => {
@@ -136,14 +142,9 @@ function readingOrder(nodes: PlacedNode[]): Map<string, number> {
   return new Map(rows.flatMap((row) => row.sort((a, b) => a.x - b.x)).map((n, i) => [n.node.id, i]));
 }
 
-/** Selects and frames a linked node, a jump Ctrl+o returns from. */
-function jumpTo(id: string) {
-  if (id !== useGraph.getState().selected) useStore.getState().recordJump();
-  canvasControl.frame(id);
-}
-
 /** A linked node's name, selecting and framing it in the graph; the chevron says the row leads there. */
 function NodeRow({ node, icon }: { node: GraphNode; icon?: LucideIcon }) {
+  const jumpTo = useJumpTo();
   return (
     <LinkButton
       className="group flex items-center justify-between gap-2 hover:no-underline"
@@ -160,7 +161,7 @@ function NodeRow({ node, icon }: { node: GraphNode; icon?: LucideIcon }) {
 /** A file arrow's reference lines in `path`: a chip per line, each beside the symbols its line uses. */
 function UsedLines({ path, lines, used }: { path: string; lines: number[]; used: UsedAt }) {
   return (
-    <div className={`flex min-w-0 flex-col gap-1 ${META}`}>
+    <div className={`flex min-w-0 flex-col gap-1 ${String(META)}`}>
       {[...lines]
         .sort((a, b) => a - b)
         .map((line) => (
@@ -178,4 +179,15 @@ function UsedLines({ path, lines, used }: { path: string; lines: number[]; used:
         ))}
     </div>
   );
+}
+
+function useJumpTo() {
+  const useGraph = useReviewGraph();
+  const useStore = useReviewStore();
+  const canvasControl = useGraphController().canvas;
+  /** Selects and frames a linked node, a jump Ctrl+o returns from. */
+  return (id: string) => {
+    if (id !== useGraph.getState().selected) useStore.getState().recordJump();
+    canvasControl.frame(id);
+  };
 }

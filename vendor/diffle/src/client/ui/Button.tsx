@@ -20,7 +20,7 @@ export function Button({ variant = 'default', danger, icon, feedback, className,
       aria-label={props['aria-label'] ?? (icon ? props.title : undefined)}
       data-feedback={feedback}
       className={twMerge(
-        'inline-flex cursor-pointer items-center gap-1.25 rounded-md border border-border bg-surface px-2.25 py-0.75 leading-[1.2] whitespace-nowrap [transition:background-color_160ms_ease,color_160ms_ease,border-color_160ms_ease,padding_180ms_cubic-bezier(0.2,0.8,0.2,1),opacity_120ms_ease] hover:bg-hover disabled:cursor-default disabled:opacity-50 motion-reduce:transition-none [&_svg]:flex-none',
+        'review-button inline-flex cursor-pointer items-center justify-center gap-1.25 rounded-[var(--radius-control)] border border-border bg-surface px-2.25 py-0.75 leading-[1.2] whitespace-nowrap [transition:background-color_120ms_ease,color_120ms_ease,border-color_120ms_ease,opacity_120ms_ease] hover:bg-hover disabled:cursor-default disabled:opacity-50 motion-reduce:transition-none [&_svg]:flex-none',
         variant === 'primary' && 'border-transparent bg-accent text-accent-fg hover:bg-accent',
         variant === 'ghost' && 'border-transparent bg-transparent hover:bg-hover',
         danger && 'text-danger',

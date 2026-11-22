@@ -8,7 +8,7 @@ use crate::github::pulls::{PullRequest, view_pr};
 use crate::protocol::{ComparisonBase, PullRef, RangeView, Review};
 
 /// A pull request, as GitHub shows it: merge-base(base tip, head) vs head. GitHub names it, then
-/// one fetch brings the base tip and the head into session-owned refs named after the branches, so
+/// one fetch brings the API-recorded base and the head into session-owned refs named after the branches, so
 /// a pull request nobody has checked out is reviewable. The refs stay fixed until another fetch;
 /// the range carries the pull request's identity, which keys its comments like the branches would.
 pub async fn resolve_pr(selector: Option<&str>, repo: &GitRepo, github: &Github) -> Result<Review> {
@@ -16,10 +16,16 @@ pub async fn resolve_pr(selector: Option<&str>, repo: &GitRepo, github: &Github)
         return Err(GithubError::conflict(no_token(&github.instance.host)).into());
     };
     let pr = view_pr(selector, Some(repo), client.as_ref(), &github.instance, None).await?;
+    for oid in [&pr.base_ref_oid, &pr.head_ref_oid] {
+        if ![40, 64].contains(&oid.len()) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(GithubError::conflict("GitHub returned an invalid pull request revision").into());
+        }
+    }
     let head = format!("{}/{}/head/{}", repo.review_refs, pr.number, pr.head_ref_name);
     let base = format!("{}/{}/base/{}", repo.review_refs, pr.number, pr.base_ref_name);
-    let refspecs =
-        [format!("+refs/pull/{}/head:{head}", pr.number), format!("+refs/heads/{}:{base}", pr.base_ref_name)];
+    // baseRefOid describes the PR-associated base; it need not equal today's target branch tip.
+    // Fetch that exact object, preserving the PR diff even after unrelated target-branch advances.
+    let refspecs = [format!("+refs/pull/{}/head:{head}", pr.number), format!("+{}:{base}", pr.base_ref_oid)];
     repo.fetch(&fetch_source(repo, &pr, &github.instance).await?, &refspecs).await?;
     let (actual_head, actual_base) = tokio::try_join!(repo.resolve(&head), repo.resolve(&base))?;
     if actual_head != pr.head_ref_oid || actual_base != pr.base_ref_oid {

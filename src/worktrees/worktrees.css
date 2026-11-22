@@ -1,0 +1,219 @@
+.worktree-hub {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(960px, calc(100vw - 32px));
+  height: min(700px, calc(100vh - 48px));
+  padding: 20px;
+  background: var(--bg-2);
+  color: var(--fg);
+  overflow: hidden;
+  border-radius: var(--radius-card);
+}
+.worktree-hub :is(h2, h3, h4, p) {
+  margin: 0;
+}
+.worktree-hub h2 {
+  font-size: 1.15rem;
+}
+.worktree-hub h3 {
+  font-size: 1rem;
+}
+.worktree-hub h4 {
+  font-size: 0.9rem;
+}
+.worktree-heading,
+.worktree-tabs,
+.worktree-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.worktree-heading {
+  justify-content: space-between;
+}
+.worktree-heading > div {
+  min-width: 0;
+}
+.worktree-heading p {
+  margin-top: 5px;
+  font-size: 0.8rem;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.worktree-hub :where(button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--control-height);
+  padding: var(--space-control-y) var(--space-control-x);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--fg);
+  background: var(--bg-3);
+  cursor: pointer;
+}
+.worktree-hub button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.worktree-hub .primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.worktree-hub :is(button, select):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.worktree-tabs {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+.worktree-tabs [aria-selected="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.worktree-tabs > button:last-child {
+  margin-left: auto;
+}
+.worktree-columns {
+  display: grid;
+  grid-template-columns: minmax(220px, 42%) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  gap: 18px;
+}
+.worktree-list {
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.worktree-list > button {
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  text-align: left;
+  padding: 10px;
+  background: transparent;
+  gap: 6px;
+  border: 1px solid transparent;
+}
+.worktree-list > button[aria-current="true"] {
+  background: var(--bg-3);
+  border-color: var(--border);
+}
+.worktree-list strong {
+  font-size: 0.9rem;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.worktree-hub small,
+.worktree-list span {
+  font-size: 0.78rem;
+  color: var(--fg-2);
+}
+.worktree-list code,
+.worktree-path {
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.worktree-details {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.worktree-details > code {
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+.worktree-actions {
+  flex-wrap: wrap;
+}
+.worktree-status {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.worktree-status div {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.worktree-status dt {
+  font-size: 0.8rem;
+  color: var(--fg-2);
+}
+.worktree-status dd {
+  margin: 3px 0 0;
+  font-size: 1.25rem;
+}
+.worktree-details > section {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.worktree-external {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.worktree-tool-section {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.worktree-tool-section.selected {
+  border-color: var(--accent);
+}
+.worktree-hub label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.85rem;
+}
+.worktree-hub select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 6px;
+  min-height: var(--control-height);
+}
+.worktree-error {
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+@media (max-width: 700px) {
+  .worktree-columns {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 35% minmax(0, 1fr);
+  }
+  .worktree-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+  }
+  .worktree-hub {
+    padding: 14px;
+  }
+}

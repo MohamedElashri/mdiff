@@ -23,7 +23,10 @@
   --trees-git-lane-width-override: 0.75rem;
   --trees-level-gap-override: 0px;
   /* The tree ships its own grey-on-grey palette; route every colour through our tokens so it reads like the rest of the UI. */
-  --trees-bg-override: var(--bg-2);
+  --trees-bg-override: var(--surface-sidebar);
+  --trees-selected-bg-override: var(--selection);
+  --trees-selected-fg-override: var(--fg);
+  --trees-input-bg-override: var(--bg);
   --trees-border-color-override: var(--border);
   --trees-fg-override: var(--fg);
   --trees-fg-muted-override: var(--fg-2);

@@ -91,7 +91,7 @@ pub(crate) async fn with_file_lock_blocking<R: Send + 'static>(
     .await?
 }
 
-async fn lock_file(file: &Path) -> anyhow::Result<File> {
+pub(crate) async fn lock_file(file: &Path) -> anyhow::Result<File> {
     let lock = lock_path(file);
     create_private_dir(lock.parent().context("lock has no directory")?).await?;
     acquire(&lock).await

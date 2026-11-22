@@ -35,19 +35,26 @@ Installs to `~/Applications` on macOS or `~/.local/bin` on Linux, with an applic
 >
 > For script installs, use `"$HOME/Applications/mdiff.app"` instead of `/Applications/mdiff.app`.
 
-Open mdiff, choose **Open repository**, and select a Git folder. Use **New review** for another comparison or a PR/MR URL. Configure appearance and connections in **Preferences**; press `?` for review shortcuts.
+Open a repository or a PR/MR URL. Press **Cmd/Ctrl+K** for the command palette and `?` for review shortcuts. Configure connections and appearance in **Preferences**.
 
-Git is required. Code intelligence needs a language server. Connection tokens stay in memory until you quit. GitLab supports HTTPS hosts and custom ports; installations under URL subpaths are not supported.
+## Features
 
-Code intelligence starts disabled for each review. Choose **Enable code intelligence** in the review toolbar and trust the repository before starting language servers: they can execute build scripts and other repository code. This choice is not saved for future reviews.
+- Split/unified diffs, images, threaded feedback, search, and optional code intelligence.
+- [Tabs and workspaces](src/workspaces/README.md) with saved drafts, reopen/unload actions, and up to two windows.
+- [Commit history](vendor/diffle/src/client/history/README.md) with filters, parent comparisons, ranges, and commit series.
+- [Git operations](src/git-operations/README.md), staging, commits, branches, worktrees, and [conflict recovery](src/git-operations/advanced.md).
+- [Hosting](src-tauri/src/hosting/README.md) for GitHub/GitLab reviews, discussions, revision-specific checks, and supported review/merge actions.
+- [Worktrees and external tools](src/worktrees/README.md), plus an optional [embedded terminal](src/terminal/README.md).
+- Opt-in [agent activity and review handoffs](src/agents/README.md) and an [attention inbox](src/attention/README.md) with notifications and tray access.
+- Configurable shortcuts, themes, fonts, compact density, and [language selection](vendor/diffle/src/client/i18n/README.md) with a partial French preview. Restart to apply a language change.
 
-For private GitHub reviews, a token entered in Preferences authenticates both API requests and Git downloads without being saved to Git config. Automatic environment-token discovery uses `github.com` by default; set `GH_HOST` to the exact Enterprise host to bind an Enterprise environment token, or use `gh auth login --hostname HOST` for host-specific credentials.
+## Connections and trust
 
-The review toolbar’s **GitHub** panel links to the matching PR and transfers open comments to a pending GitHub review. It reports added, updated, and skipped threads; local comments stay in mdiff. Follow **Review and submit on GitHub** to publish the review. The comparison must match the PR’s pushed revision; worktree and stale comments cannot be transferred.
+Git is required. Code intelligence requires an installed language server and explicit trust for each opened review. Trust is not restored across reviews or restarts.
 
-Use **Create a pull request** in the same panel to choose a destination repository, base branch, title, description, and draft status. Commit and push your branch with an upstream first. mdiff verifies that the pushed head matches local HEAD and returns an existing open PR for the same branches instead of creating a duplicate. For forks, set the destination to the upstream repository. PR creation uses the checked-out branch, regardless of the comparison currently displayed.
+Connection tokens stay in memory and are bound to their host. Manual Git network operations use your Git credentials/helpers and SSH agent. GitLab supports HTTPS and custom ports; URL subpaths are unsupported.
 
-Disable **Preferences → Connections → Enable GitHub integration** and save to stop GitHub review requests immediately and skip credential discovery for future reviews. Local reviews continue to work. Reopen a review after enabling the integration or changing its credentials. This switch controls review integration; app update checks have their own preferences.
+Saved feedback and drafts are independent of temporary PR/MR checkouts. Edited checkouts are retained for recovery. See [review storage](src-tauri/src/reviews.md) and [platform validation](VALIDATION.md) for behavior and limits.
 
 ## Build
 

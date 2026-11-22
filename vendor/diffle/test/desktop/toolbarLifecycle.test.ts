@@ -6,6 +6,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import '../../../../src/main';
 import { invoke } from '@tauri-apps/api/core';
 
+import { workspaceFixture } from './workspaceFixture.js';
+let native: ReturnType<typeof workspaceFixture>;
+vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 const entry = vi.hoisted(() => ({ node: null as unknown }));
 vi.mock('react-dom/client', () => ({
   createRoot: () => ({
@@ -19,10 +22,28 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: async () => '/repository' })
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ writeText: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
-  getCurrentWebviewWindow: () => ({ onDragDropEvent: async () => vi.fn() }),
+  getCurrentWebviewWindow: () => ({ label: 'main', onDragDropEvent: async () => vi.fn() }),
 }));
 vi.mock('../../../../src/transport', () => ({ bindReview: vi.fn() }));
-vi.mock('../../../../src/ReviewWorkspace', () => ({ ReviewWorkspace: () => null }));
+vi.mock('../../../../src/ReviewWorkspace', async () => {
+  const { createElement } = await import('react');
+  return {
+    ReviewWorkspace: () => null,
+    ReviewEnvironment: ({ children }: { children: ReactNode }) => children,
+    closeWorkspace: vi.fn(),
+    acknowledgeWorkspaceSaved: () => {},
+    initializeWorkspace: vi.fn(),
+    captureWorkspace: () => null,
+    subscribeWorkspace: () => () => {},
+    ReviewChrome: () =>
+      createElement(
+        'div',
+        null,
+        createElement('button', { 'data-review-action': 'code' }, 'Code intelligence'),
+        createElement('button', { 'data-review-action': 'editor' }, 'Open in IDE'),
+      ),
+  };
+});
 vi.mock('../../../../src/CodeIntelligence', async () => {
   const { createElement } = await import('react');
   return { CodeIntelligence: () => createElement('button', { 'data-review-action': 'code' }, 'Code intelligence') };
@@ -40,12 +61,10 @@ const button = (name: string) =>
 beforeEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
-  let next = 0;
+  native = workspaceFixture();
   vi.mocked(invoke)
     .mockReset()
-    .mockImplementation(async (command) =>
-      command === 'open_review' ? { id: String(++next), root: '/repository' } : undefined,
-    );
+    .mockImplementation((command, args) => native.invoke(command, args as Record<string, unknown>));
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {} });
   host = document.createElement('div');
   document.body.appendChild(host);

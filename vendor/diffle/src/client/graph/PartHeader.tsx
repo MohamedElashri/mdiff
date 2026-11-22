@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { Focus, Folder, Rows3 } from 'lucide-react';
 import { kindColor, KindIcon } from '@/client/lsp/symbolKind.js';
 import type { GraphNode } from '@/shared/protocol.js';
@@ -68,7 +69,7 @@ export function PartHeader({
       {hub && (
         <>
           <text x={0} y={top + 17} className="fill-muted font-sans text-[12px]">
-            around
+            {uiText('around')}
           </text>
           <KindIcon kind={hub.kind} x={iconX} y={top + 5} size={14} />
         </>
@@ -76,7 +77,7 @@ export function PartHeader({
       {'folder' in name && <Folder x={0} y={top + 5} size={14} color="var(--fg-2)" />}
       <text x={textX} y={top + 17} className="font-sans text-[12px]">
         <tspan
-          className={`fill-foreground ${plain ? '' : 'font-mono text-[13px]'}`}
+          className={`fill-foreground ${String(plain ? '' : 'font-mono text-[13px]')}`}
           style={hubColor ? { fill: hubColor } : undefined}
           fontWeight={600}
         >
@@ -90,7 +91,7 @@ export function PartHeader({
       {action && (
         <g
           data-part={action.partKey}
-          className={`cursor-pointer transition-opacity ${action.showingOnly ? '' : 'opacity-0 group-hover:opacity-100'}`}
+          className={`cursor-pointer transition-opacity ${String(action.showingOnly ? '' : 'opacity-0 group-hover:opacity-100')}`}
         >
           <rect
             x={buttonX}

@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { twMerge } from 'tailwind-merge';
 import { Button, TOGGLE_ON } from '@/client/ui/Button.js';
 import { Link2, Search, WholeWord, X } from 'lucide-react';
@@ -35,16 +36,20 @@ function SearchForm() {
         {search.kind === 'references' ? <Link2 size="0.875rem" /> : <WholeWord size="0.875rem" />}
         <span className="flex-1 font-mono text-[0.75rem] leading-[normal] text-muted [&_code]:text-foreground">
           {search.kind === 'references'
-            ? 'references to'
+            ? uiText('references to')
             : search.direction === 1
-              ? 'occurrences of'
-              : 'occurrences (upwards) of'}{' '}
+              ? uiText('occurrences of')
+              : uiText('occurrences (upwards) of')}{' '}
           <code>{search.query}</code>
         </span>
         <span className="min-w-17.5 text-right font-mono text-[0.75rem] leading-[normal] text-muted">
-          {search.loading ? 'searching…' : n ? `${search.index + 1} / ${n}${search.truncated ? '+' : ''}` : 'none'}
+          {search.loading
+            ? uiText('searching…')
+            : n
+              ? `${search.index + 1} / ${n}${search.truncated ? '+' : ''}`
+              : uiText('none')}
         </span>
-        <Button type="button" variant="ghost" icon onClick={closeSearch} title="Close (Esc)">
+        <Button type="button" variant="ghost" icon onClick={closeSearch} title={uiText('Close (Esc)')}>
           <X size="0.875rem" />
         </Button>
       </div>
@@ -74,7 +79,9 @@ function SearchForm() {
         }}
         onChange={(e) => setSearchInput(e.target.value)}
         placeholder={
-          search.scope === 'file' ? 'Search this file… (Enter, then n / N)' : 'Search all files… (Enter, then n / N)'
+          search.scope === 'file'
+            ? uiText('Search this file… (Enter, then n / N)')
+            : uiText('Search all files… (Enter, then n / N)')
         }
         spellCheck={false}
       />
@@ -86,9 +93,13 @@ function SearchForm() {
         )}
         aria-pressed={!search.ignoreCase}
         onClick={() => setSearchOptions({ ignoreCase: !search.ignoreCase })}
-        title={search.ignoreCase ? 'Ignoring case; click to match case' : 'Matching case; click to ignore case'}
+        title={
+          search.ignoreCase
+            ? uiText('Ignoring case; click to match case')
+            : uiText('Matching case; click to ignore case')
+        }
       >
-        Aa
+        {uiText('Aa')}
       </Button>
       <Button
         type="button"
@@ -98,12 +109,14 @@ function SearchForm() {
         )}
         aria-pressed={search.regex}
         onClick={() => setSearchOptions({ regex: !search.regex })}
-        title={search.regex ? 'Extended regex; click for plain text' : 'Plain text; click for extended regex'}
+        title={
+          search.regex ? uiText('Extended regex; click for plain text') : uiText('Plain text; click for extended regex')
+        }
       >
         .*
       </Button>
       <select
-        aria-label="Search content"
+        aria-label={uiText('Search content')}
         className="max-w-28 min-w-0 rounded-sm border border-border bg-canvas text-xs"
         value={search.content[search.scope]}
         onChange={(e) =>
@@ -112,26 +125,26 @@ function SearchForm() {
           })
         }
       >
-        <option value="diff">Diff + context</option>
-        <option value="added">Added</option>
-        <option value="removed">Removed</option>
-        <option value="both">Both sides</option>
-        <option value="full">Full files</option>
+        <option value="diff">{uiText('Diff + context')}</option>
+        <option value="added">{uiText('Added')}</option>
+        <option value="removed">{uiText('Removed')}</option>
+        <option value="both">{uiText('Both sides')}</option>
+        <option value="full">{uiText('Full files')}</option>
       </select>
       <span className="min-w-17.5 text-right font-mono text-[0.75rem] leading-[normal] text-muted">
         {search.loading
-          ? 'searching…'
+          ? uiText('searching…')
           : n === 0 && search.query
             ? search.scope === 'file'
-              ? 'none in file'
+              ? uiText('none in file')
               : fullFile
-                ? 'no matches'
-                : 'none in diff'
+                ? uiText('no matches')
+                : uiText('none in diff')
             : n
               ? `${search.index + 1} / ${n}${search.truncated ? '+' : ''}`
               : ''}
       </span>
-      <Button type="button" variant="ghost" icon onClick={closeSearch} title="Close (Esc)">
+      <Button type="button" variant="ghost" icon onClick={closeSearch} title={uiText('Close (Esc)')}>
         <X size="0.875rem" />
       </Button>
     </form>

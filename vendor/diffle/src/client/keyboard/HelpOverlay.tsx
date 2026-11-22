@@ -1,3 +1,8 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useRef } from 'react';
+import { useCommands, useCommandVersion } from '@/client/commands/CommandProvider.js';
+import { shortcutLabel } from '@/client/commands/shortcuts.js';
+import { messages, translate } from '@/client/i18n/messages.js';
 import { BookOpen } from 'lucide-react';
 import { Dialog, DialogContent } from '@/client/ui/dialog.js';
 import { Button } from '@/client/ui/Button.js';
@@ -11,104 +16,104 @@ import { type HelpSection, useActiveView } from '@/client/views/state.js';
 export const DIFF_HELP: HelpSection[][] = [
   [
     {
-      title: 'Move',
+      title: uiText('Move'),
       rows: [
-        ['j / k  or  ↓ / ↑', 'next / previous line'],
-        ['{n}j / {n}k', 'n lines down / up'],
-        ['Ctrl+d / Ctrl+u', 'half a page down / up'],
-        ['Ctrl+o / Ctrl+i', 'jump back / forward in history'],
-        ['←  or  ⌘/Ctrl+Shift+e  /  →', 'focus the file tree / back to the diff'],
-        ['V, then j / k', 'extend a block selection'],
+        ['j / k  or  ↓ / ↑', uiText('next / previous line')],
+        ['{n}j / {n}k', uiText('n lines down / up')],
+        ['Ctrl+d / Ctrl+u', uiText('half a page down / up')],
+        ['Ctrl+o / Ctrl+i', uiText('jump back / forward in history')],
+        ['←  or  ⌘/Ctrl+Shift+e  /  →', uiText('focus the file tree / back to the diff')],
+        ['V, then j / k', uiText('extend a block selection')],
       ],
     },
     {
-      title: 'Files and hunks',
+      title: uiText('Files and hunks'),
       rows: [
-        ['J / K', 'next / previous file'],
-        ['gg / G', 'first / last file'],
-        ['{n}gg / {n}G', 'line n of the current file'],
-        ['] / [   n / N', 'next / previous hunk (n / N follow matches while searching)'],
-        ['v', 'toggle viewed on the current file'],
-        ['gv', 'toggle viewed on the file above'],
-        ['zo / zc', 'expand / collapse the current file (zo loads a large diff)'],
-        ['zO / zC', 'open / close all files'],
-        ['F', 'view the current file whole; Ctrl+o returns'],
+        ['J / K', uiText('next / previous file')],
+        ['gg / G', uiText('first / last file')],
+        ['{n}gg / {n}G', uiText('line n of the current file')],
+        ['] / [   n / N', uiText('next / previous hunk (n / N follow matches while searching)')],
+        ['v', uiText('toggle viewed on the current file')],
+        ['gv', uiText('toggle viewed on the file above')],
+        ['zo / zc', uiText('expand / collapse the current file (zo loads a large diff)')],
+        ['zO / zC', uiText('open / close all files')],
+        ['F', uiText('view the current file whole; Ctrl+o returns')],
       ],
     },
     {
-      title: 'Comments',
+      title: uiText('Comments'),
       rows: [
-        ['c', 'comment on the current line or selection'],
-        ['C', 'comment on the current file as a whole'],
-        ['e', 'edit the newest message of the thread under the cursor'],
-        ['dd', 'delete the thread under the cursor'],
-        ['R', 'resolve / reopen the thread under the cursor'],
-        ['yy or Y', 'copy all comments'],
-        ['yp', 'copy the current file’s path'],
-        ['yl', 'copy a GitHub link to the line or selection'],
+        ['c', uiText('comment on the current line or selection')],
+        ['C', uiText('comment on the current file as a whole')],
+        ['e', uiText('edit the newest message of the thread under the cursor')],
+        ['dd', uiText('delete the thread under the cursor')],
+        ['R', uiText('resolve / reopen the thread under the cursor')],
+        ['yy or Y', uiText('copy all comments')],
+        ['yp', uiText('copy the current file’s path')],
+        ['yl', uiText('copy a GitHub link to the line or selection')],
       ],
     },
     {
-      title: 'View',
+      title: uiText('View'),
       rows: [
-        ['zz', 'scroll the current line to eye level'],
-        ['zt / zb', 'scroll the current line to the top / bottom'],
-        ['s', 'toggle split / unified'],
-        ['zw', 'toggle line wrapping'],
-        ['zh / zl', 'scroll long lines left / right; hold z to repeat'],
-        ['t', 'cycle theme'],
-        ['⌘/Ctrl+b', 'toggle the file tree (Shift: comments panel)'],
-        ['o', 'GitHub repository and pull request'],
-        ['m, then 1–6', 'open the mode picker and choose an entry'],
-        ['< / >', 'older / newer commit or range-diff pair'],
+        ['zz', uiText('scroll the current line to eye level')],
+        ['zt / zb', uiText('scroll the current line to the top / bottom')],
+        ['s', uiText('toggle split / unified')],
+        ['zw', uiText('toggle line wrapping')],
+        ['zh / zl', uiText('scroll long lines left / right; hold z to repeat')],
+        ['t', uiText('cycle theme')],
+        ['⌘/Ctrl+b', uiText('toggle the file tree (inspector has its own shortcut)')],
+        ['o', uiText('GitHub repository and pull request')],
+        ['m, then 1–6', uiText('open the mode picker and choose an entry')],
+        ['< / >', uiText('older / newer commit or range-diff pair')],
       ],
     },
   ],
   [
     {
-      title: 'Search',
+      title: uiText('Search'),
       rows: [
-        ['/', 'search the current file, then n / N between matches'],
-        ['g/', 'search changed files (toggle: diff + context / full file)'],
-        ['⌘/Ctrl+p  or  gf', 'search files by name'],
-        ['w / b', 'focus the next / previous symbol on the line'],
-        ['0 / $', 'focus the first / last symbol on the line'],
-        ['* / #', 'next / previous occurrence of the focused word'],
+        ['/', uiText('search the current file, then n / N between matches')],
+        ['g/', uiText('search changed files (toggle: diff + context / full file)')],
+        ['⌘/Ctrl+p  or  gf', uiText('search files by name')],
+        ['w / b', uiText('focus the next / previous symbol on the line')],
+        ['0 / $', uiText('focus the first / last symbol on the line')],
+        ['* / #', uiText('next / previous occurrence of the focused word')],
       ],
     },
     {
-      title: 'Code intelligence (language server)',
+      title: uiText('Code intelligence (language server)'),
       rows: [
-        ['hover a symbol  or  gh', 'signature and docs tooltip (gh: focused word); Esc closes'],
-        ['click a symbol', 'definition / type definition / references popover'],
-        ['gd  or  ⌘/Ctrl+click', 'go to the definition, or its references from there'],
-        ['gy', 'go to the definition of the hovered symbol’s type'],
-        ['gA', 'list references; j / k, Enter to jump, n / N to step'],
-        ['gs / gS', 'symbols in the current file / across the repository'],
+        ['hover a symbol  or  gh', uiText('signature and docs tooltip (gh: focused word); Esc closes')],
+        ['click a symbol', uiText('definition / type definition / references popover')],
+        ['gd  or  ⌘/Ctrl+click', uiText('go to the definition, or its references from there')],
+        ['gy', uiText('go to the definition of the hovered symbol’s type')],
+        ['gA', uiText('list references; j / k, Enter to jump, n / N to step')],
+        ['gs / gS', uiText('symbols in the current file / across the repository')],
       ],
     },
     {
-      title: 'Change graph (language server)',
+      title: uiText('Change graph (language server)'),
       rows: [
-        ['M', 'graph of changed symbols; ? there lists its keys'],
-        ['right-click a folder', 'Show in graph: only the changes under it'],
+        ['M', uiText('graph of changed symbols; ? there lists its keys')],
+        ['right-click a folder', uiText('Show in graph: only the changes under it')],
       ],
     },
     {
-      title: 'Iterations',
+      title: uiText('Iterations'),
       rows: [
-        ['r', 'reload once the compared refs moved'],
-        ['ii', 'latest iteration vs. the one before; again: the range'],
-        ['ij / ik', 'span’s lower end one iteration older / newer'],
-        ['iJ / iK', 'span’s higher end one iteration older / newer'],
-        ['i, then 1–9', 'compare that iteration with the latest'],
+        ['r', uiText('reload once the compared refs moved')],
+        ['ii', uiText('latest iteration vs. the one before; again: the range')],
+        ['ij / ik', uiText('span’s lower end one iteration older / newer')],
+        ['iJ / iK', uiText('span’s higher end one iteration older / newer')],
+        ['i, then 1–9', uiText('compare that iteration with the latest')],
       ],
     },
     {
-      title: 'General',
+      title: uiText('General'),
       rows: [
-        ['?', 'toggle this help'],
-        ['Esc', 'close composer, search, or menu; clear selection'],
+        ['?', uiText('toggle this help')],
+        ['Esc', uiText('close composer, search, or menu; clear selection')],
       ],
     },
   ],
@@ -131,26 +136,60 @@ export function HelpOverlay() {
   const open = useStore((s) => s.helpOpen);
   const setOpen = useStore((s) => s.setHelpOpen);
   const view = useActiveView();
+  const registry = useCommands();
+  useCommandVersion(registry);
+  const customize = useRef(false);
+  const binding = (id: string) => shortcutLabel(registry?.shortcut(id), registry?.platform ?? 'other') || '—';
+  const keyLabel = (key: string) =>
+    !registry
+      ? key
+      : key
+          .replace('Ctrl+F', binding('review.find'))
+          .replace('Ctrl+o / Ctrl+i', `${binding('review.back')} / ${binding('review.forward')}`)
+          .replace('⌘/Ctrl+Shift+e', binding('review.focusTree'))
+          .replace('⌘/Ctrl+p', binding('review.files'))
+          .replace('⌘/Ctrl+b', binding('review.tree'));
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={setOpen}
+      onOpenChangeComplete={(value) => {
+        if (!value && customize.current) {
+          customize.current = false;
+          registry?.execute('app.shortcuts');
+        }
+      }}
+    >
       {/* Nothing here takes input, and the first tabbable (the Docs link) would open ringed. */}
       <DialogContent
         initialFocus={false}
-        aria-label="Keyboard shortcuts"
+        aria-label={uiText('Keyboard shortcuts')}
         className="flex max-h-[calc(100vh_-_2rem)] w-max max-w-[96vw] flex-col overflow-hidden p-0"
       >
         <div className="flex items-center justify-between border-b border-b-border px-4.5 pt-3 pb-2.5">
           <h3 className="m-0 text-[0.9375rem]">
-            Keyboard shortcuts<span className="font-normal text-muted"> · {view.label}</span>
+            {uiText('Keyboard shortcuts')}
+            <span className="font-normal text-muted"> · {view.label}</span>
           </h3>
           <div className="flex items-center">
+            {registry && (
+              <Button
+                onClick={() => {
+                  customize.current = true;
+                  setOpen(false);
+                }}
+              >
+                {translate(messages.customize)}
+              </Button>
+            )}
             <a
               className={LINK}
               href="https://diffle.app"
               target="_blank"
               rel="noreferrer"
-              aria-label="Review engine documentation"
-              title="Review engine documentation"
+              aria-label={uiText('Review engine documentation')}
+              title={uiText('Review engine documentation')}
             >
               <BookOpen size="1rem" aria-hidden="true" />
             </a>
@@ -159,17 +198,31 @@ export function HelpOverlay() {
               href="https://github.com/moritzwilksch/diffle"
               target="_blank"
               rel="noreferrer"
-              aria-label="Upstream Diffle source"
-              title="Upstream Diffle source"
+              aria-label={uiText('Upstream Diffle source')}
+              title={uiText('Upstream Diffle source')}
             >
               <GithubMark />
             </a>
             <Button className="ml-2" onClick={() => setOpen(false)}>
-              Close
+              {uiText('Close')}
             </Button>
           </div>
         </div>
         <div className="grid grid-cols-[auto_auto] items-start gap-x-10 overflow-auto px-4.5 pt-2.5 pb-3.5 text-[0.75rem] whitespace-nowrap">
+          {registry && (
+            <section className="col-span-full mb-3 grid grid-cols-[max-content_1fr] gap-x-3">
+              <h4 className="col-span-full mb-1 font-semibold text-muted">{translate(messages.modifiers)}</h4>
+              {registry
+                .definitions()
+                .filter((command) => registry.handler(command.id) && registry.shortcut(command.id))
+                .map((command) => (
+                  <div key={command.id} className="col-span-full grid grid-cols-subgrid leading-[1.7]">
+                    <kbd>{binding(command.id)}</kbd>
+                    <span>{translate(command.label)}</span>
+                  </div>
+                ))}
+            </section>
+          )}
           {view.help.map((sections, col) => (
             <div key={col} className="grid grid-cols-[max-content_1fr] content-start gap-x-3">
               {sections.map((section) => (
@@ -178,9 +231,11 @@ export function HelpOverlay() {
                   {section.rows.map(([k, a]) => (
                     <div key={k} className="col-span-full grid grid-cols-subgrid items-baseline leading-[1.7]">
                       <span className="inline-flex gap-1.5">
-                        {k.split(/\s{2,}/).map((part, i) => (
-                          <kbd key={i}>{part}</kbd>
-                        ))}
+                        {keyLabel(k)
+                          .split(/\s{2,}/)
+                          .map((part, i) => (
+                            <kbd key={i}>{part}</kbd>
+                          ))}
                       </span>
                       <span>{a}</span>
                     </div>

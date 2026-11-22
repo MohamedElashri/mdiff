@@ -2,7 +2,7 @@ import type { CodeViewHandle } from '@pierre/diffs/react';
 import type { LineAnchor } from '@/shared/protocol.js';
 import type { ResolvedRange } from '@/client/comments/anchor.js';
 import { draftRange, pathFromItemId, threadsForPath } from '@/client/model.js';
-import { useStore, type ReviewState } from '@/client/store.js';
+import { defaultStore, type ReviewStore, type ReviewState } from '@/client/store.js';
 import { isDeletionRow, watchRenderedRows } from './rows.js';
 
 /**
@@ -57,6 +57,7 @@ export function tintedRanges(
 export function installCommentHighlights(
   viewer: () => CodeViewHandle<unknown, undefined> | null,
   scroller: HTMLElement,
+  useStore: ReviewStore = defaultStore,
 ): () => void {
   return watchRenderedRows(
     viewer,

@@ -277,7 +277,7 @@ async fn refuses_fetched_commits_that_do_not_match_the_api() {
         node[field] = "1111111111111111111111111111111111111111".into();
         let client = knows(Some(node));
         let err = resolve_review(&pr("7"), &repo, &with(&client)).await.unwrap_err();
-        assert!(err.to_string().contains("fetched commits do not match"), "{err}");
+        assert!(err.to_string().contains("fetched commits do not match") || matches!(&err, Error::Git(_)), "{err}");
     }
     repo.clean_review_refs().await.unwrap();
 }
@@ -324,4 +324,24 @@ async fn refuses_a_refspec_that_would_move_a_ref_the_user_owns() {
         let err = repo.fetch("origin", &[spec.to_owned()]).await.unwrap_err();
         assert!(err.to_string().starts_with("refusing to fetch into"), "{err}");
     }
+}
+
+#[tokio::test]
+async fn fetches_the_api_recorded_base_when_the_target_branch_has_advanced() {
+    let f = Fixture::new();
+    std::fs::write(f.origin.join("unrelated.txt"), "new target change\n").unwrap();
+    git_in(&f.origin, &["add", "."]);
+    git_in(&f.origin, &["commit", "-qm", "target advanced"]);
+    let target_tip = git_in(&f.origin, &["rev-parse", "HEAD"]);
+    assert_ne!(target_tip, f.merge_base);
+    let repo = Arc::new(f.repo().await);
+    let review = resolve_review(&pr("7"), &repo, &with(&f.github())).await.unwrap();
+    let Review::Range { old, new, .. } = &review else { panic!("range") };
+    assert_eq!(git_in(&f.local, &["rev-parse", old]), f.merge_base);
+    assert_eq!(git_in(&f.local, &["rev-parse", new]), f.head);
+    let key = common::range_key(&repo, &review).await;
+    let snapshot = Snapshotter::new(repo.clone(), review, key, 1, 3, None).current().await.unwrap();
+    assert_eq!(snapshot.commits.old_sha, f.merge_base);
+    assert_eq!(snapshot.commits.new_sha, f.head);
+    repo.clean_review_refs().await.unwrap();
 }

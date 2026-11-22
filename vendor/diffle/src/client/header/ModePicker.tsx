@@ -1,3 +1,6 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewStore } from '@/client/store.js';
+import { useCommandAction } from '@/client/commands/CommandProvider.js';
 import { FloatingPanel } from '@/client/ui/FloatingPanel.js';
 import { SegmentedControl, ToggleButton } from '@/client/ui/ToggleButton.js';
 import { twMerge } from 'tailwind-merge';
@@ -18,17 +21,20 @@ import { comparisonLabel, type EnterRequest, type RefsResponse } from '@/shared/
 import { api } from '@/client/api.js';
 import { focusReview } from '@/client/keyboard/useKeymap.js';
 import { lastCommitsRequest } from '@/client/model.js';
-import { useStore } from '@/client/store.js';
+
 import { RefInput } from './RefInput.js';
 import { CommitOffsetInput, parseOffset } from './CommitOffsetInput.js';
 import { CommitPreview } from './CommitPreview.js';
 
 /** Comparison modes with configuration in an adjacent pane. */
 export function ModePicker() {
+  const useStore = useReviewStore();
+
   const snapshot = useStore((s) => s.snapshot);
   const enter = useStore((s) => s.enter);
   const open = useStore((s) => s.modeMenuOpen);
   const setOpen = useStore((s) => s.setModeMenuOpen);
+  const command = useCommandAction('review.compare', () => setOpen(!open));
   const pane = useStore((s) => s.modePane);
   const pick = useStore((s) => s.pickModeEntry);
   const highlighted = useStore((s) => s.modeEntry);
@@ -94,7 +100,7 @@ export function ModePicker() {
       current = false;
       document.removeEventListener('mousedown', onDoc);
     };
-  }, [open, setOpen]);
+  }, [open, setOpen, useStore]);
 
   const choose = (req: EnterRequest) => {
     setOpen(false);
@@ -136,19 +142,19 @@ export function ModePicker() {
     ? [`${ranges.oldBase.trim()}..${ranges.oldTip.trim()}`, `${ranges.newBase.trim()}..${ranges.newTip.trim()}`]
     : null;
   const entries = [
-    { label: 'Working', icon: PencilRuler, pane: null },
-    { label: 'Two refs…', icon: GitCommitHorizontal, pane: 'refs' },
-    { label: 'Last commits', icon: History, pane: 'commits' },
-    { label: 'PR', icon: GitPullRequest, pane: 'pr' },
-    { label: 'Commit…', icon: GitCommitVertical, pane: 'commit' },
-    { label: 'Range diff…', icon: GitCompareArrows, pane: 'range-diff' },
+    { label: uiText('Working'), icon: PencilRuler, pane: null },
+    { label: uiText('Two refs…'), icon: GitCommitHorizontal, pane: 'refs' },
+    { label: uiText('Last commits'), icon: History, pane: 'commits' },
+    { label: uiText('PR'), icon: GitPullRequest, pane: 'pr' },
+    { label: uiText('Commit…'), icon: GitCommitVertical, pane: 'commit' },
+    { label: uiText('Range diff…'), icon: GitCompareArrows, pane: 'range-diff' },
   ] as const;
 
   return (
     <div className="relative min-w-28" ref={wrap}>
       <Button
-        onClick={() => setOpen(!open)}
-        title="Change what is compared (m)"
+        onClick={command.run}
+        title={uiText('Change what is compared (m)')}
         aria-expanded={open}
         aria-controls="mode-picker"
         className="max-w-full font-mono"
@@ -163,10 +169,10 @@ export function ModePicker() {
           className="flex w-max min-w-60 rounded-[0.625rem] border border-border bg-canvas p-1.5 shadow-lg"
           id="mode-picker"
           role="dialog"
-          aria-label="Compare"
+          aria-label={uiText('Compare')}
         >
           <div className="w-60 shrink-0 max-[640px]:w-44">
-            <div className="px-2.5 pt-1 pb-1.5 text-[0.6875rem] font-semibold text-muted">Compare</div>
+            <div className="px-2.5 pt-1 pb-1.5 text-[0.6875rem] font-semibold text-muted">{uiText('Compare')}</div>
             {/* The accent marks an expanded configuration pane; Working has none and acts on click.
                 Pointer, focus and j / k share one highlight, which Enter picks. */}
             {entries.map((entry, i) => (
@@ -218,7 +224,7 @@ export function ModePicker() {
               }}
             >
               {pane === 'pr' && (
-                <div className="pt-1 pb-1.5 text-[0.6875rem] font-semibold text-muted">Pull request</div>
+                <div className="pt-1 pb-1.5 text-[0.6875rem] font-semibold text-muted">{uiText('Pull request')}</div>
               )}
               {pane === 'refs' && (
                 <>
@@ -246,7 +252,9 @@ export function ModePicker() {
                       className="self-start focus-visible:outline-2 focus-visible:outline-offset-[2px] focus-visible:outline-accent focus-visible:outline-solid"
                       ref={comparisonToggle}
                       role="group"
-                      aria-label={`Comparison: ${dots === '..' ? 'Direct' : 'Merge base'}. Space to toggle.`}
+                      aria-label={uiText('Comparison: {value0}. Space to toggle.', {
+                        value0: String(dots === '..' ? 'Direct' : 'Merge base'),
+                      })}
                       tabIndex={0}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
@@ -267,10 +275,10 @@ export function ModePicker() {
                         tabIndex={-1}
                         onClick={() => setDots('...')}
                       >
-                        Merge base
+                        {uiText('Merge base')}
                       </ToggleButton>
                       <ToggleButton type="button" selected={dots === '..'} tabIndex={-1} onClick={() => setDots('..')}>
-                        Direct
+                        {uiText('Direct')}
                       </ToggleButton>
                     </SegmentedControl>
                     <Button
@@ -278,30 +286,32 @@ export function ModePicker() {
                       className="border-0 bg-transparent p-0.5 text-muted hover:bg-hover hover:text-foreground"
                       type="button"
                       tabIndex={-1}
-                      aria-label="Swap refs"
+                      aria-label={uiText('Swap refs')}
                       aria-keyshortcuts="x"
-                      title="Swap refs (x)"
+                      title={uiText('Swap refs (x)')}
                       onClick={swapRefs}
                     >
                       <ArrowLeftRight size="0.75rem" />
                     </Button>
                   </div>
                   <p className="m-0 p-0 text-[0.75rem] whitespace-normal text-muted">
-                    {dots === '..' ? 'Compare these two revisions.' : 'Compare changes since their common ancestor.'}
+                    {dots === '..'
+                      ? uiText('Compare these two revisions.')
+                      : uiText('Compare changes since their common ancestor.')}
                   </p>
                 </>
               )}
               {pane === 'commits' && (
                 <div className="flex flex-col gap-2 pt-1.5">
                   <div className="flex items-baseline font-mono text-[0.8125rem] leading-[1.5]">
-                    <span>HEAD~</span>
+                    <span>{uiText('HEAD~')}</span>
                     <CommitOffsetInput
                       label="Base offset"
                       value={oldOffsetText}
                       onChange={setOldOffsetText}
                       autoFocus
                     />
-                    <span>..HEAD~</span>
+                    <span>{uiText('..HEAD~')}</span>
                     <CommitOffsetInput label="Target offset" value={newOffsetText} onChange={setNewOffsetText} />
                   </div>
                   <CommitPreview oldOffset={oldOffset} newOffset={newOffset} version={snapshot?.version ?? 0} />
@@ -322,18 +332,20 @@ export function ModePicker() {
                     <span>^!</span>
                   </div>
                   <p className="m-0 p-0 text-[0.75rem] whitespace-normal text-muted">
-                    Show this commit against its first parent.
+                    {uiText('Show this commit against its first parent.')}
                   </p>
                 </>
               )}
               {pane === 'range-diff' && (
                 <>
                   {(['old', 'new'] as const).map((side, i) => (
-                    <div key={side} className={`flex flex-col gap-1 ${i === 0 ? 'pt-1.5' : ''}`}>
-                      <span className="text-[0.75rem] text-muted">{side === 'old' ? 'Old range' : 'New range'}</span>
+                    <div key={side} className={`flex flex-col gap-1 ${String(i === 0 ? 'pt-1.5' : '')}`}>
+                      <span className="text-[0.75rem] text-muted">
+                        {side === 'old' ? uiText('Old range') : uiText('New range')}
+                      </span>
                       <div className="flex items-center gap-1.5 font-mono text-[0.8125rem] leading-[1.5]">
                         <RefInput
-                          label={`${side === 'old' ? 'Old' : 'New'} base`}
+                          label={`${String(side === 'old' ? 'Old' : 'New')} base`}
                           value={ranges[`${side}Base`]}
                           onChange={setRange(`${side}Base`)}
                           refs={refs}
@@ -343,7 +355,7 @@ export function ModePicker() {
                         />
                         <span>..</span>
                         <RefInput
-                          label={`${side === 'old' ? 'Old' : 'New'} tip`}
+                          label={`${String(side === 'old' ? 'Old' : 'New')} tip`}
                           value={ranges[`${side}Tip`]}
                           onChange={setRange(`${side}Tip`)}
                           refs={refs}
@@ -361,14 +373,14 @@ export function ModePicker() {
                     </div>
                   ))}
                   <p className="m-0 p-0 text-[0.75rem] whitespace-normal text-muted">
-                    How the old range’s commits became the new range’s, like git range-diff.
+                    {uiText('How the old range’s commits became the new range’s, like git range-diff.')}
                   </p>
                 </>
               )}
               {pane === 'pr' && (
                 <>
                   <label className="flex min-w-0 flex-col gap-1.5">
-                    <span className="text-[0.75rem] text-muted">PR number or URL</span>
+                    <span className="text-[0.75rem] text-muted">{uiText('PR number or URL')}</span>
                     <input
                       className="w-full min-w-0 rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-[0.75rem] leading-[normal] text-foreground"
                       ref={prInput}
@@ -383,11 +395,11 @@ export function ModePicker() {
                         setPr(e.target.value);
                         setPrError(null);
                       }}
-                      placeholder="Current branch’s PR"
+                      placeholder={uiText('Current branch’s PR')}
                     />
                   </label>
                   <p className="m-0 p-0 text-[0.75rem] whitespace-normal text-muted" id="pr-hint">
-                    Enter a PR number or URL, or leave blank for this branch.
+                    {uiText('Enter a PR number or URL, or leave blank for this branch.')}
                   </p>
                   {prError && (
                     <p className="m-0 text-[0.75rem] wrap-anywhere text-del" id="pr-error" role="alert">
@@ -416,11 +428,11 @@ export function ModePicker() {
               >
                 {pane === 'pr'
                   ? prPending
-                    ? 'Loading PR…'
-                    : 'Show PR'
+                    ? uiText('Loading PR…')
+                    : uiText('Show PR')
                   : pane === 'commit'
-                    ? 'Show commit'
-                    : 'Compare'}
+                    ? uiText('Show commit')
+                    : uiText('Compare')}
               </Button>
             </form>
           )}

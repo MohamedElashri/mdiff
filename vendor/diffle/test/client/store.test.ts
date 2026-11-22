@@ -88,7 +88,11 @@ const api = {
   saveConfig: vi.fn(),
   exportToGithub: vi.fn(),
 };
-vi.mock('@/client/api.js', () => ({ api }));
+vi.mock('@/client/api.js', async (original) => ({
+  ...(await original<typeof import('@/client/api.js')>()),
+  api,
+  useApi: () => api,
+}));
 const { blocksSymbol } = vi.hoisted(() => ({ blocksSymbol: vi.fn() }));
 vi.mock('@/client/lsp/syntax.js', () => ({ blocksSymbol }));
 

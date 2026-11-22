@@ -50,6 +50,10 @@
   font-size: 0.8125rem;
   color: var(--fg-2);
 }
+.appearance-grid .appearance-density {
+  grid-column: 1 / -1;
+}
+.appearance-language select,
 .appearance-grid select,
 .appearance-grid input[type='number'] {
   display: block;
@@ -140,7 +144,7 @@
 
 .compact-drawer {
   position: absolute;
-  top: 2.5rem;
+  top: var(--review-toolbar-height);
   bottom: 0;
   width: min(330px, 90%);
   z-index: 25;
@@ -166,12 +170,13 @@
 }
 .compact-scrim {
   position: absolute;
-  inset: 2.5rem 0 0;
+  inset: var(--review-toolbar-height) 0 0;
   background: #0003;
   z-index: 24;
   border: 0;
 }
 
+.appearance-language select,
 .appearance-grid select {
   appearance: none;
   min-height: 36px;
@@ -179,4 +184,16 @@
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4 3 3 3-3' fill='none' stroke='%23888888' stroke-width='1.5'/%3E%3C/svg%3E");
   background-position: right 9px center;
   background-repeat: no-repeat;
+}
+
+.appearance-language {
+  display: block;
+  margin-top: 1rem;
+  min-width: 0;
+  font-size: 0.8125rem;
+  color: var(--fg-2);
+}
+.appearance-language small {
+  display: block;
+  margin-top: 0.4rem;
 }

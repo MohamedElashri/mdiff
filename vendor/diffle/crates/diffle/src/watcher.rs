@@ -1,7 +1,10 @@
 //! Turns filesystem changes into one debounced `dirty` signal for the session.
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, LazyLock, Mutex, Weak,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::time::{Duration, SystemTime};
 
 use notify::event::{AccessKind, AccessMode, MetadataKind, ModifyKind};
@@ -49,9 +52,144 @@ pub fn meta_paths(target: &WatchTarget) -> Vec<PathBuf> {
 }
 
 /// A running watch. Dropping it stops it too; `close` also cancels a pending signal.
-pub struct Watcher {
+struct RawWatcher {
     _native: Option<Arc<Mutex<RecommendedWatcher>>>,
     tasks: Vec<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+struct Signals {
+    sender: mpsc::Sender<Signal>,
+    overflow: Arc<AtomicBool>,
+}
+impl Signals {
+    fn send(&self, signal: Signal) -> Result<(), ()> {
+        match self.sender.try_send(signal) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.overflow.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            Err(_) => Err(()),
+        }
+    }
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct WatchKey {
+    root: Option<PathBuf>,
+    git_dir: PathBuf,
+    common_dir: PathBuf,
+    debounce: Duration,
+}
+type Dirty = Arc<dyn Fn(Option<HashSet<String>>) + Send + Sync>;
+struct Subscriber {
+    dirty: Dirty,
+    ignored: Option<IgnoredFn>,
+}
+struct SharedWatch {
+    subscribers: Mutex<HashMap<u64, Subscriber>>,
+    raw: tokio::sync::OnceCell<RawWatcher>,
+}
+static WATCHES: LazyLock<Mutex<HashMap<WatchKey, Weak<SharedWatch>>>> = LazyLock::new(Mutex::default);
+static NEXT_SUBSCRIBER: AtomicU64 = AtomicU64::new(1);
+/// One subscription to a raw worktree/ref watcher. The last subscriber releases the OS
+/// watcher and polling tasks. Raw invalidations contain no auth or comparison state.
+pub struct Watcher {
+    shared: Arc<SharedWatch>,
+    id: u64,
+}
+impl Watcher {
+    pub async fn start(
+        target: WatchTarget,
+        debounce: Duration,
+        on_dirty: impl Fn() + Send + Sync + 'static,
+    ) -> anyhow::Result<Self> {
+        Self::start_changes(target, debounce, move |_| on_dirty()).await
+    }
+    pub async fn start_changes(
+        target: WatchTarget,
+        debounce: Duration,
+        on_dirty: impl Fn(Option<HashSet<String>>) + Send + Sync + 'static,
+    ) -> anyhow::Result<Self> {
+        let (git_dir, common_dir) = target.dirs();
+        let key = WatchKey {
+            root: match &target {
+                WatchTarget::Worktree { root, .. } => Some(root.clone()),
+                _ => None,
+            },
+            git_dir: git_dir.into(),
+            common_dir: common_dir.into(),
+            debounce,
+        };
+        let shared = {
+            let mut watches = WATCHES.lock().unwrap();
+            watches.retain(|_, v| v.strong_count() > 0);
+            if let Some(shared) = watches.get(&key).and_then(Weak::upgrade) {
+                shared
+            } else {
+                let shared = Arc::new(SharedWatch { subscribers: Mutex::default(), raw: tokio::sync::OnceCell::new() });
+                watches.insert(key, Arc::downgrade(&shared));
+                shared
+            }
+        };
+        let id = NEXT_SUBSCRIBER.fetch_add(1, Ordering::SeqCst);
+        let ignored = match &target {
+            WatchTarget::Worktree { ignored, .. } => Some(ignored.clone()),
+            _ => None,
+        };
+        shared.subscribers.lock().unwrap().insert(id, Subscriber { dirty: Arc::new(on_dirty), ignored });
+        let subscription = Self { shared: shared.clone(), id };
+        let weak = Arc::downgrade(&shared);
+        let target = match target {
+            WatchTarget::Worktree { root, git_dir, common_dir, .. } => WatchTarget::Worktree {
+                root,
+                git_dir,
+                common_dir,
+                ignored: Arc::new(move || {
+                    let Some(shared) = weak.upgrade() else { return Arc::default() };
+                    let readers: Vec<_> =
+                        shared.subscribers.lock().unwrap().values().filter_map(|s| s.ignored.clone()).collect();
+                    let mut sets = readers.iter().map(|read| read());
+                    let Some(first) = sets.next() else { return Arc::default() };
+                    let mut intersection = (*first).clone();
+                    for set in sets {
+                        intersection.retain(|p| set.contains(p));
+                    }
+                    Arc::new(intersection)
+                }),
+            },
+            other => other,
+        };
+        let weak = Arc::downgrade(&shared);
+        shared
+            .raw
+            .get_or_try_init(|| async {
+                RawWatcher::start_changes(target, debounce, move |paths| {
+                    let Some(shared) = weak.upgrade() else { return };
+                    let listeners: Vec<_> =
+                        shared.subscribers.lock().unwrap().values().map(|s| s.dirty.clone()).collect();
+                    for dirty in listeners {
+                        dirty(paths.clone());
+                    }
+                })
+                .await
+            })
+            .await?;
+        Ok(subscription)
+    }
+    pub async fn close(self) {
+        drop(self);
+    }
+    /// Resource accounting used by lifecycle probes (not a count of Git processes).
+    pub fn subscriptions(&self) -> usize {
+        self.shared.subscribers.lock().unwrap().len()
+    }
+}
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.shared.subscribers.lock().unwrap().remove(&self.id);
+    }
 }
 
 enum Signal {
@@ -62,23 +200,16 @@ enum Signal {
     NewDir(PathBuf),
 }
 
-impl Watcher {
-    /// Starts observing; `on_dirty` runs once changes have been quiet for `debounce`. Returns once observing.
-    pub async fn start(
-        target: WatchTarget,
-        debounce: Duration,
-        on_dirty: impl Fn() + Send + Sync + 'static,
-    ) -> anyhow::Result<Self> {
-        Self::start_changes(target, debounce, move |_| on_dirty()).await
-    }
-
+impl RawWatcher {
     /// None means metadata, a rename, a lost event, or another change needing a full scan.
     pub async fn start_changes(
         target: WatchTarget,
         debounce: Duration,
         on_dirty: impl Fn(Option<HashSet<String>>) + Send + Sync + 'static,
     ) -> anyhow::Result<Self> {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Signal>();
+        let (sender, mut rx) = mpsc::channel::<Signal>(512);
+        let overflow = Arc::new(AtomicBool::new(false));
+        let tx = Signals { sender, overflow: overflow.clone() };
         let target = Arc::new(target);
         let native = match &*target {
             WatchTarget::Worktree { root, .. } => {
@@ -108,20 +239,17 @@ impl Watcher {
                         Err(_) => break,
                     }
                 }
+                if overflow.swap(false, Ordering::SeqCst) {
+                    paths = None;
+                }
                 on_dirty(paths);
             }
         });
         Ok(Self { _native: native, tasks: vec![meta, debounced] })
     }
-
-    pub async fn close(self) {
-        for task in &self.tasks {
-            task.abort();
-        }
-    }
 }
 
-impl Drop for Watcher {
+impl Drop for RawWatcher {
     fn drop(&mut self) {
         for task in &self.tasks {
             task.abort();
@@ -139,11 +267,7 @@ fn handle(signal: Signal, native: &Option<Arc<Mutex<RecommendedWatcher>>>, targe
     }
 }
 
-fn watch_worktree(
-    target: &Arc<WatchTarget>,
-    root: &Path,
-    tx: mpsc::UnboundedSender<Signal>,
-) -> anyhow::Result<RecommendedWatcher> {
+fn watch_worktree(target: &Arc<WatchTarget>, root: &Path, tx: Signals) -> anyhow::Result<RecommendedWatcher> {
     let filter = target.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
         let event = match event {
@@ -239,8 +363,16 @@ type Fingerprint = BTreeMap<PathBuf, (Option<SystemTime>, u64)>;
 
 fn fingerprint(paths: &[PathBuf]) -> Fingerprint {
     let mut out = Fingerprint::new();
+    let owned: HashSet<_> = paths
+        .iter()
+        .filter(|p| p.file_name().is_some_and(|name| name == "refs"))
+        .flat_map(|refs| [refs.join("diffle"), refs.join("mdiff")])
+        .collect();
     let mut stack: Vec<PathBuf> = paths.to_vec();
     while let Some(path) = stack.pop() {
+        if owned.contains(&path) {
+            continue;
+        }
         let Ok(meta) = std::fs::metadata(&path) else { continue };
         if meta.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&path) {
@@ -255,7 +387,7 @@ fn fingerprint(paths: &[PathBuf]) -> Fingerprint {
 
 /// Polls `paths` at full timestamp resolution; notify's poller compares whole seconds, which
 /// misses a ref that moves twice within one. The first scan completes before this returns.
-async fn poll_meta(paths: Vec<PathBuf>, tx: mpsc::UnboundedSender<Signal>) -> JoinHandle<()> {
+async fn poll_meta(paths: Vec<PathBuf>, tx: Signals) -> JoinHandle<()> {
     let paths = Arc::new(paths);
     let scan = paths.clone();
     let mut last = tokio::task::spawn_blocking(move || fingerprint(&scan)).await.unwrap_or_default();
@@ -275,6 +407,48 @@ async fn poll_meta(paths: Vec<PathBuf>, tx: mpsc::UnboundedSender<Signal>) -> Jo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shared_invalidations_outlive_one_owner_and_release_the_last_subscription() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("HEAD"), "one").unwrap();
+        let one = Arc::new(AtomicU64::new(0));
+        let two = Arc::new(AtomicU64::new(0));
+        let target = || WatchTarget::Refs { git_dir: root.into(), common_dir: root.into() };
+        let a = Watcher::start(target(), Duration::from_millis(10), {
+            let count = one.clone();
+            move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .await
+        .unwrap();
+        let b = Watcher::start(target(), Duration::from_millis(10), {
+            let count = two.clone();
+            move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .await
+        .unwrap();
+        assert!(Arc::ptr_eq(&a.shared, &b.shared));
+        assert_eq!(b.subscriptions(), 2);
+        a.close().await;
+        assert_eq!(b.subscriptions(), 1);
+        std::fs::write(root.join("HEAD"), "two").unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while two.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(one.load(Ordering::SeqCst), 0);
+        let weak = Arc::downgrade(&b.shared);
+        b.close().await;
+        assert!(weak.upgrade().is_none());
+    }
 
     fn worktree(git_dir: PathBuf, common_dir: PathBuf) -> WatchTarget {
         let ignored: IgnoredFn = Arc::new(|| Arc::new(HashSet::from(["build/".to_owned(), "secret.txt".to_owned()])));
@@ -349,6 +523,19 @@ fn collect_paths(signal: &Signal, target: &WatchTarget, paths: &mut Option<HashS
 #[cfg(test)]
 mod incremental_tests {
     use super::*;
+    #[test]
+    fn metadata_ignores_owned_pins_but_observes_similarly_named_user_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        let refs = dir.path().join("refs");
+        std::fs::create_dir_all(refs.join("diffle/review")).unwrap();
+        std::fs::create_dir_all(refs.join("heads/diffle")).unwrap();
+        let paths = vec![refs.clone()];
+        let initial = fingerprint(&paths);
+        std::fs::write(refs.join("diffle/review/snapshot"), "owned").unwrap();
+        assert_eq!(fingerprint(&paths), initial);
+        std::fs::write(refs.join("heads/diffle/topic"), "user").unwrap();
+        assert_ne!(fingerprint(&paths), initial);
+    }
     #[test]
     fn coalesces_paths_and_escalates_ambiguous_changes_to_full_scan() {
         let target = WatchTarget::Worktree {

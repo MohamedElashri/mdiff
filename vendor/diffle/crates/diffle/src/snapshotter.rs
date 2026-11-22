@@ -21,6 +21,25 @@ const PREWARM: usize = 3;
 const LIVE_PATCH_COUNT: usize = 64;
 const LIVE_PATCH_BYTES: usize = 512 * 1024;
 
+const SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+fn check_snapshot_size(snapshot: &Snapshot) -> Result<()> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            if self.0 > SNAPSHOT_BYTES {
+                return Err(std::io::Error::other("snapshot limit"));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Count(0), snapshot)
+        .map_err(|_| Error::revspec("Review metadata limit reached; open a narrower comparison"))
+}
+
 type Task<T> = Shared<BoxFuture<'static, Result<T>>>;
 type Patch = Arc<PatchText>;
 
@@ -167,6 +186,7 @@ impl Snapshotter {
         snap.changed.retain(|f| !paths.contains(&f.path));
         snap.changed.extend(changed);
         snap.changed.sort_by(|a, b| a.path.cmp(&b.path));
+        check_snapshot_size(&snap)?;
         let snap = Arc::new(snap);
         let mut state = self.state.lock().unwrap();
         if state.version != previous.version {
@@ -322,7 +342,11 @@ impl Snapshotter {
                 tokio::select! {
                     biased;
                     _ = cancelled.changed() => Err(Error::revspec("review changed; retry")),
-                    result = repo.patch_all(&snap.old_sha, &snap.new_sha, &snap.changed, context) => Ok(result?),
+                    result = repo.patch_all(&snap.old_sha, &snap.new_sha, &snap.changed, context) => {
+                        let patch=result?;
+                        if patch.len()>32*1024*1024 {return Err(Error::revspec("Combined patch limit reached; export or inspect a narrower comparison"))}
+                        Ok(patch)
+                    },
                 }
             };
             state.all.get_or_insert_with(|| all.boxed().shared()).clone()
@@ -540,6 +564,8 @@ impl Snapshotter {
             commits,
             iterations: iterations?,
         });
+        check_snapshot_size(&snap)?;
+        repo.retain_review(&[&snap.old_sha, &snap.new_sha, &snap.commits.old_sha, &snap.commits.new_sha]).await?;
         for f in snap.changed.iter().take(PREWARM) {
             tokio::spawn(crate::scheduler::background(self.patch_for(&snap, f)));
         }
@@ -590,7 +616,8 @@ impl Snapshotter {
         let (list, total) = if from.is_empty() || to.is_empty() || from == to {
             (Vec::new(), 0)
         } else {
-            let commits = self.repo.range_commits(&format!("{from}..{to}"), MAX_RANGE_COMMITS).await?;
+            let range = if from == self.repo.empty_tree().await? { to.clone() } else { format!("{from}..{to}") };
+            let commits = self.repo.range_commits(&range, MAX_RANGE_COMMITS).await?;
             (commits.list, commits.total)
         };
         Ok(RangeCommits { list, total, old_sha: old_sha.into(), new_sha: new_sha.into() })

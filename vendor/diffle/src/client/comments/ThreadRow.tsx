@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import { twMerge } from 'tailwind-merge';
 import { Button } from '@/client/ui/Button.js';
 import { AlertTriangle, Check, MessageSquare, Trash2 } from 'lucide-react';
@@ -54,17 +55,21 @@ export const ThreadRow = memo(function ThreadRow({
         <span className="font-mono font-semibold text-foreground">{anchorLabel(t.anchor)}</span>
         {t.messages.length > 1 && (
           <span className="text-muted">
-            {t.messages.length - 1} repl{t.messages.length === 2 ? 'y' : 'ies'}
+            {t.messages.length - 1}
+            {uiText(' repl')}
+            {t.messages.length === 2 ? 'y' : uiText('ies')}
           </span>
         )}
         {t.stale && (
           <span className="inline-flex items-center gap-0.75 font-sans text-[0.6875rem] leading-[normal] text-warn">
-            <AlertTriangle size="0.6875rem" /> stale
+            <AlertTriangle size="0.6875rem" />
+            {uiText(' stale')}
           </span>
         )}
         {t.resolved && (
           <span className="inline-flex items-center gap-0.75 font-sans text-[0.6875rem] leading-[normal] text-add">
-            <Check size="0.6875rem" /> resolved
+            <Check size="0.6875rem" />
+            {uiText(' resolved')}
           </span>
         )}
         <Button
@@ -74,8 +79,8 @@ export const ThreadRow = memo(function ThreadRow({
           icon={!del.armed}
           feedback={del.armed ? 'confirm' : undefined}
           className="ml-auto px-0.75 py-[1px] opacity-0 group-focus-within/thread:opacity-100 group-hover/thread:opacity-100 data-[feedback=confirm]:opacity-100"
-          title={del.armed ? 'Click again to delete this thread' : 'Delete this thread'}
-          aria-label={del.armed ? 'Delete this thread? Click again to confirm' : 'Delete this thread'}
+          title={del.armed ? uiText('Click again to delete this thread') : uiText('Delete this thread')}
+          aria-label={del.armed ? uiText('Delete this thread? Click again to confirm') : uiText('Delete this thread')}
           onClick={(e) => {
             e.stopPropagation();
             del.fire();

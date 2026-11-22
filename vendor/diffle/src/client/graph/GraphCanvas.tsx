@@ -1,4 +1,7 @@
-import { type MouseEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { uiText } from '@/client/i18n/runtime.js';
+import { defaultGraph, useGraphController } from './state.js';
+import { useReviewGraph } from '@/client/graph/state.js';
+import { type MouseEvent, type PointerEvent, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { CanvasToolbar } from './CanvasToolbar.js';
 import { GraphFind } from './GraphFind.js';
 import { type EdgeLabel, GraphPart, type Lit } from './GraphPart.js';
@@ -6,7 +9,7 @@ import { groupName, PartHeader } from './PartHeader.js';
 import { ArrowDefs, CANVAS_BG } from './GraphShapes.js';
 import type { Box, PlacedNode } from '@/client/graph/layout/layout.js';
 import { edgeKey } from '@/client/graph/layout/rank.js';
-import { findMatches, useGraph, type View } from './state.js';
+import { findMatches, type View } from './state.js';
 
 /** A press on the canvas, and what it landed on: a node, an arrow, or a part's header action. */
 interface Press {
@@ -42,13 +45,16 @@ const FOCUS_ZOOM = 1;
 const FRAME_ZOOM = 1.6;
 
 /** What the keys and the side panel do to the mounted canvas: fit, zoom about the centre, frame a node. */
-export const canvasControl = { fit: () => {}, zoom: (_factor: number) => {}, frame: (_id: string) => {} };
+export const canvasControl = defaultGraph.canvas;
 
 /**
  * The placed graph as SVG, panned by dragging and zoomed by the wheel. The selection, or the file
  * focused from the tree, stays lit with its links and the rest fades.
  */
 export function GraphCanvas({ view: shown, clustered }: { view: View; clustered: boolean }) {
+  const useGraph = useReviewGraph();
+
+  const canvasControl = useGraphController().canvas;
   const stacked = shown.stacked;
   const only = useGraph((s) => s.only);
   const selectedEdge = useGraph((s) => s.selectedEdge);
@@ -59,12 +65,12 @@ export function GraphCanvas({ view: shown, clustered }: { view: View; clustered:
   const focusSeq = useGraph((s) => s.focusSeq);
   const find = useGraph((s) => s.find);
   const host = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState<Viewport>({ x: 0, y: 0, k: 1 });
+  const [view, setView] = useState<Viewport>(() => useGraph.getState().viewport ?? { x: 0, y: 0, k: 1 });
   // Pointer capture retargets the release to the host, so the press remembers which node it hit.
   const drag = useRef<Press | null>(null);
   const lastPress = useRef<Press | null>(null);
 
-  const fitBox = (box: Box, maxZoom: number) => {
+  const fitBox = useCallback((box: Box, maxZoom: number) => {
     const el = host.current;
     if (!el || !el.clientWidth) return;
     const [w, h] = [box.w + 2 * MARGIN, box.h + 2 * MARGIN];
@@ -75,14 +81,24 @@ export function GraphCanvas({ view: shown, clustered }: { view: View; clustered:
       y: (el.clientHeight - h * k) / 2 + (MARGIN - box.y) * k,
       ease: true,
     });
-  };
+  }, []);
   const zoomAt = (px: number, py: number, factor: number, ease = false) =>
     setView((v) => {
       const k = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.k * factor));
       return { k, x: px - ((px - v.x) * k) / v.k, y: py - ((py - v.y) * k) / v.k, ease };
     });
-  const fit = () => fitBox({ x: 0, y: 0, w: stacked.width, h: stacked.height }, FIT_ZOOM);
-  useEffect(fit, [stacked]);
+  const fit = useCallback(
+    () => fitBox({ x: 0, y: 0, w: stacked.width, h: stacked.height }, FIT_ZOOM),
+    [stacked, fitBox],
+  );
+  const priorStack = useRef<typeof stacked | null>(null);
+  useEffect(() => {
+    if (priorStack.current || !useGraph.getState().viewport) fit();
+    priorStack.current = stacked;
+  }, [stacked, useGraph, fit]);
+  useEffect(() => {
+    useGraph.setState({ viewport: view });
+  }, [view, useGraph]);
   useEffect(() => {
     canvasControl.fit = fit;
     canvasControl.frame = frame;
@@ -90,13 +106,17 @@ export function GraphCanvas({ view: shown, clustered }: { view: View; clustered:
       const el = host.current;
       if (el) zoomAt(el.clientWidth / 2, el.clientHeight / 2, factor, true);
     };
+    return () => {
+      if (canvasControl.fit === fit)
+        Object.assign(canvasControl, { fit: () => {}, frame: (_id: string) => {}, zoom: (_factor: number) => {} });
+    };
   });
 
   // A file picked in the tree: frame its boxes, all of them, the same way on every pick.
   useEffect(() => {
     const boxes = stacked.nodes.filter((p) => p.node.path === focusPath);
     if (boxes.length) fitBox(bounds(boxes), FOCUS_ZOOM);
-  }, [focusPath, focusSeq, stacked]);
+  }, [focusPath, focusSeq, stacked, fitBox]);
   // A selection moved by the keys: bring it into view when it left it.
   useEffect(() => {
     const p = stacked.nodes.find((n) => n.node.id === selected);
@@ -235,7 +255,7 @@ export function GraphCanvas({ view: shown, clustered }: { view: View; clustered:
         onPointerOver={(e) => setHovered(hit(e, 'data-node'))}
         onPointerLeave={() => setHovered(null)}
       >
-        <svg className="absolute inset-0 h-full w-full" role="img" aria-label="Change graph">
+        <svg className="absolute inset-0 h-full w-full" role="img" aria-label={uiText('Change graph')}>
           <ArrowDefs />
           <g
             style={{
@@ -246,7 +266,7 @@ export function GraphCanvas({ view: shown, clustered }: { view: View; clustered:
             className="motion-reduce:transition-none!"
           >
             {stacked.parts.map((part) => (
-              <g key={part.key} transform={`translate(${part.x},${part.y})`}>
+              <g key={part.key} transform={`translate(${String(part.x)},${String(part.y)})`}>
                 {(stacked.parts.length > 1 || stacked.unlinked || only != null) && (
                   <PartHeader
                     name={groupName(
@@ -271,7 +291,7 @@ export function GraphCanvas({ view: shown, clustered }: { view: View; clustered:
               </g>
             ))}
             {stacked.unlinked && (
-              <g transform={`translate(0,${stacked.unlinked.y})`}>
+              <g transform={`translate(0,${String(stacked.unlinked.y)})`}>
                 <PartHeader
                   name={{ plain: 'No links' }}
                   count={stacked.unlinked.placed.nodes.length}

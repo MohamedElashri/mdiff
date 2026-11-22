@@ -5,19 +5,23 @@ use diffle::git::exec::{exec_git, ExecOptions};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 impl Gitlab {
-    /// Persistent, app-owned checkouts preserve review comments between launches.
-    pub async fn prepare(&self, cache: PathBuf) -> Result<PathBuf> {
-        let key = format!(
+    pub fn cached_path(&self, cache: &Path) -> PathBuf {
+        cache.join(format!(
             "{:x}",
             Sha256::digest(format!("{}{}!{}", self.origin, self.project, self.iid))
-        );
-        let path = cache.join(key);
+        ))
+    }
+    /// Prepare a caller-owned staging checkout. Live reviews never share this mutable path.
+    pub async fn prepare(&self, cache: PathBuf) -> Result<PathBuf> {
+        let path = self.cached_path(&cache);
         tokio::fs::create_dir_all(&path).await?;
         if !path.join(".git").exists() {
             self.git(&path, &["init", "-q"]).await?;
         }
         let mut remote = self.origin.clone();
         remote.set_path(&format!("/{}.git", self.project));
+        self.git(&path, &["config", "remote.origin.url", remote.as_str()])
+            .await?;
         // Only our own checkout is touched, with the remote derived from the bound origin.
         let head = self.metadata["diff_refs"]["head_sha"].as_str().unwrap();
         let base = self.metadata["diff_refs"]["base_sha"].as_str().unwrap();

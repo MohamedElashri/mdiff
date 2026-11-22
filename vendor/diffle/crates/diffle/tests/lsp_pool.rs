@@ -81,6 +81,7 @@ impl Started {
 }
 
 struct Setup {
+    max_servers: Option<usize>,
     overrides: Vec<(LanguageId, &'static str)>,
     preload: Vec<LanguageId>,
     lookup: Lookup,
@@ -93,7 +94,14 @@ struct Setup {
 impl Default for Setup {
     fn default() -> Self {
         // Every override names a program the probe would not find, so the pool must not probe them.
-        Self { overrides: Vec::new(), preload: Vec::new(), lookup: Arc::new(|_| None), env: Vec::new(), on_disk: None }
+        Self {
+            max_servers: None,
+            overrides: Vec::new(),
+            preload: Vec::new(),
+            lookup: Arc::new(|_| None),
+            env: Vec::new(),
+            on_disk: None,
+        }
     }
 }
 
@@ -134,12 +142,28 @@ fn start(setup: Setup) -> Option<Started> {
         preload: setup.preload,
         lookup: setup.lookup,
         max_open: None,
+        max_servers: setup.max_servers,
     });
     Some(Started { pool, statuses, root, _dir: dir })
 }
 
 fn with(overrides: &[(LanguageId, &'static str)]) -> Setup {
     Setup { overrides: overrides.to_vec(), ..Default::default() }
+}
+
+#[tokio::test]
+async fn explicit_process_admission_reports_unserved_languages_without_spawning_them() {
+    let Some(s) = start(Setup {
+        max_servers: Some(1),
+        ..with(&[(LanguageId::Python, "py-server"), (LanguageId::Go, "go-server"), (LanguageId::Rust, "rust-server")])
+    }) else {
+        return;
+    };
+    s.pool.track(&diff(&["a.py", "b.go", "main.rs"])).await;
+    let status = s.pool.status();
+    assert_eq!(status.servers.len(), 1);
+    assert_eq!(status.missing.iter().filter(|m| m.why.as_deref().is_some_and(|s| s.contains("budget"))).count(), 2);
+    s.pool.close().await;
 }
 
 fn pos(path: &str, line: u64, col: i64) -> LspPosition {

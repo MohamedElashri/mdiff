@@ -23,7 +23,7 @@ for package in lock['package']:
     for path in sorted(set(files)):
         if path.is_file(): output.append('\n'+path.name+'\n\n'+path.read_text(errors='replace')+'\n')
 font_names = [name for name in json.loads((root/'package.json').read_text()).get('dependencies',{}) if name.startswith('@fontsource')]
-for name in font_names + ['@tauri-apps/api','@tauri-apps/plugin-updater','@tauri-apps/plugin-dialog','@tauri-apps/plugin-clipboard-manager','@tauri-apps/plugin-opener']:
+for name in font_names + ['@xterm/xterm','@xterm/addon-fit','@tauri-apps/api','@tauri-apps/plugin-updater','@tauri-apps/plugin-dialog','@tauri-apps/plugin-clipboard-manager','@tauri-apps/plugin-opener']:
     directory=root/'node_modules'/name
     metadata=json.loads((directory/'package.json').read_text())
     output.append(f'\n## {name} {metadata["version"]}\n\nLicense: {metadata.get("license", "See package")}\n')
@@ -34,4 +34,5 @@ text = licence.read_text()
 start, end = '<!-- desktop-licenses:start -->', '<!-- desktop-licenses:end -->'
 prefix, remainder = text.split(start, 1)
 _, suffix = remainder.split(end, 1)
-licence.write_text(prefix + start + '\n' + '\n'.join(output) + '\n' + end + suffix)
+generated = '\n'.join(line.rstrip() for line in '\n'.join(output).splitlines())
+licence.write_text(prefix + start + '\n' + generated + '\n' + end + suffix)

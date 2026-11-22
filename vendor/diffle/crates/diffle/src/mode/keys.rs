@@ -48,6 +48,20 @@ pub async fn range_comment_key(
     pr: Option<&PullRef>,
     (old_sha, new_sha): (&str, &str),
 ) -> Result<String> {
+    if let Some(key) = &repo.range_identity {
+        return Ok(key.clone());
+    }
+    named_range_comment_key(repo, instance, (old, new, base), pr, (old_sha, new_sha)).await
+}
+
+/// Derives an identity for a newly entered range, ignoring a reconstruction override.
+pub async fn named_range_comment_key(
+    repo: &GitRepo,
+    instance: &GithubInstance,
+    (old, new, base): (&str, &str, ComparisonBase),
+    pr: Option<&PullRef>,
+    (old_sha, new_sha): (&str, &str),
+) -> Result<String> {
     if let Some(pr) = pr {
         let head = pr.head_repository.as_ref().map_or_else(|| format!("deleted:{}", pr.url), |h| h.to_lowercase());
         let base_branch = format!("{}:{}", pr.repository.to_lowercase(), ref_name(old));

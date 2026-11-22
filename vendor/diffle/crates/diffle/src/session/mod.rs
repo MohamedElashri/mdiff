@@ -6,7 +6,7 @@ mod transitions;
 mod watch;
 
 use std::future::Future;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::FutureExt;
@@ -17,7 +17,9 @@ use crate::comments::CommentStore;
 use crate::error::{Error, Result};
 use crate::git::GitRepo;
 use crate::github::hosts::Github;
-use crate::protocol::{FollowRefs, Live, Moved, RangeView, Review, ServerMessage, Snapshot, shown_iterations};
+use crate::protocol::{
+    EnterRequest, FollowRefs, Live, Moved, RangeView, Review, ServerMessage, Snapshot, shown_iterations,
+};
 use crate::snapshotter::Snapshotter;
 use crate::watcher::Watcher;
 
@@ -57,7 +59,13 @@ struct Active {
 type Job = BoxFuture<'static, ()>;
 type Discovery =
     (Arc<Snapshot>, std::time::Instant, Shared<BoxFuture<'static, Result<crate::protocol::GithubMetadata>>>);
-type Listener = Box<dyn Fn(&Arc<Snapshot>) + Send + Sync>;
+type SnapshotFn = Arc<dyn Fn(&Arc<Snapshot>) + Send + Sync>;
+struct Listener {
+    callback: SnapshotFn,
+    owner: Option<std::sync::Weak<()>>,
+}
+/// Retaining this token keeps the subscription alive. Registration/announcement prune dead tokens.
+pub struct SnapshotSubscription(#[allow(dead_code)] Arc<()>);
 type Pending = Shared<BoxFuture<'static, ()>>;
 
 /// Why no thread can be created in `review`, or none: an interdiff's old side is a replayed
@@ -90,6 +98,7 @@ pub fn pr_url(review: &Review) -> Option<String> {
 /// out from under the reviewer, unless `follows` says otherwise.
 pub struct Session {
     pub repo: Arc<GitRepo>,
+    pub history: Arc<crate::history::Repository>,
     hub: Arc<dyn Broadcaster>,
     watch: bool,
     github: Github,
@@ -101,25 +110,30 @@ pub struct Session {
     follow_refs: Mutex<FollowRefs>,
     version: AtomicI64,
     active: Mutex<Option<Arc<Active>>>,
-    jobs: mpsc::UnboundedSender<Job>,
+    source_request: Mutex<Option<EnterRequest>>,
+    jobs: mpsc::Sender<Job>,
+    submission: Mutex<()>,
+    closing: AtomicBool,
+    finished: signal::Sender<bool>,
     ready: signal::Sender<Option<Result<()>>>,
     /// The refresh, and the refs check, waiting for the queue, if any. Later requests join them.
-    queued_refresh: Mutex<Option<Pending>>,
+    queued_refresh: Arc<Mutex<Option<Pending>>>,
     dirty_paths: Mutex<Option<std::collections::HashSet<String>>>,
-    queued_check: Mutex<Option<Pending>>,
+    queued_check: Arc<Mutex<Option<Pending>>>,
     listeners: Mutex<Vec<Listener>>,
     readable: Mutex<Option<(Arc<Snapshot>, Arc<ReadablePaths>)>>,
 }
 
 impl Session {
     pub fn new(repo: Arc<GitRepo>, hub: Arc<dyn Broadcaster>, opts: SessionOptions) -> Arc<Self> {
-        let (jobs, mut queue) = mpsc::unbounded_channel::<Job>();
+        let (jobs, mut queue) = mpsc::channel::<Job>(256);
         tokio::spawn(async move {
             while let Some(job) = queue.recv().await {
                 job.await;
             }
         });
         Arc::new(Self {
+            history: crate::history::Repository::at(repo.root.clone(), repo.git_dir.clone(), repo.common_dir.clone()),
             repo,
             hub,
             watch: opts.watch,
@@ -130,11 +144,15 @@ impl Session {
             follow_refs: Mutex::new(opts.follow_refs),
             version: AtomicI64::new(0),
             active: Mutex::new(None),
+            source_request: Mutex::new(None),
             jobs,
+            submission: Mutex::new(()),
+            closing: AtomicBool::new(false),
+            finished: signal::channel(false).0,
             ready: signal::channel(None).0,
-            queued_refresh: Mutex::new(None),
+            queued_refresh: Arc::new(Mutex::new(None)),
             dirty_paths: Mutex::new(Some(Default::default())),
-            queued_check: Mutex::new(None),
+            queued_check: Arc::new(Mutex::new(None)),
             listeners: Mutex::new(Vec::new()),
             readable: Mutex::new(None),
         })
@@ -148,14 +166,22 @@ impl Session {
         F: Future<Output = Result<T>> + Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        let sent = self.jobs.send(
-            async move {
-                // A panicking job fails its caller, not the queue.
-                let result = std::panic::AssertUnwindSafe(job).catch_unwind().await;
-                let _ = tx.send(result.unwrap_or_else(|_| Err(anyhow::anyhow!("session task panicked").into())));
-            }
-            .boxed(),
-        );
+        let _submission = self.submission.lock().unwrap();
+        let sent = if self.closing.load(Ordering::SeqCst) {
+            Err("session closed".to_owned())
+        } else {
+            self.jobs
+                .try_send(
+                    async move {
+                        // A panicking job fails its caller, not the queue.
+                        let result = std::panic::AssertUnwindSafe(job).catch_unwind().await;
+                        let _ =
+                            tx.send(result.unwrap_or_else(|_| Err(anyhow::anyhow!("session task panicked").into())));
+                    }
+                    .boxed(),
+                )
+                .map_err(|_| "Session queue is full; retry shortly".to_owned())
+        };
         async move {
             sent.map_err(|_| Error::from(anyhow::anyhow!("session closed")))?;
             rx.await.unwrap_or_else(|_| Err(anyhow::anyhow!("session closed").into()))
@@ -177,12 +203,38 @@ impl Session {
         self.active.lock().unwrap().as_ref().is_some_and(|current| Arc::ptr_eq(current, a))
     }
 
+    /// Original named intent; contains no credentials or runtime identity.
+    pub fn source_request(&self) -> Option<EnterRequest> {
+        self.source_request.lock().unwrap().clone()
+    }
+
     pub fn review(&self) -> Result<Review> {
         Ok(self.active()?.review.clone())
     }
 
     pub fn snapshotter(&self) -> Result<Arc<Snapshotter>> {
         Ok(self.active()?.snapshotter.clone())
+    }
+
+    /// A reconstruction descriptor, not a runtime. Freeze revision comparisons at their
+    /// spanned endpoints while preserving their slice and storage identity. Mutable local
+    /// worktree intent is recomputed when reconstructed, before it can serve a snapshot.
+    pub async fn checkpoint(&self) -> Result<(Review, Option<String>, Arc<Snapshot>)> {
+        let active = self.active()?;
+        let snap = active.snapshotter.current().await?;
+        let mut review = active.review.clone();
+        if let Review::Range { old, new, base, pr, .. } = &mut review
+            && (snap.follows != Live::Worktree || pr.is_some())
+        {
+            *old = if snap.commits.old_sha == self.repo.empty_tree().await? {
+                ":empty-tree:".into()
+            } else {
+                snap.commits.old_sha.clone()
+            };
+            *new = snap.commits.new_sha.clone();
+            *base = crate::protocol::ComparisonBase::Direct;
+        }
+        Ok((review, active.range_key.clone(), snap))
     }
 
     pub fn comments(&self) -> Result<Arc<CommentStore>> {
@@ -226,12 +278,26 @@ impl Session {
     /// Runs after every snapshot the session produces: the first review, a switch, a refresh, a context
     /// change. In-process consumers (the LSP bridge) use this; clients get the `snapshot` broadcast.
     pub fn on_snapshot(&self, listener: impl Fn(&Arc<Snapshot>) + Send + Sync + 'static) {
-        self.listeners.lock().unwrap().push(Box::new(listener));
+        self.listeners.lock().unwrap().push(Listener { callback: Arc::new(listener), owner: None });
     }
-
+    pub fn subscribe_snapshot(
+        &self,
+        listener: impl Fn(&Arc<Snapshot>) + Send + Sync + 'static,
+    ) -> SnapshotSubscription {
+        let owner = Arc::new(());
+        let mut listeners = self.listeners.lock().unwrap();
+        listeners.retain(|l| l.owner.as_ref().is_none_or(|owner| owner.strong_count() > 0));
+        listeners.push(Listener { callback: Arc::new(listener), owner: Some(Arc::downgrade(&owner)) });
+        SnapshotSubscription(owner)
+    }
     fn announce(&self, snap: &Arc<Snapshot>) {
-        for listener in self.listeners.lock().unwrap().iter() {
-            listener(snap);
+        let callbacks: Vec<_> = {
+            let mut listeners = self.listeners.lock().unwrap();
+            listeners.retain(|l| l.owner.as_ref().is_none_or(|owner| owner.strong_count() > 0));
+            listeners.iter().map(|l| l.callback.clone()).collect()
+        };
+        for callback in callbacks {
+            callback(snap);
         }
     }
 
@@ -242,13 +308,42 @@ impl Session {
 
     /// Waits for every queued transition, then stops watching.
     pub async fn close(self: &Arc<Self>) {
-        let _ = self.run(async { Ok(()) }).await;
-        let active = self.active.lock().unwrap().clone();
-        if let Some(active) = active {
-            active.snapshotter.cancel_pending();
-            if let Some(watcher) = active.watcher.lock().await.take() {
-                watcher.close().await;
-            }
+        let already = {
+            let _submission = self.submission.lock().unwrap();
+            self.closing.swap(true, Ordering::SeqCst)
+        };
+        if !already {
+            let this = self.clone();
+            // Teardown belongs to the session, not to a cancellable caller/window future.
+            tokio::spawn(async move {
+                this.history.close().await;
+                let (tx, rx) = oneshot::channel();
+                let _ = this
+                    .jobs
+                    .send(
+                        async move {
+                            let _ = tx.send(());
+                        }
+                        .boxed(),
+                    )
+                    .await;
+                let _ = rx.await;
+                this.ready.send_replace(Some(Err(Error::from(anyhow::anyhow!("session closed")))));
+                let active = this.active.lock().unwrap().take();
+                if let Some(active) = active {
+                    active.snapshotter.cancel_pending();
+                    if let Some(watcher) = active.watcher.lock().await.take() {
+                        watcher.close().await;
+                    }
+                }
+                this.listeners.lock().unwrap().clear();
+                *this.readable.lock().unwrap() = None;
+                *this.discovered.lock().unwrap() = None;
+                this.repo.clear_payloads().await;
+                this.finished.send_replace(true);
+            });
         }
+        let mut finished = self.finished.subscribe();
+        let _ = finished.wait_for(|done| *done).await;
     }
 }

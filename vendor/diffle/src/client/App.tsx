@@ -1,18 +1,33 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useApi } from './api.js';
+import { useReviewStore } from '@/client/store.js';
+import { HistoryHost } from './history/HistoryHost.js';
 import { useCompactLayout } from './useCompactLayout.js';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { connectWs } from './api.js';
+
 import { Header } from './header/Header.js';
 import { HelpOverlay } from './keyboard/HelpOverlay.js';
 import { useKeymap } from './keyboard/useKeymap.js';
 import { documentTitle } from './model.js';
 import { ServerLost } from './ServerLost.js';
-import { useStore } from './store.js';
+
 import { FileTreePane } from './tree/FileTreePane.js';
 import { TooltipHost } from './ui/TitleTooltips.js';
 import './views/registry.js';
 import { gridColumns, listViews, panelOf, useViews } from './views/state.js';
 
-export function App({ desktop = false, hostingControl }: { desktop?: boolean; hostingControl?: ReactNode }) {
+export function App({
+  desktop = false,
+  hostingControl,
+  githubAvailable = true,
+}: {
+  desktop?: boolean;
+  hostingControl?: ReactNode;
+  githubAvailable?: boolean;
+}) {
+  const useStore = useReviewStore();
+  const api = useApi();
+
   const { compact, drawer, setDrawer } = useCompactLayout();
   const boot = useStore((s) => s.boot);
   const refreshSnapshot = useStore((s) => s.refreshSnapshot);
@@ -28,7 +43,18 @@ export function App({ desktop = false, hostingControl }: { desktop?: boolean; ho
   const active = useViews((s) => s.active);
   const panel = panelOf(layout, active);
   const [lost, setLost] = useState(false);
-  useKeymap();
+  useKeymap({
+    githubAvailable,
+    revealTree: () => (compact ? setDrawer('tree') : setLayout({ treeVisible: true })),
+    toggleTree: () =>
+      compact
+        ? setDrawer((value) => (value === 'tree' ? null : 'tree'))
+        : setLayout({ treeVisible: !layout.treeVisible }),
+    togglePanel: () =>
+      compact
+        ? setDrawer((value) => (value === 'panel' ? null : 'panel'))
+        : useStore.getState().setPanel(active, { visible: !panel.visible }),
+  });
 
   useEffect(() => {
     document.title = title;
@@ -61,7 +87,7 @@ export function App({ desktop = false, hostingControl }: { desktop?: boolean; ho
       document.addEventListener('pointerup', onUp);
       document.addEventListener('pointercancel', onUp);
     },
-    [layout.treeWidth, panel.width, active, setLayout],
+    [layout.treeWidth, panel.width, active, setLayout, useStore],
   );
 
   const columns = compact ? 'minmax(0, 1fr)' : gridColumns(layout, active);
@@ -71,7 +97,7 @@ export function App({ desktop = false, hostingControl }: { desktop?: boolean; ho
       setLost(false);
       void boot();
     };
-    return connectWs(
+    return api.connectWs(
       (msg) => {
         switch (msg.type) {
           case 'snapshot':
@@ -87,6 +113,7 @@ export function App({ desktop = false, hostingControl }: { desktop?: boolean; ho
             void refreshViewed();
             break;
           case 'config':
+            if (msg.authChanged) useStore.getState().invalidateGithub();
             void refreshConfig();
             break;
           case 'lsp':
@@ -99,10 +126,14 @@ export function App({ desktop = false, hostingControl }: { desktop?: boolean; ho
       resync,
       () => setLost(true),
     );
-  }, [boot, refreshSnapshot, refreshThreads, refreshViewed, refreshConfig, setLspStatus, setMoved]);
+  }, [api, useStore, boot, refreshSnapshot, refreshThreads, refreshViewed, refreshConfig, setLspStatus, setMoved]);
 
   return (
-    <div className="relative grid h-full grid-rows-[2.5rem_1fr]" style={{ gridTemplateColumns: columns }}>
+    <div
+      data-review-shell
+      className="relative grid h-full"
+      style={{ gridTemplateColumns: columns, gridTemplateRows: 'var(--review-toolbar-height) minmax(0, 1fr)' }}
+    >
       <Header
         desktop={desktop}
         hostingControl={hostingControl}
@@ -114,7 +145,7 @@ export function App({ desktop = false, hostingControl }: { desktop?: boolean; ho
           <div
             className="cursor-col-resize bg-border opacity-60 [transition:opacity_120ms_ease,_background_120ms_ease] hover:bg-accent hover:opacity-100 data-resizing:bg-accent data-resizing:opacity-100"
             onPointerDown={startResize('tree')}
-            title="Drag to resize"
+            title={uiText('Drag to resize')}
           />
         </>
       )}
@@ -124,26 +155,27 @@ export function App({ desktop = false, hostingControl }: { desktop?: boolean; ho
           <div
             className="cursor-col-resize bg-border opacity-60 [transition:opacity_120ms_ease,_background_120ms_ease] hover:bg-accent hover:opacity-100 data-resizing:bg-accent data-resizing:opacity-100"
             onPointerDown={startResize('panel')}
-            title="Drag to resize"
+            title={uiText('Drag to resize')}
           />
           <ViewLayers part="Side" />
         </>
       )}
       {compact && drawer && (
         <>
-          <button className="compact-scrim" aria-label="Close panel" onClick={() => setDrawer(null)} />
+          <button className="compact-scrim" aria-label={uiText('Close panel')} onClick={() => setDrawer(null)} />
           <section
             className="compact-drawer"
             style={{ [drawer === 'tree' ? 'left' : 'right']: 0 }}
-            aria-label={drawer === 'tree' ? 'Files' : 'Review details'}
+            aria-label={drawer === 'tree' ? uiText('Files') : uiText('Review details')}
           >
             <button className="compact-drawer-close" onClick={() => setDrawer(null)}>
-              Close
+              {uiText('Close')}
             </button>
             {drawer === 'tree' ? <FileTreePane /> : <ViewLayers part="Side" />}
           </section>
         </>
       )}
+      {!desktop && <HistoryHost />}
       <HelpOverlay />
       <TooltipHost />
       {lost && <ServerLost />}

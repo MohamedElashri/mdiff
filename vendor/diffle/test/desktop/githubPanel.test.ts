@@ -10,7 +10,11 @@ import { request } from '@/client/transport';
 import type { CommentThread, Snapshot } from '@/shared/protocol';
 
 vi.mock('@/client/transport', () => ({ request: vi.fn(), reviewTransport: vi.fn() }));
-vi.mock('@/client/api', () => ({ api: { exportToGithub: vi.fn() } }));
+vi.mock('@/client/api', async (original) => {
+  const actual = await original<typeof import('@/client/api')>();
+  const api = { ...actual.api, exportToGithub: vi.fn() };
+  return { ...actual, api, useApi: () => api };
+});
 let root: Root;
 let host: HTMLDivElement;
 const close = vi.fn();

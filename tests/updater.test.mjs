@@ -98,3 +98,22 @@ test('rechecking releases the previous update resource', async () => {
   await c.check(); await c.check();
   assert.deepEqual(calls, ['info', 'check', 'info', 'close', 'check']);
 });
+
+test('window flushing waits for an active download and installation but does not wait on restart', async () => {
+  const { controller: c, update } = fixture();
+  let done;
+  update.download = () => new Promise(resolve => { done = resolve; });
+  await c.check();
+  const installing = c.install();
+  let settled = false;
+  const wait = c.settled().then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  done();
+  await installing; await wait;
+  assert.equal(c.getSnapshot().phase, 'ready');
+  await c.restart(); await c.settled();
+  c.cancelRestart();
+  assert.equal(c.getSnapshot().phase, 'ready');
+  assert.match(c.getSnapshot().error, /window could not save/);
+});

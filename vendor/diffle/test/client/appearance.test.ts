@@ -46,4 +46,18 @@ describe('appearance catalogue', () => {
     expect(large.css).toContain('--diffs-line-height: 34px');
     expect(large.css).toContain('font-weight: 600');
   });
+  it('migrates density without changing saved fonts or code sizing', () => {
+    const saved = { appFont: 'plex', codeFont: 'fira', appSize: 15, codeSize: 18 };
+    expect(normalize(saved)).toMatchObject({ ...saved, density: 'default' });
+    expect(normalize({ ...saved, density: 'compact' })).toMatchObject({ ...saved, density: 'compact' });
+    expect(normalize({ density: 'obsolete' } as never).density).toBe('default');
+  });
+  it('keeps compact header CSS and virtual metrics aligned without shrinking code rows', () => {
+    const regular = reviewGeometry(16, 18);
+    const compact = reviewGeometry(16, 18, 400, false, 'compact');
+    expect(compact.itemMetrics.lineHeight).toBe(regular.itemMetrics.lineHeight);
+    expect(compact.itemMetrics.diffHeaderHeight).toBeLessThan(regular.itemMetrics.diffHeaderHeight);
+    expect(compact.css).toContain(`--diffle-header-height: ${compact.itemMetrics.diffHeaderHeight}px`);
+    expect(compact.css).toContain('--diffs-font-size: 18px');
+  });
 });

@@ -4,7 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { LastCommitsPreview } from '@/shared/protocol.js';
 
-vi.mock('@/client/api.js', () => ({ api: { lastCommitsPreview: vi.fn() } }));
+vi.mock('@/client/api.js', async (original) => {
+  const actual = await original<typeof import('@/client/api.js')>();
+  const api = { ...actual.api, lastCommitsPreview: vi.fn() };
+  return { ...actual, api, useApi: () => api };
+});
 const { api } = await import('@/client/api.js');
 const { CommitPreview } = await import('@/client/header/CommitPreview.js');
 let root: Root;

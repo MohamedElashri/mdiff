@@ -1,8 +1,10 @@
+import { uiText } from '@/client/i18n/runtime.js';
+import { useReviewGraph } from '@/client/graph/state.js';
 import type { ContextMenuAnchorRect } from '@pierre/trees';
 import { Check, ChevronsDownUp, ChevronsUpDown, Eye, EyeOff, Network } from 'lucide-react';
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useGraph } from '@/client/graph/state.js';
+
 import { changedFile, countViewed, filesUnder, isCollapsed, isViewed } from '@/client/model.js';
 import { useStore } from '@/client/store.js';
 import { Button } from '@/client/ui/Button.js';
@@ -95,6 +97,8 @@ function Floating({ anchor, children }: { anchor: ContextMenuAnchorRect; childre
 type MenuProps = { path: string; anchor: ContextMenuAnchorRect; close: () => void };
 
 function DirectoryMenu({ path, anchor, close }: MenuProps) {
+  const useGraph = useReviewGraph();
+
   const snapshot = useStore((s) => s.snapshot);
   const viewed = useStore((s) => s.viewed);
   const config = useStore((s) => s.config);
@@ -111,7 +115,9 @@ function DirectoryMenu({ path, anchor, close }: MenuProps) {
         }}
       >
         {all ? <EyeOff size="0.875rem" /> : <Eye size="0.875rem" />}
-        <span className="whitespace-nowrap">{all ? 'Mark directory not viewed' : 'Mark directory viewed'}</span>
+        <span className="whitespace-nowrap">
+          {all ? uiText('Mark directory not viewed') : uiText('Mark directory viewed')}
+        </span>
         <span className="inline-flex items-center justify-self-end font-mono text-[0.75rem] leading-[normal] text-muted">
           {files.length}
         </span>
@@ -125,7 +131,7 @@ function DirectoryMenu({ path, anchor, close }: MenuProps) {
         }}
       >
         <Network size="0.875rem" />
-        <span className="whitespace-nowrap">Show in graph</span>
+        <span className="whitespace-nowrap">{uiText('Show in graph')}</span>
         <span />
         <span />
       </Button>
@@ -152,7 +158,7 @@ function FileMenu({ path, anchor, close }: MenuProps) {
             }}
           >
             {viewed ? <EyeOff size="0.875rem" /> : <Eye size="0.875rem" />}
-            <span className="whitespace-nowrap">{viewed ? 'Mark not viewed' : 'Mark viewed'}</span>
+            <span className="whitespace-nowrap">{viewed ? uiText('Mark not viewed') : uiText('Mark viewed')}</span>
             <span className="inline-flex items-center justify-self-end font-mono text-[0.75rem] leading-[normal] text-muted">
               {viewed ? '' : <Check size="0.75rem" />}
             </span>
@@ -166,7 +172,7 @@ function FileMenu({ path, anchor, close }: MenuProps) {
             }}
           >
             {collapsed ? <ChevronsUpDown size="0.875rem" /> : <ChevronsDownUp size="0.875rem" />}
-            <span className="whitespace-nowrap">{collapsed ? 'Expand' : 'Collapse'}</span>
+            <span className="whitespace-nowrap">{collapsed ? uiText('Expand') : uiText('Collapse')}</span>
             <span className="inline-flex items-center justify-self-end font-mono text-[0.75rem] leading-[normal] text-muted" />
             <kbd>{collapsed ? 'zo' : 'zc'}</kbd>
           </Button>
@@ -180,7 +186,7 @@ function FileMenu({ path, anchor, close }: MenuProps) {
           }}
         >
           <Eye size="0.875rem" />
-          <span className="whitespace-nowrap">Open</span>
+          <span className="whitespace-nowrap">{uiText('Open')}</span>
           <span className="inline-flex items-center justify-self-end font-mono text-[0.75rem] leading-[normal] text-muted" />
           <span />
         </Button>

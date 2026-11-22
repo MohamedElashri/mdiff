@@ -1,3 +1,4 @@
+import { diffsWorkerEntry } from './scripts/diffs-worker-plugin.js';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -46,7 +47,7 @@ const licenses = (bundle: string) =>
 export default defineConfig({
   root: clientRoot,
   base: './',
-  plugins: [react(), tailwindcss(), licenses('client')],
+  plugins: [diffsWorkerEntry(), react(), tailwindcss(), licenses('client')],
   resolve: { alias: { '@': srcRoot } },
   appType: 'spa',
   // The binary embeds the client it was built with, so the build-time version is the running one.
@@ -57,5 +58,5 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: false,
   },
-  worker: { format: 'es', plugins: () => [licenses('worker')] },
+  worker: { format: 'es', plugins: () => [diffsWorkerEntry(), licenses('worker')] },
 });
