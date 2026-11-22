@@ -18,7 +18,7 @@ fn git(root: &Path, args: &[&str]) -> String {
 fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    git(root, &["init", "-q"]);
+    git(root, &["init", "-q", "-b", "main"]);
     git(root, &["config", "user.name", "Test"]);
     git(root, &["config", "user.email", "test@example.test"]);
     git(root, &["config", "commit.gpgsign", "false"]);
@@ -249,9 +249,28 @@ async fn repeated_eviction_plateaus_and_reconstruction_is_pinned_untrusted_and_f
         .unwrap();
     let runtime = engine.runtime(&resumed_worktree.id).await.unwrap();
     assert!(runtime.lsp.is_none());
-    let response = dispatch(runtime.router.clone(), "GET", "/api/patch?path=f.py", None)
-        .await
-        .unwrap();
+    // Linux delivers outstanding file/ref watcher events promptly enough to cancel
+    // this read after resume. Retry only that explicit stale-read response; all
+    // other failures and the fresh-content assertion below remain authoritative.
+    let response = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let response = dispatch(runtime.router.clone(), "GET", "/api/patch?path=f.py", None)
+                .await
+                .unwrap();
+            let stale = response.status == 400
+                && serde_json::from_slice::<serde_json::Value>(&response.body)
+                    .ok()
+                    .and_then(|body| body["error"].as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some("review changed; retry");
+            if !stale {
+                break response;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("resumed working review did not settle after watcher invalidations");
     assert_eq!(
         response.status,
         200,
