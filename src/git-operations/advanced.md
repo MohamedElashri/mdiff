@@ -1,44 +1,29 @@
-# Advanced Git operations and conflict recovery
+# Advanced Git and conflict recovery
 
-The **Advanced and recovery** tab extends the Phase 8 native preview/job framework. Existing clean-only branch switches, fast-forward pulls, exact push leases, managed-checkout restrictions, explicit trust, credential boundaries and conservative worktree/tool protections remain in place. New actions are desktop IPC only; standalone review routes do not acquire mutation capabilities.
+**Git → Advanced and recovery** supports merge, cherry-pick, revert, linear rebase and constrained interactive rebase. Starting requires a clean checkout on a local branch; merge-commit pick/revert requires an explicit mainline. Fetch remote refs separately before local merge/rebase.
 
-## Supported sequence
+Interactive plans allow reorder, pick, drop, fixup and squash. Every original commit appears once; fixup/squash needs an earlier kept commit. Reword/edit/exec, roots, merge-containing ranges and topology editing require external Git; merge topology is never silently flattened.
 
-1. Read operation state directly from the worktree Git directory and unmerged index, including operations started outside mdiff. An app restart does not reconstruct or replay commands: Git's own state remains the recovery authority.
-2. Preview/execute merge, one cherry-pick or one revert. A merge commit requires an explicit valid mainline for pick/revert. Starting an operation requires a clean checkout on an existing local branch; conflicts or another active operation must be recovered first. Merge may fast-forward or create a commit. Hooks, configured merge drivers and signing run only through the explicitly accepted job.
-3. Preview/execute linear rebase or a bounded interactive plan. The latter supports reorder, pick, drop, fixup and squash, with each original commit represented exactly once. Fixup/squash require an earlier kept commit, and at least one commit must remain. Squash keeps Git's default combined message. Reword/edit/exec, root commits, merge-containing ranges and topology editing use external Git; merge topology is never silently flattened. No push or update of other branches is implied.
-4. For supported text conflicts, inspect actual stages 1/2/3, edit a result, choose current/incoming/both for individual marker blocks, then preview **Save and stage resolution**. Continue the operation in a separate preview after resolving all index entries. Saving a draft changes no Git state.
+## Recovery
 
-Network pull remains fast-forward-only. To merge or rebase a remote branch, explicitly fetch, then select its local tracking ref in Advanced and recovery. This keeps the network destination/lease and local history rewrite independently reviewable.
+Git's on-disk operation metadata and unmerged index are authoritative, including after restart. **Continue** requires resolved entries; **Skip** applies to rebase/pick/revert; **Abort** applies to supported ongoing operations. Unsupported todo instructions disable continue/skip. Stash conflicts have no invented sequencer controls. Skip discards the replayed change; abort cannot undo an already completed operation.
 
-## Recovery state and previews
+Previews fingerprint operation contents, refs, index and files; changes invalidate them. Interactive todo scripts use native-generated commands/object IDs, never renderer shell text. Execution uses the [same job/receipt framework](README.md): interruptions require inspection, without automatic continuation or rollback.
 
-Recovery detects merge, cherry-pick/revert sequencers, both rebase backends and unsupported bisect/unknown states. Continue appears only with no unmerged index entries; skip is offered for rebase/pick/revert, and abort for supported ongoing operations. Git can still refuse a command because of locks, unstaged edits, empty commits, hooks or changed state. Skip discards the current replayed change; abort asks Git to restore its recorded start and can be complicated by external edits or autostash. Neither action rolls back an operation that has already finished. Stash conflicts without a sequencer expose no invented continue/abort command.
+## Conflict editor
 
-Rebase todo/done files containing instructions outside the supported subset (including exec, reword, edit and merge-topology instructions) disable app continue/skip and direct the user to external Git. Abort remains explicit. The app-generated interactive todo uses only validated object IDs and constrained command enums. A temporary, native-generated fixed editor script supplies it to Git; renderer text is never executed as a shell command. The script and todo are scoped to the owned job and removed afterwards.
+Sides come from actual index stages:
 
-Snapshots fingerprint bounded operation metadata contents, not merely marker names. A changed todo, merge message, head, index, ref, file or checkout identity invalidates an accepted preview before mutation. Recovery metadata is limited to 512 entries / 2 MiB, with individual details capped at 64 KiB. Existing read deadlines, process scheduling, preview cache and native job admission continue to apply. Cancellation/IPC loss/quit use Phase 8 ownership; partially completed writes remain inspectable without automatic continuation, retry or rollback.
+| Operation            | Stage 2: current                       | Stage 3: incoming                 |
+| -------------------- | -------------------------------------- | --------------------------------- |
+| Merge                | Checkout                               | Merge head                        |
+| Rebase               | Rebased destination + replayed commits | Original replayed commit          |
+| Cherry-pick          | Checkout                               | Picked commit                     |
+| Revert               | Checkout                               | Parent-side inverse               |
+| Other unmerged index | Index content                          | Index content; no inferred branch |
 
-## Conflict sides and safe editing
+Stage 1 is Git's actual base, including synthesized merge bases. Editing requires all three stages, matching regular-file modes, UTF-8/non-NUL text, no filters/encoding/merge drivers, and sides/result ≤64 KiB. Other shapes use external tools.
 
-| Context                    | Stage 1                                                              | Stage 2                                           | Stage 3                                                   |
-| -------------------------- | -------------------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------- |
-| Merge                      | Actual index base, potentially synthesized from multiple merge bases | Current checkout                                  | Incoming merge head                                       |
-| Rebase                     | Actual index base for this replay                                    | Rebased destination plus already replayed commits | Original commit being replayed                            |
-| Cherry-pick                | Actual index base                                                    | Current checkout                                  | Picked commit                                             |
-| Revert                     | Actual index base                                                    | Current checkout                                  | Parent-side inverse, not the reverted commit              |
-| Stash/other unmerged index | Actual index base                                                    | Current checkout                                  | Incoming index content; no branch attribution is invented |
+Choose marker blocks or edit, remove all markers, then preview **Save and stage resolution**. Native execution rejects symlink/hard-link targets and stages only that path under the index lock. Failure can leave edited working text with the original unresolved index.
 
-Only matching ordinary regular-file modes with all three stages, UTF-8/non-NUL contents, and no configured filter/encoding/merge driver use the editor. Each side and result is capped at 64 KiB. Missing stages, add/delete, rename shapes with missing sides, binary, large, mode, symlink, submodule and unsupported operation states require external tooling. Actual index stages determine this decision; unsupported paths never receive a resolve action. Multiple merge bases use Git's already synthesized stage 1, never an arbitrarily selected merge base.
-
-Per-change choices replace only the selected marker block and preserve edits outside it; ordinary and diff3 marker formats are recognized. All remaining conflict markers must be removed before staging. A file legitimately containing marker-like lines requires external Git. The final preview contains the exact edited text and target path. Execution revalidates the proof, replaces the working file through pinned Unix directory descriptors, and stages only that path into a private index under the real index lock. Symlink parent/leaf traversal and hard-linked targets are refused. The existing common-dir/index native leases remain held for the entire operation. Other staged entries are retained. Cancellation/failure after replacing the file can leave the edited working file with an unresolved original index; inspect it rather than expecting rollback. External filesystem races are not made universally atomic.
-
-Resolution drafts use the existing native revisioned/CAS storage with a separate purpose namespace, canonical checkout identity, path, index-stage objects and operation. Commit drafts are unaffected. Exact staging proofs also include current worktree/operation state, so a saved draft is not authority to overwrite external edits. A restored result offers the current working file for comparison. Navigation, repository changes, external-tool handoff, previews, dialog close and application quit flush the result; failed saves retain text and block navigation/close. Copy result remains available. Drafts persist across restart while the same index stages/operation remain; a genuinely different conflict has a separate draft and never inherits an old result automatically.
-
-## Related reviews and validation
-
-After accepted jobs, the native adapter queues coalesced refreshes for live reviews sharing the Git common directory, including linked checkouts. Existing session refresh owns content invalidation, ref-follow policy and comment relocation/stale anchors; renderer composers are not cleared. Cold mutable reviews rebuild from disk on activation, preserving Phase 5 ownership and drafts. Pinned comparisons and ref-follow-off behavior retain their established semantics. History refs still require explicit refresh. Language servers are never enabled by these actions.
-
-The disposable real-Git suite covers external/restarted recovery, linked operation isolation, metadata freshness/bounds, merge/pick/revert/mainline, rebase continue/skip/abort, interactive topology/content, hook failure, binary/missing/mode/symlink/submodule fallback, actual synthesized bases, index locks and pinned result writes. Native tests cover receipt content redaction and related-review comment preservation/stale anchors. UI regressions cover constrained plans, valid recovery controls, marker choices, native-bound result previews, resolution draft flush failures and external fallbacks. The phase ledger records macOS smoke and aggregate results. Linux runtime/visual testing is explicitly deferred by the user; no Linux, live signer, whole-app memory or interactive terminal validation is inferred.
-
-Primary command semantics: [Git merge](https://git-scm.com/docs/git-merge), [Git rebase](https://git-scm.com/docs/git-rebase), [Git cherry-pick](https://git-scm.com/docs/git-cherry-pick), [Git read-tree/index stages](https://git-scm.com/docs/git-read-tree).
+Revisioned drafts bind checkout/path/stages/operation and never authorize overwriting external edits. Save failures block navigation/close; copying remains available. Accepted jobs refresh related live reviews without clearing composers or changing pinned comparisons. History refs still need explicit refresh. See [implementation](../../vendor/diffle/crates/diffle/src/git/operations/advanced.rs).

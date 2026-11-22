@@ -1,23 +1,31 @@
 # Repository history
 
-`history::Repository` in the shared Rust engine owns a read-only repository/worktree identity and at most one pinned history query. It has no `Session`, review snapshot, watcher, credential discovery, provider client, patch cache or LSP. The native adapter keeps one context per owner (two total) independently of review runtimes and retains the managed checkout lease when browsing that review's repository. Native sessions and contexts share admission for at most two retained walks, leaving capacity in the shared Git scheduler for interactive reads. The standalone router reuses its CLI repository identity; browsing adds no second review runtime.
+[history::Repository](../../../crates/diffle/src/history.rs) owns read-only repository identity and one pinned query, separate from review sessions, credentials, watchers and LSP. Desktop contexts retain managed-checkout leases; standalone reuses CLI identity.
 
-Queries capture explicit HEAD/local-branch/remote-branch/commit-tag object IDs. App-owned review/iteration refs and replacement refs are excluded. `GIT_NO_LAZY_FETCH=1` prevents implicit network access in partial clones. Ref changes do not mutate the current traversal; refresh creates a new generation. Garbage collection or missing objects can still make a pinned query incomplete, which is reported.
+## Queries and limits
 
-A query actor owns one `git log --topo-order` process, the shared Git admission permit, a 32 MiB anonymous temporary spool and page offsets. It reads at most 100 matches / 5,000 examined commits per request and 200,000 examined commits per query. Search covers the first 256 display columns of subjects and hashes, with author/date filtering; it is not full-body message search. Calls time out after 10 seconds, idle queries expire after 30 seconds, and close/cancellation drops the child, permit and spool. Completed walks release the process/permit while retaining replayable pages. No growing `--skip`, SHA-only cursor or unbounded `exec_git` output is used. The spool bounds app retention; Git's internal traversal memory remains repository-dependent and is measured separately.
+Queries capture HEAD/branch/tag object IDs, excluding app/replacement refs. No lazy network fetch occurs. Refresh creates a generation; missing objects are reported. **Close is generation-specific**: old React cleanup must never close a newer query.
 
-Page cursors identify a generation and an indexed page. Retrying a page reads its exact serialized result. A caller must discard results from old generations. **Close is generation-specific**: React Strict Mode cleanup or an old view must never close a newer query. The browser retains at most ten pages (1,000 rows) and 8 MiB of serialized page payload; this is not a hard JavaScript heap limit. Older pages can be reread from the spool. Leaving History terminates its walk while retaining the visible window, selection and scroll; returning can inspect that window, and Reload starts a fresh traversal for further paging.
+| Resource          | Limit                                                                            |
+| ----------------- | -------------------------------------------------------------------------------- |
+| Traversal         | One `git log --topo-order` process per query; two retained walks shared natively |
+| Page              | 100 matches / 5,000 examined commits                                             |
+| Query             | 200,000 examined commits; 32 MiB temporary spool                                 |
+| Lifetime          | 10-second call deadline; 30-second idle expiry                                   |
+| Browser retention | Ten pages / 1,000 rows; 8 MiB serialized payload                                 |
 
-Rows retain at most 32 ancestry lanes with frontier state across pages. Extra lanes and shallow boundaries are marked rather than joined to unrelated commits. Original parent IDs remain separate from display lanes. Filtering/folding hides ancestry lines, so omitted rows cannot imply false parent edges. Folding verifies only fully loaded linear side branches that join a known first-parent spine within the complete retained prefix, with no independently named refs, boundary or outside children. Other merges stay expanded. Expansion restores already verified metadata; full messages and folder trees are fetched separately on demand. This intentionally avoids `--simplify-merges` and speculative folding through unloaded history.
+Cursors identify a generation/page; replay returns that exact page. Cancellation releases the process, permit and spool; completed walks retain replayable pages. Leaving History stops traversal, retaining only the visible window; Reload starts fresh. Payload/spool limits do not bound Git memory or JS heap.
 
-The row geometry is 36 CSS pixels and the virtualizer uses the same constant. Preserve that agreement if density/font behavior changes. History is separate from the existing code dependency graph and suspends review commands while it owns focus, while app commands (including the palette) remain available.
+## Graph and comparisons
 
-Comparison operations validate full object IDs and actual parents. Endpoint comparisons preserve click order; merge-base uses explicit semantics. Series require a contiguous first-parent chain in newest-first order (at most 250 commits). Single commits against their first parent (and root commits) reuse the existing single-commit review. Other pinned endpoint comparisons, including root-starting series, use a null old endpoint in `EnterRequest.comparison` where appropriate; the engine resolves its internal `:empty-tree:` marker directly, rather than asking Git to resolve it as a commit. Details read raw commit headers so shallow boundaries are not mistaken for root commits. Directory reads and full commit objects have explicit size limits; very large metadata fails with a limit notice rather than allocating without a bound.
+Keep 36 px rows aligned with the virtualizer. Lanes cap at 32; mark excess/shallow boundaries instead of inventing edges. Fold only verified, fully loaded linear side branches joining a known spine; filtering must not imply ancestry. Full messages/trees load on demand.
 
-Validation commands are in the root Makefile. Generate a reproducible disposable wide fixture with:
+Comparisons validate full object IDs/actual parents and preserve endpoint order. Series require a newest-first contiguous first-parent chain, at most 250 commits. Roots use the engine's empty-tree endpoint; shallow boundaries are not roots. History focus suspends review commands while app commands remain available.
+
+Create a disposable wide-history fixture from the root:
 
 ```sh
 python3 vendor/diffle/scripts/history-probe.py /tmp/mdiff-history --create --commits 50000
 ```
 
-The probe refuses to overwrite an existing path, and reads existing repositories without modifying them. It compares topological/date ordering startup and continuation on 128 branch chains with merges. Use the real history API to measure serialization, page replay, cancellation, retained rows and memory as well as Git traversal; UI virtualization alone does not establish these properties. See the desktop [review ownership guide](../../../../../src-tauri/src/reviews.md) for scoped lifecycles. Tabs and multi-window UI remain Phase 5.
+The probe refuses existing destinations. Measure real API paging/replay/cancellation and memory, not traversal alone. See [review ownership](../../../../../src-tauri/src/reviews.md).

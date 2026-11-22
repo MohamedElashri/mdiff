@@ -1,11 +1,14 @@
 # Validation
 
-Run `CARGO_INCREMENTAL=0 make check format-check` for local checks and `make test-performance` for focused workloads. CI runs frontend/engine/native tests, installer tests, and desktop builds. Release builds cover Apple Silicon, Intel macOS, and Linux x86_64.
+Run `CARGO_INCREMENTAL=0 make check format-check`; use `make test-performance` for focused workloads and `make test-e2e` for Docker-backed browser checks. See [Makefile](Makefile) and [CI workflows](.github/workflows/).
 
-macOS native and standalone browser checks cover a 1,000-file review, independent tabs/windows, draft restoration, light/dark appearance, compact layouts, French preview, and development pseudo-localization. Linux interactive UI, PTY, tray/notification and accessibility checks remain pending; passing Linux CI does not verify those interactions.
+| Coverage                                                  | Status                                                                                                      |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Frontend, engine, native, installer tests; desktop builds | CI on macOS/Linux; release packages for Apple Silicon, Intel macOS and Linux x86_64                         |
+| macOS native + standalone browser                         | 1,000-file review, tabs/windows, drafts, light/dark, compact layouts, French/pseudo-localization            |
+| Linux interactive acceptance                              | Pending: WebKitGTK, keyboard/accessibility, PTYs/process cleanup, desktop-entry routing, tray/notifications |
+| Other manual acceptance                                   | OS notification/tray actions, physical keyboards/screen readers, live provider writes and model execution   |
 
-[Review resource limits](src-tauri/src/reviews.md) bound retained work. The macOS debug workload observed roughly 274–802 MiB summed app/helper RSS across cold tabs and two review windows. This is not a controlled release benchmark or a hard memory ceiling. Use `scripts/macos-resource-probe.py` for comparable macOS observations.
+[Resource limits](src-tauri/src/reviews.md) bound retained work, not total memory. macOS debug observations ranged roughly 274–802 MiB summed app/helper RSS; controlled release/leak profiling remains pending. Use [macOS probe](scripts/macos-resource-probe.py) for comparable observations.
 
-OS notification/tray actions, physical keyboard/screen-reader coverage, live provider writes, and paid model execution require separate manual acceptance. French is a partial preview; RTL support is not advertised.
-
-Both Vite builds use the [pinned renderer worker guard](vendor/diffle/scripts/diffs-worker-plugin.ts). Review its installed-package regressions when updating `@pierre/diffs`. Its React development `flushSync` warning remains a dependency limitation.
+Review the [worker guard](vendor/diffle/scripts/diffs-worker-plugin.ts) and installed-package regressions when updating `@pierre/diffs`. Its development React `flushSync` warning remains an upstream limitation.
