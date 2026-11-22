@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use tauri::Manager;
+
 #[derive(serde::Serialize)]
 pub struct UpdateInfo {
     version: String,
