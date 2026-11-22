@@ -38,7 +38,7 @@ export function lspBlocker(
   snap: Pick<Snapshot, 'newSha' | 'headSha'> | null,
   { path, feature, patient = false }: LspQuery = {},
 ): string | null {
-  if (!lsp.enabled) return 'Language servers are off for this run (--no-lsp)';
+  if (!lsp.enabled) return 'Language servers are disabled for this review';
   if (!snap || !followsCheckout(snap))
     return 'Symbol navigation needs the new side to be the worktree or the checked-out commit';
   let servers = lsp.servers;

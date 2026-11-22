@@ -80,6 +80,7 @@ export function ReferencesList() {
     // Escape is the keymap's: it leaves a peek before it closes the list. A click outside still closes.
     <Dialog open onOpenChange={(_, { reason }) => reason !== 'escape-key' && close()}>
       <DialogContent
+        data-reference-list
         aria-label={uiText('References')}
         // The review pane is not tabbable, so Base UI would hand focus to a file header's button instead.
         // Over another view, focus returns to the button that opened the list.

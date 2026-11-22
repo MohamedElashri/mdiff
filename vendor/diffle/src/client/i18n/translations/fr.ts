@@ -51,7 +51,7 @@ export const french: Readonly<Record<string, string | { one: string; other: stri
   'Recent reviews': 'Examens récents',
   History: 'Historique',
   Changes: 'Modifications',
-  Hosting: 'Hébergement',
+  'Pull & merge requests': 'Pull requests et merge requests',
   'Worktrees and tools': 'Arbres de travail et outils',
   'Embedded terminal': 'Terminal intégré',
   'Agents and review': 'Agents et examen',

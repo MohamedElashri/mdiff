@@ -23,10 +23,31 @@ export type Preferences = {
   claude: string | null;
   focus: string;
 };
+export type Tool = {
+  id: string;
+  path: string | null;
+  source: "configured" | "automatic";
+  error: string | null;
+};
+export type Scan = {
+  running: boolean;
+  completed: number | null;
+  checked: number;
+  total: number;
+  readable: number;
+  limited: boolean;
+  error: string | null;
+};
 export type View = {
+  version: number;
+  scan: Scan;
+  roots: string[];
+  hookError: string | null;
+  hookReady: boolean;
+  lastHook: number | null;
   preferences: Preferences;
   activities: Activity[];
-  tools: { id: string; path: string }[];
+  tools: Tool[];
   terminals: { id: string; name: string }[];
   error: string | null;
   hooks: {
@@ -56,7 +77,13 @@ export type Finding = {
   body: string;
 };
 export const agentApi = {
-  view: (context: string | null) => invoke<View>("agent_view", { context }),
+  view: (context: string | null, observer: string) =>
+    invoke<View>("agent_view", { context, observer }),
+  settings: () => invoke<View>("agent_settings"),
+  scan: () => invoke<View>("agent_scan"),
+  reload: () => invoke<View>("agent_reload"),
+  tools: (preferences: Preferences) =>
+    invoke<Tool[]>("agent_tools", { preferences }),
   save: (preferences: Preferences) =>
     invoke<View>("agent_preferences", {
       revision: preferences.revision,
@@ -68,7 +95,9 @@ export const agentApi = {
       externalTerminal,
       onEvent: new Channel<ArrayBuffer>(() => {}),
     }),
-  unwatch: (context: string | null) => invoke("agent_unwatch", { context }),
+  unwatch: (context: string | null, observer: string) =>
+    invoke("agent_unwatch", { context, observer }),
+  hookConfig: (tool: string) => invoke<string>("agent_hook_config", { tool }),
   hooks: (install: boolean) => invoke<View>("agent_hooks", { install }),
   preview: (context: string, tool: string, profile: string) =>
     invoke<Preview>("agent_preview", { context, tool, profile }),

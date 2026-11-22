@@ -16,6 +16,7 @@ type Props = {
   context: string | null;
   onHide: () => void;
   onExternal: () => Promise<unknown>;
+  onPreferences?: () => void;
 };
 function Surface({ session, active }: { session: Session; active: boolean }) {
   const host = useRef<HTMLDivElement>(null);
@@ -39,6 +40,7 @@ export default function TerminalPanel({
   context,
   onHide,
   onExternal,
+  onPreferences,
 }: Props) {
   useSyncExternalStore(terminalStore.subscribe, terminalStore.version);
   const sessions = terminalStore.sessions(),
@@ -202,36 +204,44 @@ export default function TerminalPanel({
         </button>
       </header>
       <div className="terminal-settings">
-        <label>
-          <input
-            type="checkbox"
-            checked={prefs.enabled}
-            disabled={terminalStore.saving()}
-            onChange={(e) =>
-              void perform(() =>
-                terminalStore.save({ enabled: e.target.checked }),
-              )
-            }
-          />
-          {uiText("Allow new shells")}
-        </label>
-        <label>
-          {uiText("Font size")}
-          <select
-            aria-label={uiText("Terminal font size")}
-            value={prefs.fontSize}
-            disabled={terminalStore.saving()}
-            onChange={(e) =>
-              void perform(() =>
-                terminalStore.save({ fontSize: Number(e.target.value) }),
-              )
-            }
-          >
-            {Array.from({ length: 15 }, (_, i) => i + 10).map((size) => (
-              <option key={size}>{size}</option>
-            ))}
-          </select>
-        </label>
+        {onPreferences ? (
+          <button onClick={onPreferences}>
+            {uiText("Terminal preferences")}
+          </button>
+        ) : (
+          <>
+            <label>
+              <input
+                type="checkbox"
+                checked={prefs.enabled}
+                disabled={terminalStore.saving()}
+                onChange={(e) =>
+                  void perform(() =>
+                    terminalStore.save({ enabled: e.target.checked }),
+                  )
+                }
+              />
+              {uiText("Allow new shells")}
+            </label>
+            <label>
+              {uiText("Font size")}
+              <select
+                aria-label={uiText("Terminal font size")}
+                value={prefs.fontSize}
+                disabled={terminalStore.saving()}
+                onChange={(e) =>
+                  void perform(() =>
+                    terminalStore.save({ fontSize: Number(e.target.value) }),
+                  )
+                }
+              >
+                {Array.from({ length: 15 }, (_, i) => i + 10).map((size) => (
+                  <option key={size}>{size}</option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
         <span>{uiText("Uses app theme and code font")}</span>
         <button onClick={() => void perform(onExternal)}>
           {uiText("Open external terminal")}

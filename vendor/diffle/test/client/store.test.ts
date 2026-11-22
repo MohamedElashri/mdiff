@@ -174,6 +174,27 @@ beforeEach(() => {
 });
 
 describe('client transitions', () => {
+  it('recovers a stale patch after a Git write and reloads an unchanged errored path', async () => {
+    const snapshot = { ...snap(701, 'working', ['a.txt']), changed: [file({ path: 'a.txt' })] };
+    api.snapshot.mockResolvedValue(snapshot);
+    api.patch
+      .mockReset()
+      .mockRejectedValueOnce(new Error('review changed; retry'))
+      .mockResolvedValue(patchesFor(['a.txt']));
+    await useStore.getState().refreshSnapshot();
+    expect(api.snapshot).toHaveBeenCalledTimes(2);
+    expect(useStore.getState().loaded['a.txt']?.kind).toBe('diff');
+  });
+  it('bounds recovery when the same snapshot repeatedly rejects patch reads', async () => {
+    const snapshot = { ...snap(702, 'working', ['a.txt']), changed: [file({ path: 'a.txt' })] };
+    api.snapshot.mockResolvedValue(snapshot);
+    api.patch.mockReset().mockRejectedValue(new Error('review changed; retry'));
+    await useStore.getState().refreshSnapshot();
+    expect(api.snapshot).toHaveBeenCalledTimes(2);
+    expect(api.patch).toHaveBeenCalledTimes(2);
+    expect(useStore.getState().loaded['a.txt']?.kind).toBe('error');
+  });
+
   it('J lands on a file whose patch has not arrived, instead of skipping it', async () => {
     const changed = ['a.txt', 'b.txt', 'c.txt'].map((path, i) => file({ path, blob: `b${i + 1}` }));
     const pending = deferred<string>();
@@ -1240,7 +1261,7 @@ describe('symbol navigation', () => {
     useStore.setState({ snapshot: snap(1, 'working', ['a.py']), lsp: LSP_OFF });
     await useStore.getState().goToDefinition(target);
     expect(api.lspDefinition).not.toHaveBeenCalled();
-    expect(useStore.getState().toast).toMatch(/--no-lsp/);
+    expect(useStore.getState().toast).toBe('Language servers are disabled for this review');
     useStore.setState({ lsp: lspStatus('ready') });
     await useStore.getState().goToDefinition({ ...target, side: 'old' });
     expect(api.lspDefinition).not.toHaveBeenCalled();
@@ -2079,6 +2100,16 @@ describe('request ownership', () => {
     second.resolve(cfg(2));
     await b;
     expect(useStore.getState().config.contextLines).toBe(2);
+
+    const response = deferred<UserConfig>();
+    api.saveConfig.mockReturnValueOnce(response.promise);
+    const persisted = useStore.getState().saveConfig(cfg(7));
+    await new Promise((r) => setTimeout(r, 0));
+    api.config.mockResolvedValueOnce(cfg(7));
+    await useStore.getState().refreshConfig();
+    response.resolve(cfg(7));
+    expect(await persisted).toBe(true);
+    expect(useStore.getState().config.contextLines).toBe(7);
   });
 });
 

@@ -117,6 +117,60 @@ it('leaves text, dialogs, IME and terminal keys alone', async () => {
   }
 });
 
+it('keeps reference peek navigation and Escape working inside its own modal', async () => {
+  await render();
+  const dialog = document.createElement('div');
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('data-reference-list', '');
+  const peek = document.createElement('div');
+  dialog.append(peek);
+  document.body.append(dialog);
+  const pick = vi.fn();
+  try {
+    await act(() =>
+      useStore.setState({
+        references: {
+          open: true,
+          kind: 'references',
+          symbol: 'value',
+          index: 0,
+          peek: true,
+          items: [1, 2].map((line) => ({ path: 'main.ts', line, text: 'value' })),
+        },
+        pickReference: pick,
+      }),
+    );
+    const other = document.createElement('div');
+    other.setAttribute('role', 'dialog');
+    document.body.append(other);
+    await act(() => {
+      press(other, 'j');
+    });
+    expect(useStore.getState().references.index).toBe(0);
+    other.remove();
+    await act(() => {
+      press(peek, 'j');
+    });
+    expect(useStore.getState().references.index).toBe(1);
+    await act(() => {
+      press(peek, 'Enter');
+    });
+    expect(pick).toHaveBeenCalledOnce();
+    await act(() => {
+      press(peek, 'Escape');
+    });
+    expect(useStore.getState().references).toMatchObject({ open: true, peek: false });
+    await act(() => {
+      press(peek, 'Escape');
+    });
+    expect(useStore.getState().references.open).toBe(false);
+    expect(toggle).not.toHaveBeenCalled();
+  } finally {
+    dialog.remove();
+  }
+});
+
 it('cancels the palette and restores its trigger focus without the review Escape handler stealing it', async () => {
   await render();
   const origin = document.querySelector<HTMLButtonElement>('#origin')!;

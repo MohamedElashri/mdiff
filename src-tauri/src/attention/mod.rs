@@ -36,6 +36,8 @@ struct Data {
     running: Vec<Item>,
     warnings: HashMap<String, String>,
     metrics: Metrics,
+    checking: bool,
+    last_checked: Option<u64>,
     tray_error: Option<String>,
     last_notification: u64,
     force_persist: bool,
@@ -44,7 +46,7 @@ impl Data {
     fn warnings(&self) -> Vec<String> {
         let mut warnings: Vec<_> = self.warnings.values().cloned().collect();
         if self.doc.limited() {
-            warnings.push("Older observations exceed the inbox display budget. Read/dismiss identities are retained within the bounded history; inspect Hosting for full lists.".into());
+            warnings.push("Older observations exceed the inbox display budget. Read/dismiss identities are retained within the bounded history; inspect Pull & merge requests for full lists.".into());
         }
         warnings.sort();
         warnings
@@ -73,6 +75,8 @@ pub struct View {
     tray_error: Option<String>,
     unread: usize,
     metrics: Metrics,
+    checking: bool,
+    last_checked: Option<u64>,
 }
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -123,7 +127,21 @@ async fn snapshot(app: &tauri::AppHandle) -> Result<View> {
         tray_error: d.tray_error.clone(),
         unread: d.doc.unread(),
         metrics: d.metrics.clone(),
+        checking: d.checking,
+        last_checked: d.last_checked,
     })
+}
+async fn monitoring_status(app: &tauri::AppHandle, checking: bool, completed: bool) {
+    let state = app.state::<Attention>();
+    let mut d = state.data.lock().await;
+    let changed = d.checking != checking || completed;
+    d.checking = checking;
+    if completed {
+        d.last_checked = Some(now());
+    }
+    if changed {
+        let _=app.emit("attention-status",serde_json::json!({"checking":d.checking,"lastChecked":d.last_checked,"warnings":d.warnings(),"error":d.error,"metrics":d.metrics}));
+    }
 }
 async fn publish(app: &tauri::AppHandle, before: &[Item], running_before: &[Item]) {
     let state = app.state::<Attention>();
@@ -152,8 +170,16 @@ async fn publish(app: &tauri::AppHandle, before: &[Item], running_before: &[Item
             .any(|i| i.source != "agents" && remove.contains(&i.id));
     if durable_changed || force_persist {
         let result = async { model::save(&file(app)?, &d.doc).await }.await;
-        if let Err(e) = result {
-            d.error = Some(format!("Attention history was not saved: {e}"));
+        match result {
+            Err(e) => d.error = Some(format!("Attention history was not saved: {e}")),
+            Ok(())
+                if d.error
+                    .as_ref()
+                    .is_some_and(|e| e.starts_with("Attention history was not saved:")) =>
+            {
+                d.error = None
+            }
+            Ok(()) => (),
         }
     }
     let delta = Delta {
@@ -313,6 +339,7 @@ pub fn setup(app: &tauri::AppHandle) {
                 tokio::select! {_=state.wake.notified()=>(),_=state.events.notified()=>(),_=changes.changed()=>{remote.clear();}}
                 continue;
             }
+            monitoring_status(&app, true, false).await;
             let mut actual_targets = true;
             let work = async {
                 let repos = match sources::inventory(&app).await {
@@ -346,6 +373,10 @@ pub fn setup(app: &tauri::AppHandle) {
                     }
                     (before, running)
                 };
+                {
+                    let mut d = state.data.lock().await;
+                    if d.error.as_deref()==Some("Workspace inventory unavailable; monitoring is paused until its metadata can be read.") {d.error=None;}
+                }
                 publish(&app, &before, &running_before).await;
                 if p.agents {
                     let (batch, running) = sources::agents(&app, &doc.items);
@@ -381,6 +412,7 @@ pub fn setup(app: &tauri::AppHandle) {
                                 sources::Batch::error(
                                     format!("conflict:{}", crate::storage::digest(&repo.root)),
                                     "conflicts",
+                                    &repo.label,
                                 )
                             });
                             apply(&app, batch, generation, None).await;
@@ -402,7 +434,11 @@ pub fn setup(app: &tauri::AppHandle) {
                 let d = state.data.lock().await;
                 let _=app.emit("attention-status",serde_json::json!({"warnings":d.warnings(),"error":d.error,"metrics":d.metrics}));
             };
-            tokio::select! {_=work=>(),_=state.wake.notified()=>{continue;},_=changes.changed()=>{remote.clear();continue;}}
+            let completed = tokio::select! {_=work=>true,_=state.wake.notified()=>false,_=changes.changed()=>{remote.clear();false}};
+            monitoring_status(&app, false, completed).await;
+            if !completed {
+                continue;
+            }
             if !actual_targets {
                 tokio::select! {_=state.wake.notified()=>(),_=state.events.notified()=>(),_=changes.changed()=>{remote.clear();}}
                 continue;
@@ -457,6 +493,50 @@ pub async fn attention_badge(
 #[tauri::command]
 pub async fn attention_view(app: tauri::AppHandle, window: WebviewWindow) -> Result<View, String> {
     crate::windows::authorize(&window)?;
+    snapshot(&app).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub async fn attention_reload(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<View, String> {
+    crate::windows::authorize(&window)?;
+    let sessions = app.state::<crate::workspaces::Sessions>();
+    let _work = sessions.gate.read().await;
+    app.state::<crate::windows::Windows>()
+        .admit(window.label())?;
+    initialize(&app).await;
+    let state = app.state::<Attention>();
+    let mut d = state.data.lock().await;
+    let mut doc = model::load(&file(&app).map_err(|e| e.to_string())?)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Runtime agent observations remain in memory; they are never restored from disk.
+    doc.items
+        .extend(d.doc.items.iter().filter(|i| i.source == "agents").cloned());
+    doc.remember();
+    if let Err(error) = platform::tray(&app, &doc.preferences, &doc.items, doc.unread()) {
+        let _ = platform::tray(&app, &d.doc.preferences, &d.doc.items, d.doc.unread());
+        return Err(format!("Could not reload tray preferences: {error}"));
+    }
+    d.doc = doc;
+    d.load_failed = false;
+    d.error = None;
+    d.generation += 1;
+    d.refresh += 1;
+    d.revision += 1;
+    if !d.doc.preferences.enabled || !d.doc.preferences.agents {
+        d.running.clear();
+    }
+    state
+        .keep
+        .store(d.doc.preferences.keep_in_tray, Ordering::SeqCst);
+    state
+        .tray_ready
+        .store(d.doc.preferences.tray, Ordering::SeqCst);
+    drop(d);
+    state.wake.notify_one();
+    let _ = app.emit("attention-settings", ());
     snapshot(&app).await.map_err(|e| e.to_string())
 }
 #[tauri::command]

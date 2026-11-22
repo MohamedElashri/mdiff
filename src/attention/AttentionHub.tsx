@@ -31,15 +31,24 @@ const sourceNames: Record<string, string> = {
 export default function AttentionHub({
   onClose,
   initialTarget,
+  preferencesOnly = false,
+  onPreferences,
+  onDirty,
 }: {
   onClose: () => void;
   initialTarget?: Target | null;
+  preferencesOnly?: boolean;
+  onPreferences?: () => void;
+  onDirty?: (dirty: boolean) => void;
 }) {
   const [view, setView] = useState<View | null>(null),
     [preferences, setPreferences] = useState<Preferences | null>(null),
     [error, setError] = useState(""),
     [pending, setPending] = useState(false),
     [history, setHistory] = useState(false);
+  const saving = useRef(false);
+  const [message, setMessage] = useState("");
+  const [operation, setOperation] = useState("");
   const dirty = useRef(false),
     live = useRef(true);
   const queued = useRef<Delta[]>([]);
@@ -118,30 +127,40 @@ export default function AttentionHub({
       }),
     );
     const settings = listen("attention-settings", load);
-    const status = listen<Pick<View, "warnings" | "error" | "metrics">>(
-      "attention-status",
-      (e) => setView((v) => (v ? { ...v, ...e.payload } : v)),
+    const status = listen<
+      Pick<View, "warnings" | "error" | "metrics" | "checking" | "lastChecked">
+    >("attention-status", (e) =>
+      setView((v) => (v ? { ...v, ...e.payload } : v)),
     );
+    for (const subscription of [changed, settings, status])
+      void subscription.catch((e) => live.current && setError(String(e)));
     load();
     return () => {
       live.current = false;
       for (const p of [changed, settings, status])
-        void p.then((stop) => stop());
+        void p.then((stop) => stop()).catch(() => {});
     };
   }, []);
-  async function act(task: () => Promise<unknown>) {
-    if (pending) return;
+  async function act(task: () => Promise<unknown>, label = "") {
+    if (saving.current) return;
+    saving.current = true;
     setPending(true);
+    setOperation(label);
     setError("");
     try {
       await task();
     } catch (e) {
       if (live.current) setError(String(e));
     } finally {
-      if (live.current) setPending(false);
+      saving.current = false;
+      if (live.current) {
+        setPending(false);
+        setOperation("");
+      }
     }
   }
   function update(key: keyof Preferences, value: unknown) {
+    setMessage("");
     dirty.current = true;
     setPreferences((p) => (p ? { ...p, [key]: value } : p));
   }
@@ -216,6 +235,303 @@ export default function AttentionHub({
       </li>
     );
   }
+  const preferencesDirty =
+    !!preferences &&
+    !!view &&
+    Object.keys(preferences).some(
+      (key) =>
+        key !== "revision" &&
+        JSON.stringify(preferences[key as keyof Preferences]) !==
+          JSON.stringify(view.preferences[key as keyof Preferences]),
+    );
+  useEffect(() => {
+    dirty.current = preferencesDirty;
+    onDirty?.(preferencesDirty);
+  }, [preferencesDirty, onDirty]);
+  const preferencesForm =
+    preferences && view ? (
+      <fieldset className="attention-preferences" disabled={pending}>
+        <legend>{uiText("Monitoring and notifications")}</legend>
+        <div className="attention-toolbar">
+          <button
+            className="primary"
+            disabled={pending || !preferencesDirty}
+            onClick={() =>
+              void act(async () => {
+                const result = await inbox.save(preferences);
+                dirty.current = false;
+                accept(result);
+                setMessage(uiText("Monitoring preferences saved."));
+              }, "save")
+            }
+          >
+            {operation === "save"
+              ? uiText("Saving…")
+              : preferencesOnly
+                ? uiText("Save changes")
+                : uiText("Save inbox preferences")}
+          </button>
+          {preferencesOnly && (
+            <button
+              disabled={pending || !preferencesDirty}
+              onClick={() => {
+                dirty.current = false;
+                setPreferences(view.preferences);
+                setError("");
+                setMessage("");
+              }}
+            >
+              {uiText("Discard changes")}
+            </button>
+          )}
+          <button
+            disabled={pending}
+            onClick={() =>
+              void act(async () => {
+                const value = await inbox.reload();
+                dirty.current = false;
+                accept(value);
+                setMessage(uiText("Monitoring preferences reloaded."));
+              }, "reload")
+            }
+          >
+            {operation === "reload"
+              ? uiText("Reloading…")
+              : preferencesOnly
+                ? preferencesDirty
+                  ? uiText("Discard and reload")
+                  : uiText("Reload saved preferences")
+                : uiText("Reload inbox preferences")}
+          </button>
+        </div>
+        <p>
+          {uiText(
+            "Choose sources for the inbox. Pausing monitoring keeps its history.",
+          )}
+        </p>
+        <label>
+          <input
+            type="checkbox"
+            checked={preferences.enabled}
+            onChange={(e) => update("enabled", e.target.checked)}
+          />
+          {uiText("Enable monitoring")}
+        </label>
+        <div className="attention-options">
+          {(["requested", "checks", "conflicts", "agents"] as const).map(
+            (key) => (
+              <label key={key}>
+                <input
+                  type="checkbox"
+                  checked={preferences[key]}
+                  onChange={(e) => update(key, e.target.checked)}
+                />
+                {sourceNames[key]}
+              </label>
+            ),
+          )}
+        </div>
+        <h4>{uiText("Local conflict monitoring")}</h4>
+        {view.repositories
+          .filter((r) => r.root)
+          .map((r) => (
+            <label key={r.tab} title={r.root}>
+              <input
+                type="checkbox"
+                aria-label={`${r.workspaceName}: ${r.label}`}
+                checked={preferences.localTabs.includes(r.tab)}
+                onChange={(e) =>
+                  update(
+                    "localTabs",
+                    e.target.checked
+                      ? [...preferences.localTabs, r.tab]
+                      : preferences.localTabs.filter((id) => id !== r.tab),
+                  )
+                }
+              />
+              {r.workspaceName}: {r.label}
+            </label>
+          ))}
+        <h4>{uiText("Remote repositories")}</h4>
+        <p>
+          {uiText(
+            "Configure GitHub and GitLab credentials in Preferences → Connections.",
+          )}
+        </p>
+        {preferences.repositories.map((r, n) => (
+          <div
+            className="attention-remote"
+            key={`${r.site.provider}:${r.site.host}:${r.repository}`}
+          >
+            <span>
+              {r.site.provider} · {r.site.host}/{r.repository}
+            </span>
+            <button
+              onClick={() =>
+                update(
+                  "repositories",
+                  preferences.repositories.filter((_, i) => i !== n),
+                )
+              }
+            >
+              {uiText("Remove")}
+            </button>
+          </div>
+        ))}
+        <div className="attention-add">
+          <label>
+            {uiText("Provider")}
+            <select
+              value={provider}
+              onChange={(e) => {
+                const v = e.target.value as "github" | "gitlab";
+                setProvider(v);
+                setHost(v === "github" ? "github.com" : "gitlab.com");
+              }}
+            >
+              <option value="github">{uiText("GitHub")}</option>
+              <option value="gitlab">{uiText("GitLab")}</option>
+            </select>
+          </label>
+          <label>
+            {uiText("Host")}
+            <input value={host} onChange={(e) => setHost(e.target.value)} />
+          </label>
+          <label>
+            {uiText("Repository")}
+            <input
+              placeholder={uiText("owner/repository")}
+              value={repository}
+              onChange={(e) => setRepository(e.target.value)}
+            />
+          </label>
+          <button
+            disabled={!repository.trim() || !host.trim()}
+            onClick={() => {
+              if (!repository.trim()) return;
+              update("repositories", [
+                ...preferences.repositories,
+                {
+                  site: { provider, host: host.trim() },
+                  repository: repository.trim(),
+                },
+              ]);
+              setRepository("");
+            }}
+          >
+            {uiText("Add repository")}
+          </button>
+        </div>
+        <h4>{uiText("Notifications")}</h4>
+        <label>
+          <input
+            type="checkbox"
+            checked={preferences.notifications}
+            onChange={(e) => update("notifications", e.target.checked)}
+          />
+          {uiText("Send optional OS notifications")}
+        </label>
+        <p>
+          {uiText(
+            "Notifications omit repository names and paths. OS settings control delivery.",
+          )}
+        </p>
+        <div className="attention-options">
+          {(
+            [
+              "notifyRequested",
+              "notifyChecks",
+              "notifyConflicts",
+              "notifyAgents",
+            ] as const
+          ).map((key, n) => (
+            <label key={key}>
+              <input
+                type="checkbox"
+                checked={preferences[key]}
+                onChange={(e) => update(key, e.target.checked)}
+              />
+              {
+                [
+                  "Review requests",
+                  "Failed checks",
+                  "Conflicts",
+                  "Agent input",
+                ][n]
+              }
+            </label>
+          ))}
+        </div>
+        <label>
+          <input
+            type="checkbox"
+            checked={preferences.tray}
+            onChange={(e) => {
+              dirty.current = true;
+              setMessage("");
+              setPreferences({
+                ...preferences,
+                tray: e.target.checked,
+                keepInTray: e.target.checked && preferences.keepInTray,
+              });
+            }}
+          />
+          {uiText("Show menu bar / tray entry")}
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            disabled={!preferences.tray}
+            checked={preferences.keepInTray}
+            onChange={(e) => update("keepInTray", e.target.checked)}
+          />
+          {uiText("Keep windows in the menu bar / tray when closed")}
+        </label>
+        <p>
+          {uiText(
+            "Closing hides windows and keeps work running. Quit saves and stops the app. A working tray is required.",
+          )}
+        </p>
+        <details>
+          <summary>{uiText("Monitoring details")}</summary>
+          <p aria-label={uiText("Monitoring usage this run")}>
+            {uiText("Activity this run: ")}
+            {view.metrics.localReads}
+            {uiText(" local checks ·")} {view.metrics.remoteJobs}
+            {uiText(" remote refreshes ·")} {view.metrics.notifications}
+            {uiText(" alert attempts")}
+          </p>
+          <small>
+            {uiText(
+              "At most one local read and one remote summary job per 15-second cycle; each repository backs off between reads. History keeps up to 200 items. Notifications are rate limited and capped per app run.",
+            )}
+          </small>
+        </details>
+      </fieldset>
+    ) : null;
+  if (preferencesOnly)
+    return (
+      <section className="attention-dialog attention-preferences-panel">
+        {error && <p role="alert">{error}</p>}
+        {message && <p role="status">{message}</p>}
+        {!view && (
+          <>
+            <p role="status">
+              {error
+                ? uiText("Monitoring preferences could not be loaded.")
+                : uiText("Loading monitoring preferences…")}
+            </p>
+            <button
+              disabled={pending}
+              onClick={() => void act(async () => accept(await inbox.view()))}
+            >
+              {uiText("Retry")}
+            </button>
+          </>
+        )}
+        {preferencesForm}
+      </section>
+    );
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent
@@ -242,6 +558,10 @@ export default function AttentionHub({
           </button>
         </header>
         {error && <p role="alert">{error}</p>}
+        {message && <p role="status">{message}</p>}
+        {!view && !error && (
+          <p role="status">{uiText("Loading attention inbox…")}</p>
+        )}
         {initialTarget?.kind === "checks" && (
           <section className="attention-checks">
             <h3>{uiText("Checks at the recorded commit")}</h3>
@@ -267,7 +587,7 @@ export default function AttentionHub({
                 {checks.next && (
                   <p>
                     {uiText(
-                      "More checks exist. Open Hosting reviews for full pagination.",
+                      "More checks exist. Open Pull & merge requests for more results.",
                     )}
                   </p>
                 )}
@@ -287,12 +607,21 @@ export default function AttentionHub({
                 {uiText(" unread")}
               </span>
               <button
-                disabled={pending}
+                disabled={pending || view.checking || !view.preferences.enabled}
                 onClick={() =>
-                  void act(async () => accept(await inbox.update("refresh")))
+                  void act(async () => {
+                    accept(await inbox.update("refresh"));
+                    setMessage(
+                      uiText(
+                        "Refresh requested. Source results appear as checks finish.",
+                      ),
+                    );
+                  })
                 }
               >
-                {uiText("Refresh sources")}
+                {view.checking
+                  ? uiText("Checking sources…")
+                  : uiText("Refresh sources")}
               </button>
               <button
                 disabled={pending || !view.unread}
@@ -311,6 +640,21 @@ export default function AttentionHub({
                   : uiText("Activity history")}
               </button>
             </div>
+            <p role="status">
+              {!view.preferences.enabled
+                ? uiText("Monitoring is paused.")
+                : view.checking
+                  ? uiText("Checking configured sources…")
+                  : view.lastChecked
+                    ? uiText("Last refresh attempt: {time}", {
+                        time: formatDate(new Date(view.lastChecked * 1000), {
+                          timeStyle: "medium",
+                        }),
+                      })
+                    : uiText(
+                        "No source checks yet. Choose repositories in Monitoring preferences or enable agent detection.",
+                      )}
+            </p>
             {view.error && <p role="alert">{view.error}</p>}
             {view.trayError && <p role="status">{view.trayError}</p>}
             {view.warnings.length > 0 && (
@@ -327,7 +671,7 @@ export default function AttentionHub({
             {!view.preferences.enabled && (
               <p className="attention-empty">
                 {uiText(
-                  "Monitoring is paused. Choose sources below, then enable monitoring. Existing history is kept.",
+                  "Choose sources in Preferences → Monitoring. Existing history is kept.",
                 )}
               </p>
             )}
@@ -366,7 +710,7 @@ export default function AttentionHub({
                 ) : (
                   <p>
                     {uiText(
-                      "No current agent activity reported. Enable agent detection in Agents and review to observe sessions.",
+                      "No current agent activity reported. Check Preferences → Agents for detection and hook status.",
                     )}
                   </p>
                 )}
@@ -375,7 +719,7 @@ export default function AttentionHub({
                   {view.repositories.map((r) => (
                     <li key={r.tab}>
                       <strong>{r.workspaceName}</strong>
-                      <span>{r.label}</span>
+                      <span title={r.root}>{r.label}</span>
                       <small>
                         {preferences.localTabs.includes(r.tab)
                           ? uiText("Conflict monitoring selected")
@@ -387,236 +731,12 @@ export default function AttentionHub({
                 </ul>
               </>
             )}
-            <details className="attention-preferences">
-              <summary>{uiText("Monitoring and notifications")}</summary>
-              <p>
-                {uiText(
-                  "One monitor is shared by all windows. Only selected local tabs and configured remote repositories are polled. Paused sources keep their history.",
-                )}
-              </p>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={preferences.enabled}
-                  onChange={(e) => update("enabled", e.target.checked)}
-                />
-                {uiText("Enable monitoring")}
-              </label>
-              <div className="attention-options">
-                {(["requested", "checks", "conflicts", "agents"] as const).map(
-                  (key) => (
-                    <label key={key}>
-                      <input
-                        type="checkbox"
-                        checked={preferences[key]}
-                        onChange={(e) => update(key, e.target.checked)}
-                      />
-                      {sourceNames[key]}
-                    </label>
-                  ),
-                )}
-              </div>
-              <h4>{uiText("Local conflict monitoring")}</h4>
-              {view.repositories
-                .filter((r) => r.root)
-                .map((r) => (
-                  <label key={r.tab}>
-                    <input
-                      type="checkbox"
-                      checked={preferences.localTabs.includes(r.tab)}
-                      onChange={(e) =>
-                        update(
-                          "localTabs",
-                          e.target.checked
-                            ? [...preferences.localTabs, r.tab]
-                            : preferences.localTabs.filter(
-                                (id) => id !== r.tab,
-                              ),
-                        )
-                      }
-                    />
-                    {r.workspaceName}: {r.label}
-                  </label>
-                ))}
-              <h4>{uiText("Remote repositories")}</h4>
-              <p>
-                {uiText(
-                  "Connections supplies host-bound credentials. Authentication discovery runs once per host after refresh or connection changes, never on each poll.",
-                )}
-              </p>
-              {preferences.repositories.map((r, n) => (
-                <div
-                  className="attention-remote"
-                  key={`${r.site.provider}:${r.site.host}:${r.repository}`}
-                >
-                  <span>
-                    {r.site.provider} · {r.site.host}/{r.repository}
-                  </span>
-                  <button
-                    onClick={() =>
-                      update(
-                        "repositories",
-                        preferences.repositories.filter((_, i) => i !== n),
-                      )
-                    }
-                  >
-                    {uiText("Remove")}
-                  </button>
-                </div>
-              ))}
-              <div className="attention-add">
-                <label>
-                  {uiText("Provider")}
-                  <select
-                    value={provider}
-                    onChange={(e) => {
-                      const v = e.target.value as "github" | "gitlab";
-                      setProvider(v);
-                      setHost(v === "github" ? "github.com" : "gitlab.com");
-                    }}
-                  >
-                    <option value="github">{uiText("GitHub")}</option>
-                    <option value="gitlab">{uiText("GitLab")}</option>
-                  </select>
-                </label>
-                <label>
-                  {uiText("Host")}
-                  <input
-                    value={host}
-                    onChange={(e) => setHost(e.target.value)}
-                  />
-                </label>
-                <label>
-                  {uiText("Repository")}
-                  <input
-                    placeholder={uiText("owner/repository")}
-                    value={repository}
-                    onChange={(e) => setRepository(e.target.value)}
-                  />
-                </label>
-                <button
-                  onClick={() => {
-                    if (!repository.trim()) return;
-                    update("repositories", [
-                      ...preferences.repositories,
-                      {
-                        site: { provider, host: host.trim() },
-                        repository: repository.trim(),
-                      },
-                    ]);
-                    setRepository("");
-                  }}
-                >
-                  {uiText("Add repository")}
-                </button>
-              </div>
-              <h4>{uiText("Notifications")}</h4>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={preferences.notifications}
-                  onChange={(e) => update("notifications", e.target.checked)}
-                />
-                {uiText("Send optional OS notifications")}
-              </label>
-              <p>
-                {uiText(
-                  "Alerts contain generic text. Open an alert to inspect its recorded destination. OS permission settings and notification service availability still apply.",
-                )}
-              </p>
-              <div className="attention-options">
-                {(
-                  [
-                    "notifyRequested",
-                    "notifyChecks",
-                    "notifyConflicts",
-                    "notifyAgents",
-                  ] as const
-                ).map((key, n) => (
-                  <label key={key}>
-                    <input
-                      type="checkbox"
-                      checked={preferences[key]}
-                      onChange={(e) => update(key, e.target.checked)}
-                    />
-                    {
-                      [
-                        "Review requests",
-                        "Failed checks",
-                        "Conflicts",
-                        "Agent input",
-                      ][n]
-                    }
-                  </label>
-                ))}
-              </div>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={preferences.tray}
-                  onChange={(e) => {
-                    dirty.current = true;
-                    setPreferences({
-                      ...preferences,
-                      tray: e.target.checked,
-                      keepInTray: e.target.checked && preferences.keepInTray,
-                    });
-                  }}
-                />
-                {uiText("Show menu bar / tray entry")}
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  disabled={!preferences.tray}
-                  checked={preferences.keepInTray}
-                  onChange={(e) => update("keepInTray", e.target.checked)}
-                />
-                {uiText("Keep windows in the menu bar / tray when closed")}
-              </label>
-              <p>
-                {uiText(
-                  "When enabled, closing hides the window and keeps its reviews, terminals and monitoring running. Quit always saves and stops the app through the normal confirmation flow. Without a working tray, closing uses the normal close flow.",
-                )}
-              </p>
-              <div className="attention-toolbar">
-                <button
-                  disabled={pending}
-                  onClick={() =>
-                    void act(async () => {
-                      const result = await inbox.save(preferences);
-                      dirty.current = false;
-                      accept(result);
-                    })
-                  }
-                >
-                  {uiText("Save inbox preferences")}
-                </button>
-                <button
-                  disabled={pending}
-                  onClick={() =>
-                    void act(async () => {
-                      dirty.current = false;
-                      accept(await inbox.view());
-                    })
-                  }
-                >
-                  {uiText("Reload inbox preferences")}
-                </button>
-              </div>
-              <p aria-label={uiText("Monitoring usage this run")}>
-                {uiText("Activity this run: ")}
-                {view.metrics.localReads}
-                {uiText(" local checks ·")} {view.metrics.remoteJobs}
-                {uiText(" hosting refreshes ·")} {view.metrics.notifications}
-                {uiText(" alert attempts")}
-              </p>
-              <small>
-                {uiText(
-                  "At most one local read and one remote summary job per 15-second cycle; each repository backs off between reads. History keeps up to 200 items. Notifications are rate limited and capped per app run.",
-                )}
-              </small>
-            </details>
+            {!onPreferences && preferencesForm}
+            {onPreferences && (
+              <button onClick={onPreferences}>
+                {uiText("Monitoring preferences")}
+              </button>
+            )}
           </>
         )}
       </DialogContent>

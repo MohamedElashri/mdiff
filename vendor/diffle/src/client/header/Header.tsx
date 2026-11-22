@@ -21,10 +21,12 @@ import { SettingsDialog } from './SettingsDialog.js';
 export function Header({
   desktop = false,
   hostingControl,
+  onOpenPreferences,
   compactToggle,
 }: {
   desktop?: boolean;
   hostingControl?: ReactNode;
+  onOpenPreferences?: () => void;
   compactToggle?: (pane: 'tree' | 'panel') => void;
 }) {
   const useStore = useReviewStore();
@@ -42,10 +44,10 @@ export function Header({
   useEffect(
     () =>
       registry?.register({
-        'review.settings': { run: () => setSettingsOpen(true) },
+        'review.settings': { run: onOpenPreferences ?? (() => setSettingsOpen(true)) },
         ...(!desktop ? { 'app.preferences': { run: () => setSettingsOpen(true) } } : {}),
       }),
-    [registry, desktop],
+    [registry, desktop, onOpenPreferences],
   );
   const historyCommand = useCommandAction('app.history', () => {});
   const treeCommand = useCommandAction('review.tree', () =>
@@ -129,9 +131,16 @@ export function Header({
       <Button variant="ghost" icon onClick={helpCommand.run} title={uiText('Keyboard shortcuts (?)')}>
         <Keyboard size="1rem" />
       </Button>
-      <Button variant="ghost" onClick={settingsCommand.run} title={uiText('Settings')} aria-label={uiText('Settings')}>
-        <Settings size="0.9375rem" /> <span className="max-xl:hidden">{uiText('Settings')}</span>
-      </Button>
+      {!desktop && (
+        <Button
+          variant="ghost"
+          onClick={settingsCommand.run}
+          title={uiText('Preferences')}
+          aria-label={uiText('Preferences')}
+        >
+          <Settings size="0.9375rem" /> <span className="max-xl:hidden">{uiText('Preferences')}</span>
+        </Button>
+      )}
       <Button
         variant="ghost"
         icon

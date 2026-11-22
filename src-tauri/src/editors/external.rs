@@ -72,6 +72,33 @@ async fn save(path: &Path, revision: u64, terminal: Option<String>) -> Result<Pr
     .await
 }
 #[tauri::command]
+pub async fn external_preferences(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<serde_json::Value, String> {
+    crate::windows::authorize(&window)?;
+    let sessions = app.state::<crate::workspaces::Sessions>();
+    let _work = sessions.gate.read().await;
+    app.state::<crate::windows::Windows>()
+        .admit(window.label())?;
+    let result = async {
+        let preferences = load(&app.path().app_config_dir()?.join("external-tools.json")).await?;
+        let (editors, terminals) = tauri::async_runtime::spawn_blocking(|| {
+            let places = Locations::system();
+            (
+                discover(&places, None),
+                terminals::discover(&places, cfg!(target_os = "macos"), None),
+            )
+        })
+        .await?;
+        Ok::<_, anyhow::Error>(
+            serde_json::json!({"preferences":preferences,"editors":editors,"terminals":terminals}),
+        )
+    }
+    .await;
+    result.map_err(|e| e.to_string())
+}
+#[tauri::command]
 pub async fn external_tools(
     app: tauri::AppHandle,
     window: WebviewWindow,

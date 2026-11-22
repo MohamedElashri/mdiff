@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { comparisonLabel, type EnterRequest, type RefsResponse } from '@/shared/protocol.js';
-import { api } from '@/client/api.js';
+import { useApi } from '@/client/api.js';
 import { focusReview } from '@/client/keyboard/useKeymap.js';
 import { lastCommitsRequest } from '@/client/model.js';
 
@@ -28,6 +28,7 @@ import { CommitPreview } from './CommitPreview.js';
 
 /** Comparison modes with configuration in an adjacent pane. */
 export function ModePicker() {
+  const api = useApi();
   const useStore = useReviewStore();
 
   const snapshot = useStore((s) => s.snapshot);
@@ -100,7 +101,7 @@ export function ModePicker() {
       current = false;
       document.removeEventListener('mousedown', onDoc);
     };
-  }, [open, setOpen, useStore]);
+  }, [api, open, setOpen, useStore]);
 
   const choose = (req: EnterRequest) => {
     setOpen(false);

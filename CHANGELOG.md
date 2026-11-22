@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Reliable agent detection, activity, executable checks, and error feedback.
+- Preference save/reload recovery, unsaved edits, and stale diffs after Git writes.
+- Image loading, comparison refs, reference navigation, and monitoring feedback.
+
+### Changed
+
+- Unified Preferences, clearer repository tools, and Pull & merge requests naming.
+
 ## [0.3.0] - 2026-11-22
 
 ### Added

@@ -133,6 +133,7 @@ it('browsing only reads; a write needs a native preview and explicit execution',
   );
   expect(gitApi.execute).not.toHaveBeenCalled();
   expect(host.textContent).toContain('Native exact file preview');
+  vi.mocked(gitApi.jobs).mockResolvedValue([{ receipt, active: true, canCancel: true }]);
   await act(() => button('Stage file').click());
   expect(gitApi.execute).toHaveBeenCalledExactlyOnceWith('native-ticket', 'context-1');
   expect(host.textContent).toContain('Accepted native job');

@@ -1,6 +1,6 @@
-# Hosting reviews
+# Pull & merge requests
 
-Open **Hosting** for review discovery, conversations and revision-specific CI. Provider discussions remain separate from local comments. Markdown keeps raw HTML literal and never fetches images; logs load on demand as text, capped at 128 KiB.
+Open **Pull & merge requests** for review discovery, conversations and revision-specific CI. Provider discussions remain separate from local comments. Markdown keeps raw HTML literal and never fetches images; logs load on demand as text, capped at 128 KiB.
 
 | Action   | GitHub                                        | GitLab                                  |
 | -------- | --------------------------------------------- | --------------------------------------- |

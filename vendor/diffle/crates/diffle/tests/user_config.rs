@@ -38,7 +38,9 @@ async fn serializes_overlapping_writes_and_leaves_no_temp_files() {
     let disk = on_disk(&store);
     assert_eq!((disk["contextLines"].clone(), disk["lspCommands"].clone()), (json!(9), json!({ "python": "x" })));
     let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
-    assert_eq!(left, ["config.json"]);
+    assert_eq!(left.len(), 2);
+    assert!(left.contains(&std::ffi::OsString::from("config.json")));
+    assert!(left.contains(&std::ffi::OsString::from("config.json.lock")));
     let reopened = UserConfigStore::open(store.file().to_owned()).await.get();
     assert_eq!((reopened.context_lines, reopened.lsp_commands), (9, python));
 }
@@ -103,4 +105,37 @@ async fn native_overrides_survive_later_display_settings() {
     store.set(UserConfigPatch { line_wrap: Some(false), ..Default::default() }).await.unwrap();
     let saved = UserConfigStore::open(dir.path().join("config.json")).await.get();
     assert_eq!(serde_json::to_value(saved).unwrap()["lspCommands"]["typescript"], "test-server --stdio");
+}
+
+#[tokio::test]
+async fn independent_stores_merge_disk_changes_and_preserve_corrupt_originals() {
+    let dir = temp();
+    let file = dir.path().join("config.json");
+    let first = UserConfigStore::open(file.clone()).await;
+    let second = UserConfigStore::open(file.clone()).await;
+    let (a, b) = futures::join!(
+        first.set(UserConfigPatch { context_lines: Some(17), ..Default::default() }),
+        second.set(UserConfigPatch { line_wrap: Some(false), ..Default::default() }),
+    );
+    a.unwrap();
+    b.unwrap();
+    let value = first.reload().await.unwrap();
+    assert_eq!(value.context_lines, 17);
+    assert!(!value.line_wrap);
+    std::fs::write(&file, "{broken").unwrap();
+    assert!(second.reload().await.is_err());
+    assert!(first.set(UserConfigPatch { context_lines: Some(8), ..Default::default() }).await.is_err());
+    assert!(second.set_desktop_commands(Default::default(), Default::default()).await.is_err());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "{broken");
+}
+
+#[tokio::test]
+async fn desktop_partial_fields_preserve_other_tools_and_review_defaults() {
+    let dir = temp();
+    let store=open_with(&dir,json!({"contextLines":13,"githubHosts":{"ssh.example":"github.example"},"lspCommands":{"python":"pyright --stdio"}})).await;
+    store.set_desktop_fields(Some(HashMap::from([(LanguageId::Rust, "rust-analyzer".into())])), None).await.unwrap();
+    let value = store.reload().await.unwrap();
+    assert_eq!(value.context_lines, 13);
+    assert_eq!(value.github_hosts.get("ssh.example").map(String::as_str), Some("github.example"));
+    assert_eq!(value.lsp_commands.get(&LanguageId::Rust).map(String::as_str), Some("rust-analyzer"));
 }

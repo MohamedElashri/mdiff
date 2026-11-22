@@ -9,7 +9,13 @@ export default defineConfig({
     alias: {
       "@": fileURLToPath(new URL("./vendor/diffle/src", import.meta.url)),
     },
-    dedupe: ["react", "react-dom", "zustand", "@pierre/diffs"],
+    dedupe: [
+      "react",
+      "react-dom",
+      "zustand",
+      "@pierre/diffs",
+      "@base-ui/react",
+    ],
   },
   define: { __DIFFLE_VERSION__: JSON.stringify("0.3.6") },
   worker: { format: "es", plugins: () => [diffsWorkerEntry()] },

@@ -53,6 +53,8 @@ export type Repository = {
   active: boolean;
 };
 export type View = {
+  checking: boolean;
+  lastChecked: number | null;
   revision: number;
   preferences: Preferences;
   items: Item[];
@@ -103,6 +105,7 @@ export function mergeSnapshot(current: View | null, snapshot: View): View {
 }
 export const inbox = {
   view: () => invoke<View>("attention_view"),
+  reload: () => invoke<View>("attention_reload"),
   save: (preferences: Preferences) =>
     invoke<View>("attention_preferences", { preferences }),
   update: (action: string, id: string | null = null) =>

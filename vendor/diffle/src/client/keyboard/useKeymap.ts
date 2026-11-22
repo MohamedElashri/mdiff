@@ -271,7 +271,10 @@ export function useKeymap(
       const s = useStore.getState();
       const target = realTarget(e);
       if (target?.closest('[data-history-surface]')) return;
-      if (keyboardTarget(e).blocked && !s.helpOpen && !target?.closest('#mode-picker')) return;
+      // The reference list delegates its navigation to this keymap, including when
+      // its peek takes focus. Other dialogs and terminals still own their input.
+      const inReferences = s.references.open && !!target?.closest('[data-reference-list]');
+      if (keyboardTarget(e).blocked && !s.helpOpen && !target?.closest('#mode-picker') && !inReferences) return;
       if (registry?.manages(e)) return;
       // The count belongs to this press: every path below either uses it or, by
       // leaving it taken, drops it as vim does on a key that takes no count.

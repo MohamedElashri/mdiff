@@ -45,6 +45,8 @@ export type Tools = {
   preferences: Preferences;
 };
 export const worktreeApi = {
+  preferences: () =>
+    invoke<Omit<Tools, "root" | "temporary">>("external_preferences"),
   read: <T>(id: string, query: object, signal?: AbortSignal) => {
     if (signal?.aborted)
       return Promise.reject(

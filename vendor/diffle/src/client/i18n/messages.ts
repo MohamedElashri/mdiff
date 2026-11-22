@@ -13,7 +13,7 @@ export const messages = {
   groupsRefs: message('commands.groups.refs', 'Refs'),
   groupsCommits: message('commands.groups.commits', 'Commits'),
   groupsWorktrees: message('palette.groups.worktrees', 'Worktrees'),
-  groupsHosting: message('palette.groups.hosting', 'Hosting'),
+  groupsHosting: message('palette.groups.hosting', 'Pull & merge requests'),
   groupsRecent: message('commands.groups.recent', 'Recent'),
   categories: message('commands.palette.categories', 'Result categories'),
   resultList: message('commands.palette.list', 'Results'),

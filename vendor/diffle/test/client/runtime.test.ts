@@ -19,6 +19,8 @@ import type { ReviewTransport } from '@/client/transport.js';
 import { composerKey } from '@/client/model.js';
 import { legacyDrafts, assignLegacyDrafts } from '@/client/legacyDrafts.js';
 import { defineDiffStub } from './views.js';
+import { ModePicker } from '@/client/header/ModePicker.js';
+import { ImageDiff } from '@/client/review/ImageDiff.js';
 
 defineDiffStub();
 const scopes: ReturnType<typeof createReviewScope>[] = [];
@@ -78,6 +80,11 @@ function fixture(name: string) {
         case 'api/moved':
           data = null;
           break;
+        case 'api/refs':
+          data = { defaultBranch: 'main', branches: [name], remoteBranches: [], tags: [], recent: [], current: 'main' };
+          break;
+        case 'api/image':
+          return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { 'content-type': 'image/png' } });
         case 'api/github':
           data = { version: 1, repository: null, repositoryUrl: null, pullRequest: null, reason: 'offline' };
           break;
@@ -115,6 +122,67 @@ function scope(f: ReturnType<typeof fixture>, repository: string, owner = 'tab')
   scopes.push(value);
   return value;
 }
+
+it('loads comparison refs and image bytes through each review scope', async () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const fixtures = [fixture('/a'), fixture('/b')];
+  const reviews = fixtures.map((f, index) => scope(f, `repo-${index}`));
+  await Promise.all(reviews.map((s) => s.store.getState().boot()));
+  for (const s of reviews) s.store.setState({ modeMenuOpen: true });
+  const OriginalURL = URL;
+  let object = 0;
+  vi.stubGlobal(
+    'URL',
+    class extends OriginalURL {
+      static createObjectURL() {
+        return `blob:test-${++object}`;
+      }
+      static revokeObjectURL() {}
+    },
+  );
+  vi.stubGlobal(
+    'Image',
+    class {
+      naturalWidth = 64;
+      naturalHeight = 48;
+      onload?: () => void;
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    },
+  );
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    for (const review of reviews) {
+      await act(() =>
+        root.render(
+          createElement(
+            ReviewScopeProvider,
+            { scope: review },
+            createElement(
+              'div',
+              null,
+              createElement(ModePicker),
+              createElement(ImageDiff, { path: 'logo.png', sides: 'both' }),
+            ),
+          ),
+        ),
+      );
+      expect(host.textContent).toContain('Old · 64 × 48');
+      expect(host.textContent).toContain('New · 64 × 48');
+    }
+    for (const f of fixtures) {
+      expect(f.calls.filter((p) => p === 'api/refs')).toHaveLength(1);
+      expect(f.calls.filter((p) => p.startsWith('api/image?'))).toHaveLength(2);
+    }
+  } finally {
+    await act(() => root.unmount());
+    host.remove();
+    vi.unstubAllGlobals();
+  }
+});
 
 it('mounts a scoped command UI inside a shell subscribed to registry changes without a render loop', async () => {
   const a = scope(fixture('/a'), 'repo-a');

@@ -402,7 +402,7 @@ let state=app.state::<Agents>();
 let mut d=state.data.lock().unwrap();
 if d.rows.len()<256{
 d.rows.push(Activity{
-id:crate::storage::digest(&format!("{}:{}:{}",proc.pid,proc.start,prepared.context)),tool:p.tool,session:None,parent:None,root:p.checkout.clone(),context:prepared.context,state:"launched".into(),provenance:"launch".into(),started:now(),seen:now(),reported:None,sequence:0,pid:proc.pid,start:proc.start,branch:None,commit:Some(p.head),terminal:Some(info.id.clone())}
+id:super::activity::identity(proc.pid,&proc.start,&p.checkout),tool:p.tool,session:None,parent:None,root:p.checkout.clone(),context:prepared.context,state:"launched".into(),provenance:"launch".into(),started:now(),seen:now(),reported:None,sequence:0,pid:proc.pid,start:proc.start,branch:None,commit:Some(p.head),terminal:Some(info.id.clone())}
 );
 }
 }

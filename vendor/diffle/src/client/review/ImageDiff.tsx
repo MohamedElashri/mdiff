@@ -2,7 +2,6 @@ import { uiText } from '@/client/i18n/runtime.js';
 import { useApi } from '@/client/api.js';
 import { useEffect, useReducer, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { imageKey, type Side } from '@/shared/protocol.js';
-import { api } from '@/client/api.js';
 import type { ImageSides } from '@/client/model.js';
 import { useStore, type ImageCompare, IMAGE_COMPARES } from '@/client/store.js';
 import { SegmentedControl, ToggleButton } from '@/client/ui/ToggleButton.js';
@@ -39,12 +38,15 @@ interface Decoded {
 
 /** The image at `url` once decoded: undefined while it loads, null without a url or when it does not decode. */
 function useDecoded(url: string | null): Decoded | null | undefined {
+  const api = useApi();
   const [source, setSource] = useState<{ key: string; url: string } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [, loaded] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
     if (url == null) return;
     let live = true;
+    const abort = new AbortController();
+    setFailed(null);
     const img = new Image();
     img.onload = () => {
       sizes.set(url, { width: img.naturalWidth, height: img.naturalHeight });
@@ -55,7 +57,7 @@ function useDecoded(url: string | null): Decoded | null | undefined {
     };
     let objectUrl: string | undefined;
     void api
-      .image(url)
+      .image(url, abort.signal)
       .then((blob) => {
         if (!live) return;
         objectUrl = URL.createObjectURL(blob);
@@ -67,9 +69,10 @@ function useDecoded(url: string | null): Decoded | null | undefined {
       });
     return () => {
       live = false;
+      abort.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [url]);
+  }, [api, url]);
   if (url == null || failed === url) return null;
   const size = sizes.get(url);
   return size && source?.key === url ? { url: source.url, size } : undefined;

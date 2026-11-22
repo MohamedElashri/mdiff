@@ -1,6 +1,6 @@
 # Embedded terminal
 
-Open **Embedded terminal → Start shell**, or start one from **Worktrees and tools**. Startup is explicit and can be disabled. Each window allows two tabs; the process allows four live PTYs.
+Open **Tools → Embedded terminal → Start shell**, or start one from **Worktrees and external tools**. Configure startup, font size, and preferred external terminal in **Preferences → Terminal & tools**. Each window allows two tabs; the process allows four live PTYs.
 
 ## Ownership
 

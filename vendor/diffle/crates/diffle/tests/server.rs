@@ -450,7 +450,7 @@ async fn lsp_routes_say_language_servers_are_off() {
     let s = TestServer::start().await;
     assert_eq!(s.get("/api/lsp/status").await.json(), json!({ "enabled": false, "servers": [], "missing": [] }));
     let r = s.json("POST", "/api/lsp/definition", json!({ "path": "a.txt", "line": 1, "col": 0 })).await;
-    assert_eq!((r.status, r.json()), (409, json!({ "error": "Language servers are off for this run (--no-lsp)" })));
+    assert_eq!((r.status, r.json()), (409, json!({ "error": "Language servers are disabled for this review" })));
     assert_eq!(s.get("/api/lsp/log?server=fake").await.status, 404);
     s.close().await;
 }

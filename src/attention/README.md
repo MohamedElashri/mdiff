@@ -1,6 +1,6 @@
 # Needs attention
 
-Open **Needs attention** from the toolbar/palette. Select local tabs and remote repositories, then save **Enable monitoring**. Monitoring, OS alerts, the tray and keeping closed windows in the tray are separate opt-ins. Credentials remain in **Connections**; conflicting preference saves require reload.
+Open **Needs attention** from the toolbar/palette. Configure sources in **Preferences → Monitoring**, then enable monitoring. Monitoring, OS alerts, the tray and keeping closed windows in the tray are separate opt-ins. Credentials remain in **Preferences → Connections**; conflicting preference saves require reload.
 
 The inbox prioritizes requested reviews, failed checks, index conflicts and hook-reported input requests. **Mark read** changes the badge; **Dismiss** hides without resolving; history can restore items. Only proven resolution followed by recurrence makes an item unread again. Outages, incomplete pages and unknown agent states cannot resolve items. Paused/removed sources retain history.
 

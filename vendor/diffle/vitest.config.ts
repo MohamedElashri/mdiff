@@ -7,7 +7,10 @@ const srcRoot = fileURLToPath(new URL('./src', import.meta.url));
 
 export default defineConfig({
   define: { __DIFFLE_VERSION__: JSON.stringify(pkg.version) },
-  resolve: { alias: { '@': srcRoot }, dedupe: ['react', 'react-dom', 'zustand', '@pierre/diffs', 'lucide-react'] },
+  resolve: {
+    alias: { '@': srcRoot },
+    dedupe: ['react', 'react-dom', 'zustand', '@pierre/diffs', 'lucide-react', '@base-ui/react'],
+  },
   test: {
     include:
       process.env.MDIFF_TEST_TOOLING === '1'

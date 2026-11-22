@@ -217,8 +217,8 @@ export function createApi(transport?: ReviewTransport) {
       const pathUrl = `api/image?${q({ path, rev, key })}`;
       return reviewTransport() ? pathUrl : new URL(pathUrl, location.href).href;
     },
-    image: async (url: string) => {
-      const res = await request(url);
+    image: async (url: string, signal?: AbortSignal) => {
+      const res = await request(url, { signal });
       if (!res.ok) throw new Error(await safeMessage(res));
       const blob = await res.blob();
       if (blob.size > 32 * 1024 * 1024) throw new Error('Image response limit reached');

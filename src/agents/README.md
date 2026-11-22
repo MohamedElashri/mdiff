@@ -1,6 +1,8 @@
 # Agents and review
 
-Open **Agents and review**. Detection is off by default; opt in under **Activity and installed tools** and optionally select Codex/Claude Code executables. Discovery checks PATH without running tools. Preferences use native revision checks.
+Configure detection, executable paths, and hooks in **Preferences → Agents**. Detection is off by default and follows the selected repository without opening its panel. Open **Tools → Agents and review → Activity** to scan and inspect coverage. Tool checks never run agents; unsaved preferences require save/discard before closing.
+
+The current list excludes exited processes; recent hook/launch reports expire separately. Process identities survive review-runtime changes, and hook reports update the same session row.
 
 ## Review handoff
 
@@ -8,7 +10,7 @@ Select **Review commit with agent** in History or prepare an open comparison. **
 
 [Native launch](../../src-tauri/src/agents/launch.rs) consumes a window-bound, single-use preview and rechecks endpoints/preferences. It creates an independent repository with shallow-fetched endpoints and detached HEAD, leaving the source untouched. Submodules, LFS, intermediate history and project setup are not materialized. At most 16 isolated folders are retained under `agent-reviews-v1/`; inspect/remove them manually. Restart never resumes agents.
 
-Embedded launches use [terminal ownership](../terminal/README.md). Supported command-capable external terminals receive literal argv; mdiff does not own their processes. Codex uses read-only/on-request settings; Claude retains its CLI permissions. No bypass flags or app hosting credentials are supplied. The review prompt alone is not a sandbox guarantee.
+Embedded launches use [terminal ownership](../terminal/README.md). Supported command-capable external terminals receive literal argv; mdiff does not own their processes. Codex uses read-only/on-request settings; Claude retains its CLI permissions. No bypass flags or app connection credentials are supplied. The review prompt alone is not a sandbox guarantee.
 
 ## Activity and hooks
 

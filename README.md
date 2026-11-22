@@ -35,7 +35,7 @@ Installs to `~/Applications` on macOS or `~/.local/bin` on Linux, with an applic
 >
 > For script installs, use `"$HOME/Applications/mdiff.app"` instead of `/Applications/mdiff.app`.
 
-Open a repository or a PR/MR URL. Press **Cmd/Ctrl+K** for the command palette and `?` for review shortcuts. Configure connections and appearance in **Preferences**.
+Open a repository or a PR/MR URL. Press **Cmd/Ctrl+K** for the command palette and `?` for review shortcuts. Use **Preferences** for appearance, review defaults, connections, code intelligence, agents, terminal tools, and monitoring.
 
 ## Features
 
@@ -43,7 +43,7 @@ Open a repository or a PR/MR URL. Press **Cmd/Ctrl+K** for the command palette a
 - [Tabs and workspaces](src/workspaces/README.md) with saved drafts, reopen/unload actions, and up to two windows.
 - [Commit history](vendor/diffle/src/client/history/README.md) with filters, parent comparisons, ranges, and commit series.
 - [Git operations](src/git-operations/README.md), staging, commits, branches, worktrees, and [conflict recovery](src/git-operations/advanced.md).
-- [Hosting](src-tauri/src/hosting/README.md) for GitHub/GitLab reviews, discussions, revision-specific checks, and supported review/merge actions.
+- [Pull & merge requests](src-tauri/src/hosting/README.md) for GitHub/GitLab reviews, discussions, revision-specific checks, and supported review/merge actions.
 - [Worktrees and external tools](src/worktrees/README.md), plus an optional [embedded terminal](src/terminal/README.md).
 - Opt-in [agent activity and review handoffs](src/agents/README.md) and an [attention inbox](src/attention/README.md) with notifications and tray access.
 - Configurable shortcuts, themes, fonts, compact density, and [language selection](vendor/diffle/src/client/i18n/README.md) with a partial French preview. Restart to apply a language change.

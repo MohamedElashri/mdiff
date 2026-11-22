@@ -20,6 +20,7 @@ type Props = {
   id: string;
   initial: "worktrees" | Kind;
   onClose: () => void;
+  onPreferences?: () => void;
   onOpen: (path: string) => Promise<unknown>;
   agentActivity?: Activity[];
   onEmbedded?: (worktree: string) => Promise<unknown>;
@@ -397,7 +398,11 @@ export default function WorktreesHub(props: Props) {
                       )
                     ))}
                   {props.agentActivity
-                    ?.filter((a) => a.root === row.path)
+                    ?.filter(
+                      (a) =>
+                        a.root === row.path &&
+                        !["unavailable", "ended"].includes(a.state),
+                    )
                     .map((a) => (
                       <p className="agent-badge" key={a.id}>
                         {a.tool}: {a.state} ({a.provenance})
@@ -502,23 +507,33 @@ export default function WorktreesHub(props: Props) {
                     >
                       {uiText("Open terminal")}
                     </button>
-                    <button
-                      disabled={
-                        busy ||
-                        !terminal ||
-                        terminal === tools.preferences.terminal ||
-                        !tools.terminals.some((tool) => tool.id === terminal)
-                      }
-                      onClick={() => void save(terminal)}
-                    >
-                      {uiText("Use as default")}
-                    </button>
-                    <button
-                      disabled={busy || !tools.preferences.terminal}
-                      onClick={() => void save(null)}
-                    >
-                      {uiText("Clear default")}
-                    </button>
+                    {props.onPreferences ? (
+                      <button onClick={props.onPreferences}>
+                        {uiText("Terminal preferences")}
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          disabled={
+                            busy ||
+                            !terminal ||
+                            terminal === tools.preferences.terminal ||
+                            !tools.terminals.some(
+                              (tool) => tool.id === terminal,
+                            )
+                          }
+                          onClick={() => void save(terminal)}
+                        >
+                          {uiText("Use as default")}
+                        </button>
+                        <button
+                          disabled={busy || !tools.preferences.terminal}
+                          onClick={() => void save(null)}
+                        >
+                          {uiText("Clear default")}
+                        </button>
+                      </>
+                    )}
                   </div>
                   <small>
                     {uiText(

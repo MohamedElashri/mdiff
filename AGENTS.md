@@ -14,6 +14,8 @@ mdiff is a Tauri/React/TypeScript/Rust code review app for macOS and Linux.
 
 ## Ownership rules
 
+- App-wide controls belong in `src/preferences/`; operation-specific choices stay with their action. Preference reads must not open reviews, grant trust, start shells or replace the window-owned agent observer. Preserve dirty edits and report failed saves/reloads.
+
 - [Reviews](src-tauri/src/reviews.md): scope IPC, events, cancellation, teardown and private refs to their owner. Runtime IDs are ephemeral; durable data must outlive disposable checkouts.
 - [Workspaces](src/workspaces/README.md): preserve stable tab IDs, file leases and revision checks. Window admission and the generation-scoped all-window quit barrier belong to `windows.rs`; capability labels alone grant no admission.
 - [History](vendor/diffle/src/client/history/README.md): keep browsing read-only and bounded. Old query cleanup must never close a newer generation; shallow boundaries are not roots.
@@ -21,6 +23,6 @@ mdiff is a Tauri/React/TypeScript/Rust code review app for macOS and Linux.
 - [Tools](src/worktrees/README.md) and [PTYs](src/terminal/README.md): validate native targets and retain checkout leases. Renderer paths or shell commands grant no launch authority. PTYs remain window-owned with bounded streaming.
 - [Agents](src/agents/README.md): discovery is opt-in metadata observation. Validate hook peer/start/cwd/session identity; never inspect transcripts, argv or environments or control unrelated processes.
 - [Attention](src/attention/README.md): monitor configured sources without starting reviews/LSPs. Incomplete observations cannot prove resolution; validate destinations natively.
-- [Hosting](src-tauri/src/hosting/README.md): validate target/revision and persist receipts before writes. Reconcile unknown outcomes; never retry automatically.
+- [Pull & merge requests](src-tauri/src/hosting/README.md): validate target/revision and persist receipts before writes. Reconcile unknown outcomes; never retry automatically.
 - LSP trust is explicit for each opened review and never restored. Tokens stay in native memory, bound to their host; exclude them from files, logs, Git config and manual Git commands.
 - [Translations](vendor/diffle/src/client/i18n/README.md) must not change IDs, paths, code, user content or shortcut bindings.

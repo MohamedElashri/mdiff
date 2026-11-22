@@ -33,7 +33,7 @@ pub fn readable_by_servers(snap: Option<&Snapshot>) -> bool {
 /// `readable_by_servers` of the current snapshot.
 pub fn lsp_blocker(lsp: &LspStatus, checkout: bool, q: &LspQuery<'_>) -> Option<String> {
     if !lsp.enabled {
-        return Some("Language servers are off for this run (--no-lsp)".into());
+        return Some("Language servers are disabled for this review".into());
     }
     if !checkout {
         return Some("Symbol navigation needs the new side to be the worktree or the checked-out commit".into());
@@ -145,7 +145,7 @@ mod tests {
     fn names_the_run_the_snapshot_the_language_the_server_and_the_feature_in_that_order() {
         let on = status(vec![server(|_| {})]);
         let off = LspStatus { enabled: false, servers: Vec::new(), missing: Vec::new() };
-        assert!(lsp_blocker(&off, true, &LspQuery::default()).unwrap().contains("--no-lsp"));
+        assert!(lsp_blocker(&off, true, &LspQuery::default()).unwrap().contains("disabled for this review"));
         assert!(lsp_blocker(&on, false, &LspQuery::default()).unwrap().contains("new side"));
         assert_eq!(lsp_blocker(&on, true, &at("notes.txt", None)).unwrap(), "No language server for .txt files");
         assert_eq!(lsp_blocker(&on, true, &at("main.go", None)).unwrap(), "No language server runs for go");

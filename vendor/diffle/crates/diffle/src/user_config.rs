@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use serde_json::{Map, Value};
 
-use crate::persist::{user_config_dir, write_file_atomic};
+use crate::persist::{user_config_dir, with_file_lock, write_file_atomic};
 use crate::protocol::{FollowRefs, LanguageId, UserConfig, language_ids};
 
 /// Every field optional: what `set` merges in (routes' ConfigUpdate plus CLI-only lspCommands/githubHosts).
@@ -45,17 +45,10 @@ impl UserConfigStore {
 
     /// Reads `file`; an absent file is the defaults, and so is an unreadable one, with a warning.
     pub async fn open(file: PathBuf) -> Self {
-        let config = match tokio::fs::read_to_string(&file).await {
-            Ok(text) => match serde_json::from_str::<Value>(&text) {
-                Ok(value) => normalize(&value),
-                Err(e) => {
-                    crate::status!("[diffle] ignoring unreadable config {}: {e}", file.display());
-                    UserConfig::default()
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => UserConfig::default(),
-            Err(e) => {
-                crate::status!("[diffle] ignoring unreadable config {}: {e}", file.display());
+        let config = match read_document(&file).await {
+            Ok(value) => normalize(&value),
+            Err(error) => {
+                crate::status!("[diffle] unreadable config {}: {error}", file.display());
                 UserConfig::default()
             }
         };
@@ -79,43 +72,93 @@ impl UserConfigStore {
         self.config.lock().unwrap().clone()
     }
 
+    /// Explicit refresh for preference editors; malformed originals are never replaced.
+    pub async fn reload(&self) -> anyhow::Result<UserConfig> {
+        let _turn = self.writing.lock().await;
+        let next = normalize(&read_document(&self.file).await?);
+        if serde_json::to_value(self.get())? != serde_json::to_value(&next)? {
+            *self.config.lock().unwrap() = next.clone();
+            self.changes.send_modify(|revision| *revision += 1);
+        }
+        Ok(next)
+    }
     /// Native-host configuration, deliberately not exposed by the HTTP config route.
     pub async fn set_desktop_commands(
         &self,
         commands: HashMap<LanguageId, String>,
         hosts: HashMap<String, String>,
     ) -> anyhow::Result<()> {
-        let _turn = self.writing.lock().await;
-        let mut config = self.get();
-        config.lsp_commands = commands;
-        config.github_hosts = hosts;
-        write_file_atomic(&self.file, &(serde_json::to_string_pretty(&config)? + "\n")).await?;
-        *self.config.lock().unwrap() = config;
-        self.changes.send_modify(|revision| *revision += 1);
-        Ok(())
+        self.set_desktop_fields(Some(commands), Some(hosts)).await
     }
-
-    /// Merges `next` in and persists it. A failed write fails its caller only; the next `set` still writes.
+    pub async fn set_desktop_fields(
+        &self,
+        commands: Option<HashMap<LanguageId, String>>,
+        hosts: Option<HashMap<String, String>>,
+    ) -> anyhow::Result<()> {
+        let _turn = self.writing.lock().await;
+        with_file_lock(&self.file, || async {
+            let mut config = normalize(&read_document(&self.file).await?);
+            if let Some(commands) = commands {
+                config.lsp_commands = commands;
+            }
+            if let Some(hosts) = hosts {
+                config.github_hosts = hosts;
+            }
+            self.commit(config).await?;
+            Ok(())
+        })
+        .await
+    }
+    /// Merge against the current disk document under an OS lock, including other processes' edits.
     pub async fn set(&self, next: UserConfigPatch) -> anyhow::Result<UserConfig> {
         let _turn = self.writing.lock().await;
-        let mut merged = serde_json::to_value(self.get())?;
-        let fields = merged.as_object_mut().expect("config serializes to an object");
-        let mut put = |key: &str, value: Option<Value>| {
-            if let Some(value) = value {
-                fields.insert(key.to_owned(), value);
-            }
-        };
-        put("autoViewed", next.auto_viewed.map(Value::from));
-        put("contextLines", next.context_lines.map(Value::from));
-        put("followRefs", next.follow_refs.map(|f| Value::from(f.to_string())));
-        put("lineWrap", next.line_wrap.map(Value::from));
-        let config = normalize(&merged);
-        // May hold a shell command: the write is owner-only.
-        write_file_atomic(&self.file, &(serde_json::to_string_pretty(&config)? + "\n")).await?;
+        with_file_lock(&self.file, || async {
+            let mut merged = read_document(&self.file).await?;
+            let fields = merged.as_object_mut().expect("validated object");
+            let mut put = |key: &str, value: Option<Value>| {
+                if let Some(value) = value {
+                    fields.insert(key.to_owned(), value);
+                }
+            };
+            put("autoViewed", next.auto_viewed.map(Value::from));
+            put("contextLines", next.context_lines.map(Value::from));
+            put("followRefs", next.follow_refs.map(|f| Value::from(f.to_string())));
+            put("lineWrap", next.line_wrap.map(Value::from));
+            self.commit(normalize(&merged)).await
+        })
+        .await
+    }
+    async fn commit(&self, config: UserConfig) -> anyhow::Result<UserConfig> {
+        let text = serde_json::to_string_pretty(&config)? + "\n";
+        anyhow::ensure!(text.len() <= 512 * 1024, "Review preferences exceed 512 KiB");
+        write_file_atomic(&self.file, &text).await?;
         *self.config.lock().unwrap() = config.clone();
         self.changes.send_modify(|revision| *revision += 1);
         Ok(config)
     }
+}
+
+async fn read_document(file: &Path) -> anyhow::Result<Value> {
+    use tokio::io::AsyncReadExt;
+    let path = file;
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::to_value(UserConfig::default())?);
+        }
+        Err(error) => return Err(anyhow::anyhow!("Cannot read review preferences {}: {error}", path.display())),
+    };
+    let mut bytes = Vec::new();
+    file.take(512 * 1024 + 1).read_to_end(&mut bytes).await?;
+    anyhow::ensure!(bytes.len() <= 512 * 1024, "Review preferences exceed 512 KiB; original preserved");
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        anyhow::anyhow!(
+            "Cannot parse review preferences {}: {error}. Repair the file and reload; original preserved",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(value.is_object(), "Review preferences must be a JSON object; original preserved");
+    Ok(value)
 }
 
 /// Whatever the file holds, as a valid config: each field that is missing or malformed takes its default.

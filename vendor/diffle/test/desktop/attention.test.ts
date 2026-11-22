@@ -25,7 +25,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 vi.mock('../../../../src/attention/api', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  inbox: { view: vi.fn(), save: vi.fn(), update: vi.fn(), open: vi.fn(async () => {}) },
+  inbox: { reload: vi.fn(), view: vi.fn(), save: vi.fn(), update: vi.fn(), open: vi.fn(async () => {}) },
 }));
 vi.mock('../../../../src/hosting/api', () => ({ hosting: { read: vi.fn() } }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
@@ -60,6 +60,8 @@ const item: Item = {
   target,
 };
 const base: View = {
+  checking: false,
+  lastChecked: null,
   revision: 0,
   preferences: {
     revision: 0,
@@ -98,6 +100,7 @@ async function mount(view: View = base, initialTarget: Target | null = null) {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(inbox.reload).mockImplementation(() => inbox.view());
   events.clear();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   host = document.createElement('div');
@@ -226,4 +229,45 @@ it('accepts newer preferences even when a newer item delta overtook the snapshot
   expect(merged.items[0]!.read).toBe(true);
   expect(merged.preferences.enabled).toBe(false);
   expect(mergeSnapshot(merged, base).preferences.revision).toBe(1);
+});
+
+it('clears the dirty guard when monitoring choices are reverted and preserves edits on failed disk reload', async () => {
+  const dirty = vi.fn();
+  vi.mocked(inbox.view).mockResolvedValue(base);
+  await act(() =>
+    root.render(createElement(AttentionHub, { onClose: () => {}, preferencesOnly: true, onDirty: dirty })),
+  );
+  const enabled = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  await act(() => enabled.click());
+  expect(dirty).toHaveBeenLastCalledWith(true);
+  await act(() => enabled.click());
+  expect(dirty).toHaveBeenLastCalledWith(false);
+  expect(button('Save changes').disabled).toBe(true);
+  await act(() => enabled.click());
+  vi.mocked(inbox.reload).mockRejectedValueOnce(Error('Invalid saved monitoring document'));
+  await act(() => button('Discard and reload').click());
+  expect(enabled.checked).toBe(true);
+  expect(dirty).toHaveBeenLastCalledWith(true);
+  expect(host.textContent).toContain('Invalid saved monitoring document');
+  await act(() => button('Discard changes').click());
+  expect(enabled.checked).toBe(false);
+  expect(dirty).toHaveBeenLastCalledWith(false);
+});
+
+it('shows one save acknowledgement and clears it when editing again', async () => {
+  vi.mocked(inbox.view).mockResolvedValue(base);
+  vi.mocked(inbox.save).mockImplementation(async (preferences) => ({
+    ...base,
+    preferences: { ...preferences, revision: 1 },
+  }));
+  await act(() => root.render(createElement(AttentionHub, { onClose: () => {}, preferencesOnly: true })));
+  const enabled = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  await act(() => enabled.click());
+  expect(button('Discard and reload')).toBeDefined();
+  await act(() => button('Save changes').click());
+  expect(
+    [...host.querySelectorAll('[role="status"]')].filter((el) => el.textContent === 'Monitoring preferences saved.'),
+  ).toHaveLength(1);
+  await act(() => enabled.click());
+  expect(host.textContent).not.toContain('Monitoring preferences saved.');
 });

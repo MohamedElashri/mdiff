@@ -35,7 +35,7 @@ fn reference(source: &crate::workspaces::Source, fallback: Option<String>) -> Re
     let url = fallback
         .or_else(|| source.request["pr"].as_str().map(str::to_owned))
         .ok_or_else(|| {
-            anyhow::anyhow!("Open a pull request or merge request from Hosting reviews first")
+            anyhow::anyhow!("Open a pull request or merge request from Pull & merge requests first")
         })?;
     ReviewRef::parse(&url, Provider::Github)
 }
@@ -171,7 +171,7 @@ pub async fn hosting_context(
         }
         anyhow::ensure!(
             generation == app.state::<Hosting>().broker.epoch(),
-            "Connection settings changed; reload hosting context"
+            "Connection settings changed; reload the pull or merge request"
         );
         sites.sort_by_key(|s| format!("{:?}:{}", s.provider, s.host));
         sites.dedup();
@@ -281,7 +281,7 @@ pub async fn hosting_read(
             }
         }
     };
-    tokio::select! {result=work=>result.map_err(|e|e.to_string()),_=changes.changed()=>Err("Connection changed; hosting request cancelled".into()),_=cancelled=>Err("Hosting request cancelled".into())}
+    tokio::select! {result=work=>result.map_err(|e|e.to_string()),_=changes.changed()=>Err("Connection changed; provider request cancelled".into()),_=cancelled=>Err("Provider request cancelled".into())}
 }
 #[tauri::command]
 pub async fn hosting_cancel(
@@ -356,7 +356,7 @@ async fn write(
     anyhow::ensure!(c.token.is_some(), "Connect this host before writing");
     let actor = state.broker.user(&c).await?["id"]
         .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("Cannot identify hosting account"))?
+        .ok_or_else(|| anyhow::anyhow!("Cannot identify provider account"))?
         .to_string();
     let ledger = ledger(app)?;
     // Retry of a prepared operation returns its receipt before any remote mutation.

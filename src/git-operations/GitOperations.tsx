@@ -187,9 +187,10 @@ export default function GitOperations(props: Props) {
         setTick((n) => n + 1);
       }
     });
+    void event.catch((e) => current && setError(String(e)));
     return () => {
       current = false;
-      void event.then((stop) => stop());
+      void event.then((stop) => stop()).catch(() => {});
     };
   }, []);
   useEffect(() => {
@@ -377,13 +378,9 @@ export default function GitOperations(props: Props) {
                 disabled={busy}
                 onClick={() =>
                   void perform(async () => {
-                    const receipt = await gitApi.execute(
-                      preview.id,
-                      props.context,
-                    );
+                    await gitApi.execute(preview.id, props.context);
                     setPreview(null);
                     setSection("Operations");
-                    setMessage(receipt.message);
                     setJobTick((tick) => tick + 1);
                   })
                 }

@@ -64,12 +64,21 @@ pub async fn inventory(app: &tauri::AppHandle) -> Result<Vec<Repository>> {
                     .canonicalize()
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or(root);
+                let label = if review.is_none() && !root.is_empty() {
+                    let name = std::path::Path::new(&root)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(&root);
+                    format!("{name} · {}", t.source.label)
+                } else {
+                    t.source.label
+                };
                 Repository {
                     workspace: w.id.clone(),
                     workspace_name: w.name.clone(),
                     root,
                     tab: t.id.clone(),
-                    label: t.source.label,
+                    label,
                     active: active && w.active.as_ref() == Some(&t.id),
                     review,
                 }
@@ -86,8 +95,20 @@ pub struct Batch {
     pub warning: Option<String>,
 }
 impl Batch {
-    pub fn error(scope: String, source: &'static str) -> Self {
-        Self{warning:Some(format!("{} unavailable ({scope}); previous observations remain unconfirmed. Check the repository or Connections, then refresh.",source)),scope,source,items:vec![],complete:false}
+    pub fn error(scope: String, source: &'static str, label: &str) -> Self {
+        let category = match source {
+            "requested" => "Review requests",
+            "checks" => "Checks",
+            "conflicts" => "Conflict monitoring",
+            _ => "Source",
+        };
+        Self {
+            warning: Some(format!("{category} unavailable for {label}. Check the repository or Connections, then refresh. Previous observations remain unconfirmed.")),
+            scope,
+            source,
+            items: vec![],
+            complete: false,
+        }
     }
 }
 pub async fn conflicts(repo: &Repository) -> Result<Batch> {
@@ -344,18 +365,22 @@ impl RemoteState {
             if source=="requested" {
                 let result=broker.attention_requested(&connected.connection,&remote.repository,connected.actor).await?;
                 let items=result.reviews.into_iter().map(|(r,title)|Item::observed(&key,source,&r.url(),title,format!("Review requested · {}",r.repository),Target{kind:"review".into(),review:Some(r),..Default::default()},super::now())).collect();
-                Ok::<_,anyhow::Error>(Batch{scope:key.clone(),source,items,complete:result.complete,warning:(!result.complete).then(||"More requested reviews exist; this bounded page cannot resolve unseen items. Open Hosting for pagination.".into())})
+                Ok::<_,anyhow::Error>(Batch{scope:key.clone(),source,items,complete:result.complete,warning:(!result.complete).then(||"More requested reviews exist; this bounded page cannot resolve unseen items. Open Pull & merge requests for more results.".into())})
             } else {
                 let r=&remote_refs[&key];let result=broker.attention_checks(&connected.connection,r).await?;
                 let items=if result.failed.is_empty(){vec![]}else{vec![Item::observed(&key,source,&result.head,format!("Checks failed · {} #{}",r.repository,r.number),result.failed.join(", "),Target{kind:"checks".into(),review:Some(r.clone()),head:Some(result.head.clone()),url:Some(r.url()),..Default::default()},super::now())]};
                 Ok(Batch{scope:key.clone(),source,items,complete:result.complete || !result.open,warning:(!result.complete).then(||"Check summaries are truncated; unseen failures remain unconfirmed.".into())})
             }
-        }).await.unwrap_or_else(|_|Err(anyhow::anyhow!("Hosting summary deadline exceeded")));
+        }).await.unwrap_or_else(|_|Err(anyhow::anyhow!("Pull & merge request summary timed out")));
         Some(match result {
             Ok(batch) => batch,
             Err(_) => {
                 self.schedule.failed(key.clone(), seconds);
-                Batch::error(key, source)
+                Batch::error(
+                    key,
+                    source,
+                    &format!("{}/{}", remote.site.host, remote.repository),
+                )
             }
         })
     }

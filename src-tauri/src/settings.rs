@@ -64,7 +64,8 @@ pub async fn desktop_settings(
     crate::windows::authorize(&window)?;
     let _transition = state.lifecycle.lock().await;
     let config = store(&app, &state).await?;
-    let mut value = serde_json::to_value(config.get()).map_err(|e| e.to_string())?;
+    let mut value = serde_json::to_value(config.reload().await.map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
     value["githubEnabled"] = crate::github::Connections::load(config.file())
         .await
         .map_err(|e| e.to_string())?
@@ -76,33 +77,85 @@ pub async fn desktop_settings(
         serde_json::to_value(&memory.credentials).map_err(|e| e.to_string())?;
     Ok(value)
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewPatch {
+    auto_viewed: Option<Vec<String>>,
+    context_lines: Option<i64>,
+    follow_refs: Option<diffle::protocol::FollowRefs>,
+    line_wrap: Option<bool>,
+}
+#[tauri::command]
+pub async fn review_preferences(
+    app: tauri::AppHandle,
+    state: State<'_, Engine>,
+    window: WebviewWindow,
+    sessions: State<'_, crate::workspaces::Sessions>,
+    settings: Option<ReviewPatch>,
+) -> Result<diffle::protocol::UserConfig, String> {
+    crate::windows::authorize(&window)?;
+    let _work = sessions.gate.read().await;
+    app.state::<crate::windows::Windows>()
+        .admit(window.label())?;
+    let config = store(&app, &state).await?;
+    if let Some(settings) = settings {
+        app.state::<crate::windows::Windows>().writable()?;
+        if settings
+            .context_lines
+            .is_some_and(|n| !(0..=10000).contains(&n))
+        {
+            return Err("Context lines must be between 0 and 10000".into());
+        }
+        config
+            .set(diffle::user_config::UserConfigPatch {
+                auto_viewed: settings.auto_viewed,
+                context_lines: settings.context_lines,
+                follow_refs: settings.follow_refs,
+                line_wrap: settings.line_wrap,
+            })
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        config.reload().await.map_err(|e| e.to_string())
+    }
+}
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Native states/window are injected; keep the settings wire fields explicit.
 pub async fn save_desktop_settings(
     app: tauri::AppHandle,
     state: State<'_, Engine>,
-    lsp_commands: Value,
-    github_hosts: Value,
-    github_enabled: bool,
+    lsp_commands: Option<Value>,
+    github_hosts: Option<Value>,
+    github_enabled: Option<bool>,
     window: WebviewWindow,
     memory: State<'_, MemorySettings>,
     sessions: State<'_, crate::workspaces::Sessions>,
     revision: u64,
-    mut connection_profiles: Credentials,
+    connection_profiles: Option<Credentials>,
 ) -> Result<(), String> {
     crate::windows::authorize(&window)?;
     app.state::<crate::windows::Windows>().writable()?;
-    validate_credentials(&connection_profiles)?;
+    if let Some(profile) = &connection_profiles {
+        validate_credentials(profile)?;
+    }
     let hosting = app.state::<crate::hosting::Hosting>();
-    let _pause = hosting.broker.pause();
-    hosting.broker.clear().await;
+    let connection_edit =
+        github_hosts.is_some() || github_enabled.is_some() || connection_profiles.is_some();
+    let _pause = connection_edit.then(|| hosting.broker.pause());
+    if connection_edit {
+        hosting.broker.clear().await;
+    }
     let _work = sessions.gate.write().await;
     app.state::<crate::windows::Windows>()
         .admit(window.label())?;
-    let commands = serde_json::from_value(lsp_commands)
+    let commands = lsp_commands
+        .map(serde_json::from_value)
+        .transpose()
         .map_err(|e| format!("Invalid language server settings: {e}"))?;
-    let hosts =
-        serde_json::from_value(github_hosts).map_err(|e| format!("Invalid GitHub hosts: {e}"))?;
+    let hosts = github_hosts
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("Invalid GitHub hosts: {e}"))?;
     let _transition = state.lifecycle.lock().await;
     let mut memory = memory.0.lock().await;
     if memory.revision != revision {
@@ -117,8 +170,10 @@ pub async fn save_desktop_settings(
         .await
         .map_err(|e| e.to_string())?
         .github_enabled;
+    let github_enabled = github_enabled.unwrap_or(previous_enabled);
+    let mut connection_profiles = connection_profiles.unwrap_or_else(|| memory.credentials.clone());
     config
-        .set_desktop_commands(commands, hosts)
+        .set_desktop_fields(commands, hosts)
         .await
         .map_err(|e| e.to_string())?;
     crate::github::Connections { github_enabled }
@@ -132,11 +187,15 @@ pub async fn save_desktop_settings(
     memory.revision += 1;
     let next_revision = memory.revision;
     drop(memory);
-    state.settings_changed(github_enabled).await;
     let github_changed =
         old.token != connection_profiles.token || old.token_host != connection_profiles.token_host;
     let gitlab_changed = old.gitlab_token != connection_profiles.gitlab_token
         || old.gitlab_host != connection_profiles.gitlab_host;
+    let auth_changed = github_changed
+        || gitlab_changed
+        || previous_enabled != github_enabled
+        || previous_hosts != config.get().github_hosts;
+    state.settings_changed(github_enabled, auth_changed).await;
     for (gitlab, changed) in [(false, github_changed), (true, gitlab_changed)] {
         if changed {
             for profile in [
@@ -162,13 +221,30 @@ pub async fn save_desktop_settings(
             }
         }
     }
-    let _=app.emit("desktop-settings",serde_json::json!({"revision":next_revision,"authChanged":github_changed||gitlab_changed||previous_enabled!=github_enabled||previous_hosts!=config.get().github_hosts}));
+    let _ = app.emit(
+        "desktop-settings",
+        serde_json::json!({"revision":next_revision,"authChanged":auth_changed}),
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn review_preferences_cannot_set_credentials_or_language_server_trust() {
+        for value in [
+            serde_json::json!({"token":"secret"}),
+            serde_json::json!({"lspCommands":{}}),
+            serde_json::json!({"trust":true}),
+        ] {
+            assert!(serde_json::from_value::<ReviewPatch>(value).is_err());
+        }
+        assert!(serde_json::from_value::<ReviewPatch>(
+            serde_json::json!({"contextLines":9,"lineWrap":false})
+        )
+        .is_ok());
+    }
     #[tokio::test]
     async fn connection_profiles_are_process_owned_and_host_validation_excludes_credentials_and_paths(
     ) {

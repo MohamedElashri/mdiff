@@ -19,10 +19,12 @@ import { gridColumns, listViews, panelOf, useViews } from './views/state.js';
 export function App({
   desktop = false,
   hostingControl,
+  onOpenPreferences,
   githubAvailable = true,
 }: {
   desktop?: boolean;
   hostingControl?: ReactNode;
+  onOpenPreferences?: () => void;
   githubAvailable?: boolean;
 }) {
   const useStore = useReviewStore();
@@ -137,6 +139,7 @@ export function App({
       <Header
         desktop={desktop}
         hostingControl={hostingControl}
+        onOpenPreferences={onOpenPreferences}
         compactToggle={compact ? (pane) => setDrawer((d) => (d === pane ? null : pane)) : undefined}
       />
       {!compact && layout.treeVisible && (

@@ -1244,3 +1244,59 @@ body {
     flex-basis: 100%;
   }
 }
+
+/* Keep navigation and Preferences reachable at the minimum desktop width. */
+.review-native-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.repository-tools-positioner {
+  z-index: 60;
+}
+.repository-tools-menu {
+  min-width: 230px;
+  padding: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 6px 22px #0003;
+}
+.repository-tools-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  cursor: pointer;
+  outline: none;
+  border-radius: var(--radius-control);
+  font-size: 0.82rem;
+}
+.repository-tools-menu [data-highlighted] {
+  background: var(--bg-2);
+}
+.attention-count {
+  color: var(--accent);
+  font-size: 0.75rem;
+}
+@media (max-width: 1280px) {
+  .window-actions .action-label,
+  .window-actions .code-intelligence-label {
+    display: none;
+  }
+  .desktop-chrome .subtitle {
+    display: none;
+  }
+  .review-native-tools .editor-button-label {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .desktop-chrome .repository-name {
+    max-width: 90px;
+  }
+  .window-actions {
+    gap: 1px;
+  }
+}

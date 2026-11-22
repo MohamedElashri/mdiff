@@ -610,7 +610,7 @@ export interface ReviewState {
   selectFile(path: string): void;
   saveConfig(
     config: Partial<Pick<UserConfig, 'autoViewed' | 'contextLines' | 'followRefs' | 'lineWrap'>>,
-  ): Promise<void>;
+  ): Promise<boolean>;
   jumpTo(path: string, line?: number, side?: Side): void;
   setActivePath(path: string | null): void;
 }
@@ -689,6 +689,7 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
      * can never overwrite state from a newer transition.
      */
     let generation = 0;
+    let patchRecovery: string | null = null;
     let sessionGeneration = 0;
     let githubRequest = 0;
     const current = (g: number) => g === generation;
@@ -1075,6 +1076,7 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
       const byPath = changedFilesByPath(snap.changed);
       const loaded: Record<string, Loaded> = {};
       const files = new Map<string, FileDiffMetadata>();
+      let stale = false;
       try {
         const signal = aborter.signal;
         const preview = (patch: string) => {
@@ -1103,6 +1105,7 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
           loaded[p] = f ? { kind: 'diff', fileDiff: f } : { kind: 'error', message: 'patch missing for file' };
         }
       } catch (e) {
+        stale = errorMessage(e) === 'review changed; retry';
         for (const p of paths) loaded[p] = { kind: 'error', message: String(e) };
       }
       if (!current(g)) return;
@@ -1112,6 +1115,17 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
         loaded: { ...s.loaded, ...loaded },
         ...regen(s, Object.keys(loaded)),
       }));
+      // A local Git write can invalidate a read before its next snapshot is pushed.
+      // Recover once per mode/version; persistent failures keep their explicit retry action.
+      const recovery = `${modeGeneration}:${snap.version}`;
+      if (stale && patchRecovery !== recovery) {
+        patchRecovery = recovery;
+        // The refreshed snapshot may retain this version. Release these deduplication
+        // keys before loading it so recovery cannot wait on its own pending request.
+        for (const path of paths) patchLoads.delete(`${snap.version}\0${path}`);
+        await get().refreshSnapshot();
+        return;
+      }
       // A submodule's patch is the commit-id change itself; there is no file to hydrate from.
       if (!usesViewportPatches(snap))
         hydrate(
@@ -1296,6 +1310,7 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
           !p ||
           !sameChange(p, f) ||
           loaded[f.path] == null ||
+          loaded[f.path]?.kind === 'error' ||
           previouslyPending?.has(f.path)
         ) {
           // The stale diff stays on screen until its replacement lands: dropping it would remove the
@@ -3358,9 +3373,14 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
             t = configSeq.start();
             return api.saveConfig(config);
           });
+          if (session !== sessionGeneration) return false;
           if (configSeq.latest(t)) set({ config: saved });
+          // A pushed config reload may overtake the successful write response.
+          // It owns the displayed snapshot, but the write still succeeded.
+          return true;
         } catch (e) {
           if (configSeq.latest(t)) report('Saving settings', e);
+          return false;
         }
       },
 

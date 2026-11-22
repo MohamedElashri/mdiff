@@ -115,7 +115,8 @@ fn label(event: &Event) -> Result<&'static str> {
             "waiting"
         }
         "Notification" => "unknown",
-        "Stop" | "SubagentStop" => "turn completed",
+        "Stop" => "turn completed",
+        "SubagentStop" => "ended",
         "SessionEnd" => "ended",
         "SubagentStart" => "working",
         _ => anyhow::bail!("Unsupported hook event"),
@@ -169,51 +170,70 @@ fn apply(app: &tauri::AppHandle, peer: i32, event: Event) -> Result<()> {
         .max_by_key(|w| w.root.components().count())
         .cloned()
         .context("Unwatched hook checkout")?;
-    let base = crate::storage::digest(&format!("{}:{}:{}", p.pid, p.start, watch.context));
+    record(&mut d, p, tool, watch, event, status, now())?;
+    d.last_hook = Some(now());
+    d.hook_error = None;
+    drop(d);
+    Agents::changed(app);
+    Ok(())
+}
+fn record(
+    d: &mut Data,
+    p: process::Process,
+    tool: String,
+    watch: Watch,
+    event: Event,
+    status: &str,
+    at: u64,
+) -> Result<()> {
+    let base = super::activity::identity(p.pid, &p.start, &watch.root);
     let session_base = crate::storage::digest(&format!("{base}:{}", event.session_id));
     let id = if let Some(agent) = &event.agent_id {
         crate::storage::digest(&format!("{session_base}:{agent}"))
     } else {
-        session_base.clone()
+        base.clone()
     };
     let launch = d
         .rows
         .iter()
         .find(|a| {
-            a.pid == p.pid
-                && a.start == p.start
-                && a.context == watch.context
-                && a.provenance == "launch"
+            a.pid == p.pid && a.start == p.start && a.root == watch.root && a.terminal.is_some()
         })
         .cloned();
-    d.rows.retain(|a| {
-        !(a.pid == p.pid
-            && a.start == p.start
-            && a.context == watch.context
-            && ["detected", "launch"].contains(&a.provenance.as_str()))
-    });
-    if let Some(old) = d.rows.iter_mut().find(|a| a.id == id) {
+    if let Some(old) = d.rows.iter().find(|a| a.id == id) {
         anyhow::ensure!(event.sent > old.sequence, "Out-of-order hook event");
+    }
+    // Promote the existing process/launch row in place. A new main session
+    // replaces its old subagent reports, rather than accumulating ghost sessions.
+    if event.agent_id.is_none()
+        && d.rows
+            .iter()
+            .any(|a| a.id == id && a.session.as_deref() != Some(&event.session_id))
+    {
+        d.rows.retain(|a| a.parent.as_deref() != Some(&base));
+    }
+    if let Some(old) = d.rows.iter_mut().find(|a| a.id == id) {
         old.sequence = event.sent;
+        old.context = watch.context.clone();
         old.state = status.into();
         old.provenance = "hook".into();
         old.session = Some(event.session_id);
-        old.seen = now();
-        old.reported = Some(now());
+        old.seen = at;
+        old.reported = Some(at);
     } else {
         anyhow::ensure!(d.rows.len() < 256, "Agent activity limit reached");
         d.rows.push(Activity {
             id,
             tool,
             session: Some(event.session_id),
-            parent: event.agent_id.map(|_| session_base),
+            parent: event.agent_id.map(|_| base),
             root: watch.root,
             context: watch.context,
             state: status.into(),
             provenance: "hook".into(),
-            started: now(),
-            seen: now(),
-            reported: Some(now()),
+            started: at,
+            seen: at,
+            reported: Some(at),
             sequence: event.sent,
             pid: p.pid,
             start: p.start,
@@ -222,30 +242,40 @@ fn apply(app: &tauri::AppHandle, peer: i32, event: Event) -> Result<()> {
             terminal: launch.as_ref().and_then(|a| a.terminal.clone()),
         });
     }
-    drop(d);
-    Agents::changed(app);
     Ok(())
 }
+
 pub fn serve(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         let path = socket(&app);
-        // Never unlink a live listener belonging to another instance.
-        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
-            return;
-        }
-        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-            use std::os::unix::fs::{FileTypeExt, MetadataExt};
-            if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::getuid() } {
+        let listener = (|| -> Result<UnixListener> {
+            anyhow::ensure!(std::os::unix::net::UnixStream::connect(&path).is_err(),
+                "Another mdiff instance owns local hooks. Close it and restart mdiff to receive reports here.");
+            if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+                use std::os::unix::fs::{FileTypeExt, MetadataExt};
+                anyhow::ensure!(
+                    metadata.file_type().is_socket() && metadata.uid() == unsafe { libc::getuid() },
+                    "Hook socket path is not owned by mdiff"
+                );
+                std::fs::remove_file(&path)?;
+            }
+            let listener = UnixListener::bind(&path)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            Ok(listener)
+        })();
+        let listener = match listener {
+            Ok(listener) => {
+                app.state::<Agents>().data.lock().unwrap().hook_ready = true;
+                Agents::changed(&app);
+                listener
+            }
+            Err(error) => {
+                app.state::<Agents>().data.lock().unwrap().hook_error =
+                    Some(format!("Local hooks unavailable: {error}"));
+                Agents::changed(&app);
                 return;
             }
-            if std::fs::remove_file(&path).is_err() {
-                return;
-            }
-        }
-        let Ok(listener) = UnixListener::bind(&path) else {
-            return;
         };
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else {
                 break;
@@ -258,7 +288,36 @@ pub fn serve(app: tauri::AppHandle) {
                 .read_until(b'\n', &mut bytes);
             if read.is_ok() && bytes.len() <= 8192 {
                 if let (Ok(peer), Ok(event)) = (peer, serde_json::from_slice::<Event>(&bytes)) {
-                    let _ = apply(&app, peer, event);
+                    if let Err(error) = apply(&app, peer, event) {
+                        // Disabled/out-of-scope and reordered reports are expected, not
+                        // a broken installation. Only actionable failures reach the UI.
+                        let detail = error.to_string();
+                        let enabled = {
+                            let state = app.state::<Agents>();
+                            let d = state.data.lock().unwrap();
+                            d.preferences.enabled && d.preferences.hooks
+                        };
+                        if !enabled
+                            || [
+                                "Unwatched hook checkout",
+                                "Stale local hook event",
+                                "Out-of-order hook event",
+                                "Hook configuration changed",
+                            ]
+                            .contains(&detail.as_str())
+                        {
+                            continue;
+                        }
+                        let message = format!("Local hook report rejected: {error}");
+                        let state = app.state::<Agents>();
+                        let mut d = state.data.lock().unwrap();
+                        let changed = d.hook_error.as_ref() != Some(&message);
+                        d.hook_error = Some(message);
+                        drop(d);
+                        if changed {
+                            Agents::changed(&app);
+                        }
+                    }
                 }
             }
             let _ = stream.write_all(b".");
@@ -268,6 +327,52 @@ pub fn serve(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hook_reports_promote_one_process_row_and_keep_launch_provenance_across_sessions() {
+        let mut d = Data::default();
+        let p = process::Process {
+            pid: 7,
+            parent: 1,
+            start: "start".into(),
+            executable: "/tools/codex".into(),
+            cwd: "/repo".into(),
+        };
+        let watch = Watch {
+            owner: "main".into(),
+            context: "review".into(),
+            root: "/repo".into(),
+        };
+        d.reconcile(
+            std::slice::from_ref(&watch),
+            std::slice::from_ref(&p),
+            &HashMap::new(),
+            &[],
+            1,
+        );
+        d.rows[0].provenance = "launch".into();
+        d.rows[0].terminal = Some("terminal".into());
+        d.rows[0].commit = Some("pinned".into());
+        let mut event: Event = serde_json::from_str(r#"{"sent":1,"tool":"codex","hook_event_name":"PreToolUse","session_id":"first","cwd":"/repo"}"#).unwrap();
+        record(
+            &mut d,
+            p.clone(),
+            "codex".into(),
+            watch.clone(),
+            event,
+            "working",
+            2,
+        )
+        .unwrap();
+        event = serde_json::from_str(r#"{"sent":2,"tool":"codex","hook_event_name":"PermissionRequest","session_id":"second","cwd":"/repo"}"#).unwrap();
+        record(&mut d, p, "codex".into(), watch, event, "waiting", 3).unwrap();
+        assert_eq!(d.rows.len(), 1);
+        assert_eq!(d.rows[0].session.as_deref(), Some("second"));
+        assert_eq!(d.rows[0].terminal.as_deref(), Some("terminal"));
+        assert_eq!(d.rows[0].commit.as_deref(), Some("pinned"));
+        d.disable_reports();
+        assert_eq!(d.rows[0].provenance, "launch");
+        assert_ne!(d.rows[0].state, "waiting");
+    }
     #[test]
     fn hook_states_are_reports_not_process_ownership_or_permission_decisions() {
         let mut event: Event = serde_json::from_str(

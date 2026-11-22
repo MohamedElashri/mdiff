@@ -312,7 +312,7 @@ impl Broker {
             request = request.json(&body);
         }
         request.send().await.map_err(|_| {
-            anyhow::anyhow!("Cannot reach the hosting API; the outcome of a write may be unknown")
+            anyhow::anyhow!("Cannot reach the provider API; the outcome of a write may be unknown")
         })
     }
     async fn backoff(&self, c: &Connection) -> Result<()> {
@@ -419,7 +419,7 @@ impl std::fmt::Display for Rejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Hosting API rejected this request (HTTP {}). Check permissions and revision.",
+            "Provider API rejected this request (HTTP {}). Check permissions and revision.",
             self.0
         )
     }
@@ -431,7 +431,7 @@ fn check(status: StatusCode) -> Result<()> {
             return Err(Rejection(status.as_u16()).into());
         }
         bail!(
-            "Hosting API returned {}; reconcile writes before retrying",
+            "Provider API returned {}; reconcile writes before retrying",
             status.as_u16()
         );
     }

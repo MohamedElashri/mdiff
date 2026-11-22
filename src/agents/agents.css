@@ -1,7 +1,9 @@
 .agent-panel {
-  width: min(920px, 94vw);
+  width: min(760px, 94vw);
   max-height: 88vh;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 18px;
 }
 .agent-panel header {
@@ -32,7 +34,7 @@
 }
 .agent-panel button,
 .agent-panel select,
-.agent-panel input,
+.agent-panel input:not([type="checkbox"]),
 .agent-panel textarea {
   font: inherit;
   font-size: 0.82rem;
@@ -58,16 +60,6 @@
   align-items: center;
   gap: 7px;
   font-size: 0.82rem;
-}
-.agent-preferences {
-  display: grid;
-  gap: 8px;
-  padding: 10px 0;
-}
-.agent-preferences label:has(input:not([type="checkbox"])),
-.agent-preferences label:has(textarea) {
-  display: grid;
-  grid-template-columns: 210px 1fr;
 }
 .agent-actions {
   display: flex;
@@ -98,11 +90,6 @@
 .agent-paths,
 .agent-panel dd {
   overflow-wrap: anywhere;
-}
-.agent-state {
-  margin-left: 10px;
-  font-size: 0.8rem;
-  color: var(--accent);
 }
 .agent-preview {
   padding: 12px;
@@ -146,14 +133,263 @@
   .agent-panel {
     padding: 12px;
   }
-  .agent-preferences label:has(input:not([type="checkbox"])),
-  .agent-preferences label:has(textarea) {
-    grid-template-columns: 1fr;
-  }
   .agent-panel dl {
     grid-template-columns: 1fr;
   }
   .agent-panel dd {
     margin-bottom: 6px;
   }
+}
+
+/* One task per view; compact rows reuse the application's existing palette. */
+.agent-panel .agent-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin: 16px 0 0;
+  padding-bottom: 8px;
+}
+.agent-tabs [role="tab"] {
+  border-color: transparent;
+  background: transparent;
+  padding: 7px 16px;
+}
+.agent-tabs [aria-selected="true"] {
+  background: var(--bg-3);
+  color: var(--fg);
+  border-color: var(--border);
+  font-weight: 600;
+}
+.agent-panel > header,
+.agent-panel > .agent-tabs,
+.agent-panel > .agent-feedback {
+  flex-shrink: 0;
+}
+.agent-panel [role="tabpanel"] {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
+}
+.agent-panel [role="tabpanel"][hidden] {
+  display: none;
+}
+.agent-panel [role="tabpanel"] > section:first-child {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 10px;
+}
+.agent-panel .agent-section-heading,
+.agent-panel .agent-row-heading {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.agent-section-heading h3 {
+  margin: 0;
+}
+.agent-panel button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.agent-panel .agent-primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+.agent-empty {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+  gap: 8px;
+  padding: 32px 18px;
+  min-height: 180px;
+}
+.agent-empty > p {
+  max-width: 48ch;
+  margin: 0 0 8px;
+}
+.agent-empty > svg {
+  color: var(--fg-2);
+}
+.agent-scan-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-2);
+  font-size: 0.78rem;
+  padding: 12px 0 2px;
+}
+.agent-status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--fg-2);
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.agent-status-dot[data-scanning="true"] {
+  background: var(--accent);
+}
+.agent-panel .agent-activity {
+  padding: 0;
+  margin: 14px 0;
+  list-style: none;
+}
+.agent-activity li > svg {
+  margin-top: 3px;
+  color: var(--fg-2);
+  flex: 0 0 auto;
+}
+.agent-state {
+  color: var(--fg-2);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: var(--radius-control);
+  flex: 0 0 auto;
+  margin-left: 0;
+  font-size: 0.72rem;
+}
+.agent-state[data-state="working"],
+.agent-state[data-state="waiting"] {
+  color: var(--accent);
+}
+.agent-activity .agent-row-path {
+  margin: 4px 0;
+}
+.agent-panel :is(.agent-scan-details, .agent-recent, .agent-hook-setup) {
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+.agent-panel summary {
+  cursor: pointer;
+  color: var(--fg-2);
+}
+.agent-panel .agent-feedback {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-2);
+  padding: 10px;
+  border-radius: var(--radius-control);
+}
+.agent-panel .agent-error {
+  color: var(--danger);
+}
+.agent-panel .agent-warning {
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+.agent-settings .agent-toggle {
+  margin-top: 14px;
+}
+.agent-panel input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
+.agent-panel .agent-tool {
+  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+}
+.agent-tool strong {
+  font-size: 0.84rem;
+}
+.agent-panel :is(.agent-tool-path, .agent-focus) {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+.agent-tool-path input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.agent-tool .agent-actions {
+  gap: 6px;
+}
+.agent-tool-status {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  color: var(--danger);
+  font-size: 0.74rem;
+}
+.agent-tool-status[data-ready="true"] {
+  color: var(--fg-2);
+}
+.agent-focus textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+.agent-save-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0;
+}
+.agent-unsaved {
+  font-size: 0.74rem;
+  color: var(--accent);
+}
+.agent-review-tools {
+  margin-top: 12px;
+}
+.agent-spinning {
+  animation: agent-scan-spin 1s linear infinite;
+}
+@keyframes agent-scan-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-spinning {
+    animation: none;
+  }
+}
+@media (max-width: 560px) {
+  .agent-panel .agent-row-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .agent-activity li {
+    flex-wrap: wrap;
+  }
+  .agent-tabs [role="tab"] {
+    flex: 1;
+    padding-inline: 8px;
+  }
+}
+
+.agent-panel .agent-navigation {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-panel .agent-navigation .agent-tabs {
+  margin: 0;
+  padding: 0;
+  border: 0;
 }

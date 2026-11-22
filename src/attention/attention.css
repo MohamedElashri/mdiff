@@ -154,7 +154,7 @@
 }
 
 .attention-dialog button,
-.attention-dialog input,
+.attention-dialog input:not([type="checkbox"]):not([type="radio"]),
 .attention-dialog select {
   font: inherit;
   font-size: 0.82rem;

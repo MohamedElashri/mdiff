@@ -862,7 +862,7 @@ impl Engine {
         }
         Ok(())
     }
-    pub(crate) async fn settings_changed(&self, enabled: bool) {
+    pub(crate) async fn settings_changed(&self, enabled: bool, auth_changed: bool) {
         for handle in self.handles().await {
             if let Some(runtime) = handle.live.lock().await.as_mut() {
                 if runtime
@@ -871,6 +871,9 @@ impl Engine {
                     .is_some_and(|commands| *commands != runtime.config.get().lsp_commands)
                 {
                     runtime.disable_lsp().await;
+                }
+                if !auth_changed {
+                    continue;
                 }
                 let current_hosts = runtime.config.get().github_hosts;
                 let same_hosts = runtime.configured_hosts == current_hosts;

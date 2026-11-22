@@ -144,11 +144,11 @@ export default function HostingHub(props: Props) {
       <DialogContent className="hosting-hub" aria-labelledby="hosting-title">
         <header>
           <div>
-            <h2 id="hosting-title">{uiText("Hosting reviews")}</h2>
+            <h2 id="hosting-title">{uiText("Pull & merge requests")}</h2>
             <p>{uiText("GitHub · GitLab")}</p>
           </div>
           <button
-            aria-label={uiText("Close hosting reviews")}
+            aria-label={uiText("Close pull and merge requests")}
             onClick={props.onClose}
           >
             <X size={18} />
@@ -156,7 +156,7 @@ export default function HostingHub(props: Props) {
         </header>
         {error && <p role="alert">{error}</p>}
         {!context && !error && (
-          <p role="status">{uiText("Loading hosting context…")}</p>
+          <p role="status">{uiText("Loading pull and merge requests…")}</p>
         )}
         {context && selected ? (
           <Detail
@@ -177,7 +177,7 @@ export default function HostingHub(props: Props) {
                 <label>
                   {uiText("Host")}
                   <select
-                    aria-label={uiText("Hosting host")}
+                    aria-label={uiText("GitHub or GitLab host")}
                     value={siteKey}
                     onChange={(e) => {
                       setSite(
@@ -265,7 +265,7 @@ function Pager({
   change: (page: number) => void;
 }) {
   return (
-    <nav aria-label={uiText("Hosting pagination")}>
+    <nav aria-label={uiText("Review request pages")}>
       <button disabled={page <= 1} onClick={() => change(page - 1)}>
         {uiText("Previous")}
       </button>
@@ -482,7 +482,7 @@ function Detail({
         </strong>
         <ProviderLink url={details?.url ?? null} />
         <button
-          aria-label={uiText("Refresh hosting details")}
+          aria-label={uiText("Refresh review request")}
           disabled={busy}
           onClick={() => setTick((n) => n + 1)}
         >
@@ -538,7 +538,7 @@ function Detail({
           <div
             className="hosting-tabs"
             role="tablist"
-            aria-label={uiText("Hosting detail")}
+            aria-label={uiText("Review request details")}
           >
             {["overview", "checks", "conversation", "threads"].map((value) => (
               <button

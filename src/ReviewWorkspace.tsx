@@ -93,6 +93,20 @@ export function clearWorkspaceDrafts(id: string) {
       scope.store.getState().setUnsent(key, "");
   }
 }
+/** UI eligibility from an existing snapshot; native actions still validate Git objects. */
+export function agentComparisonEligibility(id: string) {
+  const snapshot = scopes.peek(id)?.store.getState().snapshot;
+  const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+  const pinned =
+    !!snapshot && oid.test(snapshot.oldSha) && oid.test(snapshot.newSha);
+  return {
+    findings: pinned,
+    launch:
+      pinned &&
+      !snapshot?.interdiff &&
+      !(snapshot?.commit && snapshot.commit.parent === null),
+  };
+}
 export function getHostingDraft(id: string, key: string) {
   return scopes.peek(id)?.store.getState().unsent[key] ?? "";
 }
@@ -203,6 +217,7 @@ export function ReviewWorkspace({
   onDiscussions: () => void;
   githubEnabled: boolean;
   onConnections: () => void;
+  onPreferences: () => void;
   onLspChange: (enabled: boolean) => void;
 }) {
   const scope = reviewScope(id, repository, owner);
@@ -218,12 +233,14 @@ function ReviewBody({
   onDiscussions,
   githubEnabled,
   onConnections,
+  onPreferences,
   onLspChange,
 }: {
   gitlab: boolean;
   onDiscussions: () => void;
   githubEnabled: boolean;
   onConnections: () => void;
+  onPreferences: () => void;
   onLspChange: (enabled: boolean) => void;
 }) {
   const useStore = useReviewStore();
@@ -256,6 +273,7 @@ function ReviewBody({
           <LegacyDraftRecovery />
           <App
             desktop
+            onOpenPreferences={onPreferences}
             githubAvailable={!gitlab && githubEnabled}
             hostingControl={
               gitlab ? (

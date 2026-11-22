@@ -5,6 +5,7 @@ import {
 import { uiText } from "../vendor/diffle/src/client/i18n/runtime";
 import { Bell, Bot } from "lucide-react";
 import type { Target as AttentionTarget } from "./attention/api";
+import { useAgentActivity } from "./agents/useActivity";
 import type { Activity as AgentActivity } from "./agents/api";
 import type { Worktree, Kind as ExternalKind } from "./worktrees/api";
 import type { Summary as HostedSummary } from "./hosting/api";
@@ -42,6 +43,7 @@ import {
   memo,
   Suspense,
   useCallback,
+  useMemo,
   useEffect,
   useRef,
   useState,
@@ -76,6 +78,8 @@ if (isTauri())
   void Promise.resolve()
     .then(() => invoke("desktop_locale", { locale: currentLocale }))
     .catch(() => {});
+import { RepositoryTools } from "./RepositoryTools";
+import { PreferencesDialog } from "./preferences/PreferencesDialog";
 import { BrandMark } from "./Brand";
 import { About } from "./About";
 import { Updates, updates } from "./Updates";
@@ -83,6 +87,11 @@ import { GitlabPanel } from "./GitlabPanel";
 import "../vendor/diffle/src/client/styles.css";
 import "./style.css";
 
+const ReviewPreferences = lazy(() => import("./preferences/ReviewPreferences"));
+const AgentPreferences = lazy(() => import("./preferences/AgentPreferences"));
+const TerminalPreferences = lazy(
+  () => import("./preferences/TerminalPreferences"),
+);
 const GitOperations = lazy(() => import("./git-operations/GitOperations"));
 const AgentPanel = lazy(() => import("./agents/AgentPanel"));
 const AttentionHub = lazy(() => import("./attention/AttentionHub"));
@@ -175,7 +184,9 @@ function App() {
   const [agentLoaded, setAgentLoaded] = useState(false),
     [agentOpen, setAgentOpen] = useState(false),
     [agentActivity, setAgentActivity] = useState<AgentActivity[]>([]);
-  const showAgents = () => {
+  const [agentTab, setAgentTab] = useState<"activity" | "review">("activity");
+  const showAgents = (tab: "activity" | "review" = "activity") => {
+    setAgentTab(tab);
     setAgentLoaded(true);
     setAgentOpen(true);
   };
@@ -309,6 +320,10 @@ function App() {
   const [review, setReview] = useState<Review | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const agentContext = historyOpen
+    ? (repository?.id ?? null)
+    : (review?.id ?? null);
+  useAgentActivity(agentContext, !!workspaces.document, setAgentActivity);
   const shellPreferences = useShellPreferences(registry, setError);
   const lspChanged = useCallback(
     (enabled: boolean) =>
@@ -336,13 +351,105 @@ function App() {
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
-  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [settingsSaved, setSettingsSaved] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState("");
+  const [settingsErrorSection, setSettingsErrorSection] = useState<
+    string | null
+  >(null);
   const settingsRevision = useRef(0);
   const [settingsTab, setSettingsTab] = useState("appearance");
-  const opening = useRef(false);
   const [gitlabToken, setGitlabToken] = useState("");
   const [gitlabHost, setGitlabHost] = useState("gitlab.com");
+  const [preferenceDirty, setPreferenceDirty] = useState<
+    Record<string, boolean>
+  >({});
+  const [preferenceError, setPreferenceError] = useState("");
+  const preferenceDirtyRef = useRef<Record<string, boolean>>({});
+  const preferencesOpen = useRef(false),
+    preferenceLoad = useRef(0);
+  const settingsBase = useRef<{
+    commands: string;
+    hosts: string;
+    githubEnabled: boolean;
+    token: string;
+    tokenHost: string;
+    gitlabToken: string;
+    gitlabHost: string;
+  } | null>(null);
+  const markPreferenceDirty = useCallback((id: string, dirty: boolean) => {
+    if (!!preferenceDirtyRef.current[id] === dirty) return;
+    preferenceDirtyRef.current = { ...preferenceDirtyRef.current, [id]: dirty };
+    setPreferenceDirty(preferenceDirtyRef.current);
+    if (!Object.values(preferenceDirtyRef.current).some(Boolean))
+      setPreferenceError("");
+  }, []);
+  const dirtyHandlers = useMemo(
+    () =>
+      Object.fromEntries(
+        ["review", "agents", "terminal", "monitoring"].map((id) => [
+          id,
+          (dirty: boolean) => markPreferenceDirty(id, dirty),
+        ]),
+      ),
+    [markPreferenceDirty],
+  );
+  useEffect(() => {
+    const base = settingsBase.current;
+    markPreferenceDirty("tools", !!base && commands !== base.commands);
+    markPreferenceDirty(
+      "connections",
+      !!base &&
+        (hosts !== base.hosts ||
+          githubDraft !== base.githubEnabled ||
+          token !== base.token ||
+          tokenHost !== base.tokenHost ||
+          gitlabToken !== base.gitlabToken ||
+          gitlabHost !== base.gitlabHost),
+    );
+    if (
+      (settingsSaved === "tools" && base && commands !== base.commands) ||
+      (settingsSaved === "connections" &&
+        base &&
+        (hosts !== base.hosts ||
+          githubDraft !== base.githubEnabled ||
+          token !== base.token ||
+          tokenHost !== base.tokenHost ||
+          gitlabToken !== base.gitlabToken ||
+          gitlabHost !== base.gitlabHost))
+    )
+      setSettingsSaved(null);
+  }, [
+    commands,
+    hosts,
+    githubDraft,
+    token,
+    tokenHost,
+    gitlabToken,
+    gitlabHost,
+    settingsSaved,
+    settingsReady,
+    markPreferenceDirty,
+  ]);
+  const closePreferences = () => {
+    const dirty = Object.keys(preferenceDirtyRef.current).find(
+      (id) => preferenceDirtyRef.current[id],
+    );
+    if (dirty) {
+      setSettingsTab(dirty);
+      setPreferenceError(
+        uiText("Save or discard changes before closing Preferences."),
+      );
+      return;
+    }
+    if (settingsSaving) return;
+    preferencesOpen.current = false;
+    preferenceLoad.current++;
+    setSettings(false);
+    setPreferenceError("");
+    preferenceDirtyRef.current = {};
+    setPreferenceDirty({});
+  };
+  const opening = useRef(false);
   const [hostingResults, setHostingResults] = useState<HostedSummary[]>([]);
   const [hostingOpen, setHostingOpen] = useState(false);
   const [attentionOpen, setAttentionOpen] = useState(false),
@@ -468,7 +575,7 @@ function App() {
             result.tab.source.request.kind === "gitlab") &&
           !result.opened.github_enabled &&
           !result.gitlab
-            ? "Saved revision restored offline. Refresh source to reconnect hosting."
+            ? "Saved revision restored offline. Refresh source to reconnect GitHub or GitLab."
             : ""),
       );
       await workspaces.load();
@@ -646,6 +753,16 @@ function App() {
     }
   };
   flushOnClose.current = async (exiting = true) => {
+    const dirty = Object.keys(preferenceDirtyRef.current).find(
+      (id) => preferenceDirtyRef.current[id],
+    );
+    if (dirty) {
+      setSettingsTab(dirty);
+      setPreferenceError(
+        uiText("Save or discard preference changes before closing the window."),
+      );
+      throw new DOMException("Unsaved preferences", "AbortError");
+    }
     await gitFlushRef.current();
     if (review) await persistReview(review);
     await saving.current;
@@ -740,7 +857,7 @@ function App() {
             setError(
               e instanceof DOMException && e.name === "AbortError"
                 ? ""
-                : `Could not save tab state or stop terminals; the window stayed open. ${String(e)}`,
+                : `Could not finish closing; the window stayed open. ${String(e)}`,
             );
           })
           .finally(() => {
@@ -833,12 +950,18 @@ function App() {
       setError(String(e));
     }
   }
-  const showSettings = useCallback(async () => {
+  const showSettings = useCallback(async (section?: string, reload = false) => {
+    if (section) setSettingsTab(section);
+    if (preferencesOpen.current && !reload) return;
+    preferencesOpen.current = true;
+    const ticket = ++preferenceLoad.current;
+    setPreferenceError("");
     setSettings(true);
-    setSettingsSaved(false);
+    setSettingsSaved(null);
     setSettingsError("");
     setSettingsLoading(true);
     setSettingsReady(false);
+    setSettingsErrorSection(null);
     try {
       const config = await invoke<{
         lspCommands: Record<string, string>;
@@ -847,31 +970,55 @@ function App() {
         settingsRevision: number;
         connectionProfiles?: ConnectionProfiles;
       }>("desktop_settings");
+      if (ticket !== preferenceLoad.current || !preferencesOpen.current) return;
+      settingsBase.current = {
+        commands: JSON.stringify(config.lspCommands, null, 2),
+        hosts: JSON.stringify(config.githubHosts, null, 2),
+        githubEnabled: config.githubEnabled,
+        token: config.connectionProfiles?.token ?? "",
+        tokenHost: config.connectionProfiles?.tokenHost ?? "github.com",
+        gitlabToken: config.connectionProfiles?.gitlabToken ?? "",
+        gitlabHost: config.connectionProfiles?.gitlabHost ?? "gitlab.com",
+      };
       settingsRevision.current = config.settingsRevision ?? 0;
-      setToken(config.connectionProfiles?.token ?? "");
-      setTokenHost(config.connectionProfiles?.tokenHost ?? "github.com");
-      setGitlabToken(config.connectionProfiles?.gitlabToken ?? "");
-      setGitlabHost(config.connectionProfiles?.gitlabHost ?? "gitlab.com");
-      setCommands(JSON.stringify(config.lspCommands, null, 2));
-      setHosts(JSON.stringify(config.githubHosts, null, 2));
+      if (!(
+        reload &&
+        section !== "connections" &&
+        preferenceDirtyRef.current.connections
+      )) {
+        setToken(config.connectionProfiles?.token ?? "");
+        setTokenHost(config.connectionProfiles?.tokenHost ?? "github.com");
+        setGitlabToken(config.connectionProfiles?.gitlabToken ?? "");
+        setGitlabHost(config.connectionProfiles?.gitlabHost ?? "gitlab.com");
+        setHosts(JSON.stringify(config.githubHosts, null, 2));
+        setGithubDraft(config.githubEnabled);
+      }
+      if (!(reload && section !== "tools" && preferenceDirtyRef.current.tools))
+        setCommands(JSON.stringify(config.lspCommands, null, 2));
       setGithubEnabled(config.githubEnabled);
-      setGithubDraft(config.githubEnabled);
       setSettingsReady(true);
     } catch (e) {
-      setSettingsError(String(e));
+      if (ticket === preferenceLoad.current) setSettingsError(String(e));
     } finally {
-      setSettingsLoading(false);
+      if (ticket === preferenceLoad.current) setSettingsLoading(false);
     }
   }, []);
   const showConnections = useCallback(() => {
     setSettingsTab("connections");
     void showSettings();
   }, [showSettings]);
+  const showReviewPreferences = useCallback(() => {
+    void showSettings("review");
+  }, [showSettings]);
   async function saveSettings() {
+    const section = settingsTab;
+    const base = settingsBase.current;
+    if (!base) return;
     if (!settingsReady || settingsLoading || settingsSaving) return;
     setSettingsSaving(true);
+    setSettingsErrorSection(section);
     setSettingsError("");
-    setSettingsSaved(false);
+    setSettingsSaved(null);
     const parseMap = (text: string, label: string) => {
       let value: unknown;
       try {
@@ -893,32 +1040,59 @@ function App() {
     };
     try {
       await invoke("save_desktop_settings", {
-        lspCommands: parseMap(commands, "Language commands"),
-        githubHosts: parseMap(hosts, "Enterprise host mapping"),
-        githubEnabled: githubDraft,
+        lspCommands:
+          section === "tools" && commands !== base.commands
+            ? parseMap(commands, "Language commands")
+            : null,
+        githubHosts:
+          section === "connections" && hosts !== base.hosts
+            ? parseMap(hosts, "Enterprise host mapping")
+            : null,
+        githubEnabled: section === "connections" ? githubDraft : null,
         revision: settingsRevision.current,
-        connectionProfiles: {
-          token: token || null,
-          tokenHost,
-          gitlabToken: gitlabToken || null,
-          gitlabHost,
-        },
+        connectionProfiles:
+          section === "connections"
+            ? {
+                token: (section === "connections" ? token : base.token) || null,
+                tokenHost:
+                  section === "connections" ? tokenHost : base.tokenHost,
+                gitlabToken:
+                  (section === "connections"
+                    ? gitlabToken
+                    : base.gitlabToken) || null,
+                gitlabHost: gitlabHost,
+              }
+            : null,
       });
       settingsRevision.current += 1;
-      setGithubEnabled(githubDraft);
-      setReview((r) =>
-        r
-          ? {
-              ...r,
-              github_enabled: githubDraft && r.github_enabled && !r.gitlab,
-            }
-          : r,
-      );
-      if (!githubDraft) {
-        setToken("");
-        if (mode === "pr") setMode("working");
+      if (section === "connections") {
+        settingsBase.current = {
+          ...base,
+          hosts,
+          githubEnabled: githubDraft,
+          token: githubDraft ? token : "",
+          tokenHost,
+          gitlabToken,
+          gitlabHost,
+        };
+        setGithubEnabled(githubDraft);
+        setReview((r) =>
+          r
+            ? {
+                ...r,
+                github_enabled: githubDraft && r.github_enabled && !r.gitlab,
+              }
+            : r,
+        );
+        if (!githubDraft) {
+          setToken("");
+          if (mode === "pr") setMode("working");
+        }
+      } else {
+        settingsBase.current = { ...base, commands };
       }
-      setSettingsSaved(true);
+      setSettingsSaved(section);
+      setPreferenceError("");
     } catch (e) {
       setSettingsError(String(e));
     } finally {
@@ -1378,52 +1552,36 @@ function App() {
               ),
             })}
             onClick={() => registry?.execute("app.attention")}
+            title={uiText("Needs attention")}
           >
             <Bell size={15} />
-            <span className="action-label">
-              {uiText("Attention")}
-              {attentionUnread ? ` (${attentionUnread})` : ""}
-            </span>
+            {attentionUnread > 0 && (
+              <span className="attention-count">{attentionUnread}</span>
+            )}
           </button>
           <button
             onClick={() => registry?.execute("app.gitOperations")}
             aria-label={uiText("Git operations")}
+            title={uiText("Git operations")}
           >
             <GitCommitHorizontal size={15} />
             <span className="action-label">{uiText("Git")}</span>
           </button>
-          <button
-            aria-label={uiText("Agents and review")}
-            onClick={() => registry?.execute("app.agents")}
-          >
-            <Bot size={15} />
-            <span className="action-label">{uiText("Agents")}</span>
-          </button>
-          <button
-            onClick={() => registry?.execute("app.embeddedTerminal")}
-            id="embedded-terminal-toggle"
-            aria-label={uiText("Embedded terminal")}
-          >
-            <Terminal size={15} />
-            <span className="action-label">{uiText("Terminal")}</span>
-          </button>
-          <button
-            onClick={() => registry?.execute("app.worktrees")}
-            aria-label={uiText("Worktrees and tools")}
-          >
-            <GitFork size={15} />
-            <span className="action-label">{uiText("Worktrees")}</span>
-          </button>
+          <RepositoryTools />
           <button
             onClick={() => registry?.execute("app.hosting")}
-            aria-label={uiText("Hosting reviews")}
+            aria-label={uiText("Pull & merge requests")}
+            title={uiText("Pull & merge requests")}
           >
             <GitPullRequest size={15} />
-            <span className="action-label">{uiText("Hosting")}</span>
+            <span className="action-label">
+              {uiText("Pull & merge requests")}
+            </span>
           </button>
           <button
             onClick={() => registry?.execute("app.history")}
             aria-label={uiText("History")}
+            title={uiText("History")}
           >
             <History size={15} />
             <span className="action-label">{uiText("History")}</span>
@@ -1436,24 +1594,16 @@ function App() {
             <Search size={15} />
           </button>
           {review && !historyOpen && ReviewChrome && (
-            <ReviewChrome
-              key={review.id}
-              id={review.id}
-              repository={review.key}
-              root={review.root}
-              lspEnabled={review.lsp_enabled ?? false}
-              composerOwner={review.tab}
-            />
-          )}
-          {review && (
-            <button
-              onClick={() => registry?.execute("app.home")}
-              title={uiText("Recent reviews")}
-              aria-label={uiText("Recent reviews")}
-            >
-              <ArrowLeft size={15} />
-              <span className="action-label">{uiText("Reviews")}</span>
-            </button>
+            <span className="review-native-tools">
+              <ReviewChrome
+                key={review.id}
+                id={review.id}
+                repository={review.key}
+                root={review.root}
+                lspEnabled={review.lsp_enabled ?? false}
+                composerOwner={review.tab}
+              />
+            </span>
           )}
           <button
             onClick={() => registry?.execute("app.preferences")}
@@ -1514,7 +1664,7 @@ function App() {
                       .filter(
                         (a) =>
                           a.context === review.id &&
-                          a.state !== "unavailable" &&
+                          !["unavailable", "ended"].includes(a.state) &&
                           (a.root === review.root || !!a.terminal),
                       )
                       .map((a) => a.state)
@@ -1553,18 +1703,19 @@ function App() {
               {uiText("Retry loading workspaces")}
             </button>
           )}
-          {error.includes("preferences") && (
-            <button
-              onClick={() =>
-                void shellPreferences.reload
-                  .current()
-                  .then(() => setError(""))
-                  .catch((e) => setError(String(e)))
-              }
-            >
-              {uiText("Reload saved preferences")}
-            </button>
-          )}
+          {error.includes("preferences") &&
+            !error.includes("Unsaved preferences") && (
+              <button
+                onClick={() =>
+                  void shellPreferences.reload
+                    .current()
+                    .then(() => setError(""))
+                    .catch((e) => setError(String(e)))
+                }
+              >
+                {uiText("Reload saved preferences")}
+              </button>
+            )}
           <button
             aria-label={uiText("Dismiss error")}
             onClick={() => {
@@ -1636,6 +1787,10 @@ function App() {
       {attentionOpen && (
         <Suspense fallback={<div role="status">{"Loading inbox…"}</div>}>
           <AttentionHub
+            onPreferences={() => {
+              setAttentionOpen(false);
+              void showSettings("monitoring");
+            }}
             initialTarget={attentionTarget}
             onClose={() => setAttentionOpen(false)}
           />
@@ -1654,6 +1809,10 @@ function App() {
               setToolsPanel(null);
             }}
             onOpen={openWorktree}
+            onPreferences={() => {
+              setToolsPanel(null);
+              void showSettings("terminal");
+            }}
             onEmbedded={(worktree) => showTerminal(toolsPanel.id, worktree)}
             agentActivity={agentActivity}
             onInventory={(rows) =>
@@ -1664,7 +1823,9 @@ function App() {
       )}
       {hostingOpen && (
         <Suspense
-          fallback={<div role="status">{"Loading hosting reviews…"}</div>}
+          fallback={
+            <div role="status">{"Loading pull and merge requests…"}</div>
+          }
         >
           <HostingHub
             key={review?.id ?? "discovery"}
@@ -1701,7 +1862,7 @@ function App() {
               if (id) setHostingOpen(false);
               else
                 throw Error(
-                  "Could not open this review. Close Hosting to inspect the opening error, then retry.",
+                  "Could not open this review. Close Pull & merge requests to inspect the opening error, then retry.",
                 );
             }}
           />
@@ -1738,6 +1899,7 @@ function App() {
                     onDiscussions={toggleDiscussions}
                     githubEnabled={review.github_enabled}
                     onConnections={showConnections}
+                    onPreferences={showReviewPreferences}
                     onLspChange={lspChanged}
                   />
                 </Suspense>
@@ -1931,11 +2093,14 @@ function App() {
                 );
                 if (!id) throw Error("Could not open comparison");
                 setHistoryOpen(false);
-                showAgents();
+                showAgents("review");
               }}
               agentCommits={Object.fromEntries(
                 agentActivity
-                  .filter((a) => a.commit)
+                  .filter(
+                    (a) =>
+                      a.commit && !["unavailable", "ended"].includes(a.state),
+                  )
                   .map((a) => [a.commit!, `${a.tool}: ${a.state}`]),
               )}
               initialInfo={repository.info}
@@ -1958,12 +2123,12 @@ function App() {
         <Suspense fallback={null}>
           <AgentPanel
             draft={
-              review
+              review && !historyOpen
                 ? workspaceModule?.getHostingDraft(review.id, "agents:findings")
                 : ""
             }
             onDraft={(value) => {
-              if (review)
+              if (review && !historyOpen)
                 workspaceModule?.setHostingDraft(
                   review.id,
                   "agents:findings",
@@ -1971,8 +2136,26 @@ function App() {
                 );
             }}
             open={agentOpen}
-            context={review?.id ?? null}
+            initialTab={agentTab}
+            context={agentContext}
+            reviewContext={historyOpen ? null : (review?.id ?? null)}
+            activityManaged
+            commitComparison={
+              !!review &&
+              !historyOpen &&
+              !!workspaceModule?.agentComparisonEligibility?.(review.id)?.launch
+            }
+            pinnedComparison={
+              !!review &&
+              !historyOpen &&
+              !!workspaceModule?.agentComparisonEligibility?.(review.id)
+                ?.findings
+            }
             onClose={() => setAgentOpen(false)}
+            onPreferences={() => {
+              setAgentOpen(false);
+              void showSettings("agents");
+            }}
             onActivity={setAgentActivity}
             onExternal={() => openWorktrees("terminal")}
             onLaunch={async (preview) => {
@@ -2012,9 +2195,10 @@ function App() {
               ? (repository?.id ?? null)
               : (review?.id ?? repository?.id ?? null)
           }
+          onPreferences={() => void showSettings("terminal")}
           onHide={() => {
             setTerminalVisible(false);
-            document.getElementById("embedded-terminal-toggle")?.focus();
+            document.getElementById("repository-tools-toggle")?.focus();
           }}
           onExternal={() => openWorktrees("terminal")}
         />
@@ -2031,219 +2215,379 @@ function App() {
         </div>
       )}
       {settings && (
-        <Dialog open onOpenChange={() => setSettings(false)}>
-          <DialogContent className="settings" aria-labelledby="settings-title">
-            <button
-              className="delete"
-              aria-label={uiText("Close settings")}
-              onClick={() => setSettings(false)}
-            >
-              <X size={18} />
-            </button>
-            <h2 id="settings-title">{uiText("Preferences")}</h2>
-            <nav
-              className="preferences-tabs"
-              aria-label={uiText("Preference sections")}
-            >
-              {[
-                "appearance",
-                "shortcuts",
-                "connections",
-                "tools",
-                "updates",
-                "about",
-              ].map((tab) => (
-                <button
-                  key={tab}
-                  aria-pressed={settingsTab === tab}
-                  onClick={() => setSettingsTab(tab)}
+        <PreferencesDialog
+          section={settingsTab}
+          onSection={(id) => {
+            setSettingsTab(id);
+            setSettingsSaved(null);
+            setPreferenceError("");
+          }}
+          sections={[
+            {
+              id: "appearance",
+              label: uiText("Appearance"),
+              content: <AppearancePanel showHeading={false} />,
+            },
+            {
+              id: "review",
+              label: uiText("Review"),
+              saveMode: "manual",
+              content: (
+                <Suspense
+                  fallback={
+                    <p role="status">{uiText("Loading review preferences…")}</p>
+                  }
                 >
-                  {tab === "appearance"
-                    ? uiText("Appearance")
-                    : tab === "shortcuts"
-                      ? uiText("Shortcuts")
-                      : tab === "connections"
-                        ? uiText("Connections")
-                        : tab === "tools"
-                          ? uiText("Code intelligence")
-                          : tab === "updates"
-                            ? uiText("Updates")
-                            : uiText("About")}
-                </button>
-              ))}
-            </nav>
-            {settingsTab === "shortcuts" && (
-              <Suspense fallback={null}>
-                <ShortcutSettings />
-              </Suspense>
-            )}
-            {settingsTab === "updates" && <Updates />}
-            {settingsTab === "about" && <About />}
-            {settingsTab === "appearance" && (
-              <AppearancePanel showHeading={false} />
-            )}
-            {settingsTab === "connections" && (
-              <>
-                <p>
-                  {uiText(
-                    "Connection settings are shared by all workspace windows. Tokens stay in memory until you quit. Save to apply changes, then reopen affected reviews.",
-                  )}
-                </p>
-                <h3>{uiText("GitHub connection")}</h3>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={githubDraft}
-                    disabled={settingsLoading || settingsSaving}
-                    onChange={(e) => {
-                      setGithubDraft(e.target.checked);
-                      setSettingsSaved(false);
-                    }}
-                  />
-                  {uiText("Enable GitHub integration")}
-                </label>
-                <p>
-                  {uiText(
-                    "Save to apply. Turning this off stops GitHub lookups, PR actions, and comment transfers immediately. Local reviews remain available. Reopen your review after enabling or changing credentials.",
-                  )}
-                </p>
-                <fieldset
-                  disabled={!githubDraft || settingsLoading || settingsSaving}
+                  <ReviewPreferences onDirty={dirtyHandlers.review!} />
+                </Suspense>
+              ),
+            },
+            {
+              id: "shortcuts",
+              label: uiText("Shortcuts"),
+              content: (
+                <Suspense
+                  fallback={<p role="status">{uiText("Loading shortcuts…")}</p>}
                 >
-                  <p>
-                    {uiText("Use your GitHub CLI sign-in or enter a token.")}
-                  </p>
-                  <label>
-                    {uiText("GitHub host")}
-                    <input
-                      value={tokenHost}
-                      onChange={(e) => setTokenHost(e.target.value.trim())}
-                      placeholder={uiText("github.com")}
-                    />
-                  </label>
-                  <label>
-                    {uiText("Personal access token")}
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      spellCheck={false}
-                      value={token}
-                      onChange={(e) => setToken(e.target.value)}
-                      placeholder={uiText(
-                        "Optional when already signed in with GitHub CLI",
-                      )}
-                    />
-                  </label>
-                  <button onClick={() => setToken("")} disabled={!token}>
-                    {uiText("Clear session token")}
-                  </button>
-                </fieldset>
-                <h3>{uiText("GitLab connection")}</h3>
-                <p>
-                  {uiText(
-                    "GitLab.com or self-managed. Token scopes: api, read_repository.",
+                  <ShortcutSettings />
+                </Suspense>
+              ),
+            },
+            {
+              id: "connections",
+              label: uiText("Connections"),
+              saveMode: "manual",
+              content: (
+                <>
+                  <div className="preference-actions">
+                    <button
+                      className="primary"
+                      disabled={
+                        !settingsReady ||
+                        settingsLoading ||
+                        settingsSaving ||
+                        !preferenceDirty["connections"]
+                      }
+                      onClick={() => void saveSettings()}
+                    >
+                      {settingsSaving
+                        ? uiText("Saving…")
+                        : settingsLoading
+                          ? uiText("Loading…")
+                          : uiText("Save changes")}
+                    </button>
+                    <button
+                      disabled={
+                        settingsSaving ||
+                        settingsLoading ||
+                        !preferenceDirty.connections
+                      }
+                      onClick={() => {
+                        const b = settingsBase.current;
+                        if (!b) return;
+                        {
+                          setHosts(b.hosts);
+                          setToken(b.token);
+                          setTokenHost(b.tokenHost);
+                          setGitlabToken(b.gitlabToken);
+                          setGitlabHost(b.gitlabHost);
+                          setGithubDraft(b.githubEnabled);
+                        }
+                        setSettingsError("");
+                        setPreferenceError("");
+                        setSettingsSaved(null);
+                      }}
+                    >
+                      {uiText("Discard changes")}
+                    </button>
+                    <button
+                      disabled={settingsSaving || settingsLoading}
+                      onClick={() => {
+                        void showSettings("connections", true);
+                      }}
+                    >
+                      {preferenceDirty.connections
+                        ? uiText("Discard and reload")
+                        : uiText("Reload saved preferences")}
+                    </button>
+                  </div>
+                  {settingsSaved === "connections" && (
+                    <p role="status">{uiText("Preferences saved.")}</p>
                   )}
-                </p>
-                <label>
-                  {uiText("GitLab host (include port when needed)")}
-                  <input
-                    value={gitlabHost}
-                    onChange={(e) => setGitlabHost(e.target.value.trim())}
-                    placeholder={uiText("gitlab.com")}
-                  />
-                </label>
-                <label>
-                  {uiText("GitLab personal access token")}
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={gitlabToken}
-                    onChange={(e) => setGitlabToken(e.target.value)}
-                  />
-                </label>
-                <button
-                  onClick={() => setGitlabToken("")}
-                  disabled={!gitlabToken}
+                  {settingsLoading && (
+                    <p role="status">{uiText("Loading saved preferences…")}</p>
+                  )}
+                  <fieldset
+                    disabled={
+                      !settingsReady || settingsLoading || settingsSaving
+                    }
+                  >
+                    <>
+                      <p>
+                        {uiText(
+                          "Shared across windows. Tokens are cleared when mdiff quits. Save changes, then reopen affected reviews.",
+                        )}
+                      </p>
+                      <h3>{uiText("GitHub connection")}</h3>
+                      <label className="checkbox">
+                        <input
+                          type="checkbox"
+                          checked={githubDraft}
+                          disabled={settingsLoading || settingsSaving}
+                          onChange={(e) => {
+                            setGithubDraft(e.target.checked);
+                            setSettingsSaved(null);
+                          }}
+                        />
+                        {uiText("Enable GitHub integration")}
+                      </label>
+                      <p>
+                        {uiText(
+                          "Disabling this stops GitHub lookups, PR actions, and comment transfers after saving.",
+                        )}
+                      </p>
+                      <fieldset
+                        disabled={
+                          !githubDraft || settingsLoading || settingsSaving
+                        }
+                      >
+                        <p>
+                          {uiText(
+                            "Use your GitHub CLI sign-in or enter a token.",
+                          )}
+                        </p>
+                        <label>
+                          {uiText("GitHub host")}
+                          <input
+                            value={tokenHost}
+                            onChange={(e) =>
+                              setTokenHost(e.target.value.trim())
+                            }
+                            placeholder={uiText("github.com")}
+                          />
+                        </label>
+                        <label>
+                          {uiText("Personal access token")}
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={token}
+                            onChange={(e) => setToken(e.target.value)}
+                            placeholder={uiText(
+                              "Optional when already signed in with GitHub CLI",
+                            )}
+                          />
+                        </label>
+                        <button onClick={() => setToken("")} disabled={!token}>
+                          {uiText("Clear session token")}
+                        </button>
+                      </fieldset>
+                      <h3>{uiText("GitLab connection")}</h3>
+                      <p>
+                        {uiText(
+                          "GitLab.com or self-managed. Token scopes: api, read_repository.",
+                        )}
+                      </p>
+                      <label>
+                        {uiText("GitLab host (include port when needed)")}
+                        <input
+                          value={gitlabHost}
+                          onChange={(e) => setGitlabHost(e.target.value.trim())}
+                          placeholder={uiText("gitlab.com")}
+                        />
+                      </label>
+                      <label>
+                        {uiText("GitLab personal access token")}
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          spellCheck={false}
+                          value={gitlabToken}
+                          onChange={(e) => setGitlabToken(e.target.value)}
+                        />
+                      </label>
+                      <button
+                        onClick={() => setGitlabToken("")}
+                        disabled={!gitlabToken}
+                      >
+                        {uiText("Clear GitLab token")}
+                      </button>
+                    </>
+                    <details>
+                      <summary>{uiText("Enterprise host mapping")}</summary>
+                      <label>
+                        {uiText("Git remote host → GitHub web host (JSON)")}
+                        <textarea
+                          spellCheck={false}
+                          value={hosts}
+                          onChange={(e) => {
+                            setHosts(e.target.value);
+                            setSettingsSaved(null);
+                          }}
+                        />
+                      </label>
+                    </details>
+                  </fieldset>
+                </>
+              ),
+            },
+            {
+              id: "tools",
+              label: uiText("Code intelligence"),
+              saveMode: "manual",
+              content: (
+                <>
+                  <div className="preference-actions">
+                    <button
+                      className="primary"
+                      disabled={
+                        !settingsReady ||
+                        settingsLoading ||
+                        settingsSaving ||
+                        !preferenceDirty["tools"]
+                      }
+                      onClick={() => void saveSettings()}
+                    >
+                      {settingsSaving
+                        ? uiText("Saving…")
+                        : settingsLoading
+                          ? uiText("Loading…")
+                          : uiText("Save changes")}
+                    </button>
+                    <button
+                      disabled={
+                        settingsSaving ||
+                        settingsLoading ||
+                        !preferenceDirty.tools
+                      }
+                      onClick={() => {
+                        const b = settingsBase.current;
+                        if (!b) return;
+                        setCommands(b.commands);
+                        setSettingsError("");
+                        setPreferenceError("");
+                        setSettingsSaved(null);
+                      }}
+                    >
+                      {uiText("Discard changes")}
+                    </button>
+                    <button
+                      disabled={settingsSaving || settingsLoading}
+                      onClick={() => {
+                        void showSettings("tools", true);
+                      }}
+                    >
+                      {preferenceDirty.tools
+                        ? uiText("Discard and reload")
+                        : uiText("Reload saved preferences")}
+                    </button>
+                  </div>
+                  {settingsSaved === "tools" && (
+                    <p role="status">{uiText("Preferences saved.")}</p>
+                  )}
+                  {settingsLoading && (
+                    <p role="status">{uiText("Loading saved preferences…")}</p>
+                  )}
+                  <fieldset
+                    disabled={
+                      !settingsReady || settingsLoading || settingsSaving
+                    }
+                  >
+                    <>
+                      <h3>{uiText("Language servers")}</h3>
+                      <p>
+                        {uiText(
+                          "Enable code intelligence from the review toolbar after trusting the repository. Each new review starts with it off.",
+                        )}
+                      </p>
+                      <p>
+                        {uiText(
+                          "Detected from PATH. Set commands by language; an empty value disables it.",
+                        )}
+                      </p>
+                      <label>
+                        {uiText("Language commands (JSON)")}
+                        <textarea
+                          spellCheck={false}
+                          value={commands}
+                          onChange={(e) => {
+                            setCommands(e.target.value);
+                            setSettingsSaved(null);
+                          }}
+                          placeholder={uiText(
+                            '{"rust":"rust-analyzer","python":"pyright-langserver --stdio"}',
+                          )}
+                        />
+                      </label>
+                    </>
+                  </fieldset>
+                </>
+              ),
+            },
+            {
+              id: "agents",
+              label: uiText("Agents"),
+              saveMode: "manual",
+              content: (
+                <Suspense
+                  fallback={
+                    <p role="status">{uiText("Loading agent preferences…")}</p>
+                  }
                 >
-                  {uiText("Clear GitLab token")}
-                </button>
-              </>
-            )}
-            {settingsTab === "tools" && (
-              <>
-                <h3>{uiText("Language servers")}</h3>
-                <p>
-                  {uiText(
-                    "Enable code intelligence from the review toolbar after trusting the repository. Each new review starts with it off.",
-                  )}
-                </p>
-                <p>
-                  {uiText(
-                    "Detected from PATH. Set commands by language; an empty value disables it.",
-                  )}
-                </p>
-                <label>
-                  {uiText("Language commands (JSON)")}
-                  <textarea
-                    spellCheck={false}
-                    value={commands}
-                    onChange={(e) => {
-                      setCommands(e.target.value);
-                      setSettingsSaved(false);
-                    }}
-                    placeholder={uiText(
-                      '{"rust":"rust-analyzer","python":"pyright-langserver --stdio"}',
-                    )}
-                  />
-                </label>
-              </>
-            )}
-            {settingsTab === "connections" && (
-              <details>
-                <summary>{uiText("Enterprise host mapping")}</summary>
-                <label>
-                  {uiText("Git remote host → GitHub web host (JSON)")}
-                  <textarea
-                    spellCheck={false}
-                    value={hosts}
-                    onChange={(e) => {
-                      setHosts(e.target.value);
-                      setSettingsSaved(false);
-                    }}
-                  />
-                </label>
-              </details>
-            )}
-            {settingsError && (
-              <p className="settings-error" role="alert">
-                {settingsError.replace(/^Error: /, "")}
-              </p>
-            )}
-            {(settingsTab === "connections" || settingsTab === "tools") && (
-              <div className="settings-footer">
-                <span role="status">
-                  {settingsSaved
-                    ? uiText(
-                        "Saved. GitHub disable applies now; reopen to apply connection changes.",
-                      )
-                    : ""}
-                </span>
-                <button
-                  className="primary"
-                  disabled={!settingsReady || settingsLoading || settingsSaving}
-                  onClick={saveSettings}
+                  <AgentPreferences onDirty={dirtyHandlers.agents!} />
+                </Suspense>
+              ),
+            },
+            {
+              id: "terminal",
+              label: uiText("Terminal & tools"),
+              saveMode: "manual",
+              content: (
+                <Suspense
+                  fallback={
+                    <p role="status">
+                      {uiText("Loading terminal preferences…")}
+                    </p>
+                  }
                 >
-                  {settingsSaving
-                    ? uiText("Saving…")
-                    : settingsLoading
-                      ? uiText("Loading…")
-                      : uiText("Save settings")}
-                </button>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
+                  <TerminalPreferences onDirty={dirtyHandlers.terminal!} />
+                </Suspense>
+              ),
+            },
+            {
+              id: "monitoring",
+              label: uiText("Monitoring"),
+              saveMode: "manual",
+              content: (
+                <Suspense
+                  fallback={
+                    <p role="status">
+                      {uiText("Loading monitoring preferences…")}
+                    </p>
+                  }
+                >
+                  <AttentionHub
+                    preferencesOnly
+                    onClose={() => {}}
+                    onDirty={dirtyHandlers.monitoring!}
+                  />
+                </Suspense>
+              ),
+            },
+            { id: "updates", label: uiText("Updates"), content: <Updates /> },
+            { id: "about", label: uiText("About"), content: <About /> },
+          ]}
+          dirty={preferenceDirty}
+          error={
+            preferenceError ||
+            (["connections", "tools"].includes(settingsTab) &&
+            (!settingsErrorSection || settingsErrorSection === settingsTab)
+              ? settingsError
+              : "")
+          }
+          onClose={closePreferences}
+        />
       )}
     </div>
   );

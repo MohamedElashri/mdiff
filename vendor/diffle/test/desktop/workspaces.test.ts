@@ -356,7 +356,17 @@ it('opens a revalidated linked worktree as a distinct tab while preserving the p
   await act(async () => {
     // oxlint-disable-next-line no-restricted-imports -- Resolve the actual lazy desktop browser.
     await import('../../../../src/worktrees/WorktreesHub');
-    button('Worktrees and tools').click();
+    button('Repository tools').click();
+  });
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect(document.querySelector('[role="menuitem"]')).not.toBeNull();
+  });
+  await act(async () => {
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) =>
+      el.textContent?.includes('Worktrees and external tools'),
+    )!;
+    item.click();
   });
   const open = document.querySelector<HTMLButtonElement>('.worktree-actions .primary')!;
   expect(open).not.toBeNull();
@@ -460,4 +470,51 @@ it('preserves live shells when terminal close is cancelled and defers terminatio
   await act(async () => {});
   expect(vi.mocked(invoke).mock.calls).toContainEqual(['workspace_finish_exit', { action: 'quit', generation: 102 }]);
   expect(vi.mocked(invoke).mock.calls.some(([c]) => c === 'terminal_close_owner')).toBe(false);
+});
+
+it('saves Connections independently of invalid unsaved Code intelligence edits', async () => {
+  await mount();
+  await act(() => button('Preferences').click());
+  const tab = (name: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>('.preferences-window [role="tab"]')].find((el) =>
+      el.textContent?.includes(name),
+    )!;
+  await act(() => tab('Code intelligence').click());
+  const editor = document.querySelector<HTMLTextAreaElement>('.preferences-window textarea')!;
+  await act(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, 'invalid JSON');
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(() => tab('Connections').click());
+  const pane = () => document.querySelector<HTMLElement>('.preferences-window [role="tabpanel"]:not([hidden])')!;
+  await act(() => pane().querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+  await act(() => pane().querySelector<HTMLButtonElement>('button.primary')!.click());
+  const save = vi.mocked(invoke).mock.calls.find(([command]) => command === 'save_desktop_settings');
+  expect(save?.[1]).toMatchObject({ lspCommands: null, githubHosts: null, githubEnabled: true });
+  await act(() => tab('Code intelligence').click());
+  expect(editor.value).toBe('invalid JSON');
+  await act(() => pane().querySelector<HTMLButtonElement>('button.primary')!.click());
+  expect(document.querySelector('.preferences-window [role="alert"]')?.textContent).toContain('valid JSON');
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'save_desktop_settings')).toHaveLength(1);
+});
+it('keeps unsaved Preferences through the native all-window quit barrier', async () => {
+  await mount();
+  await act(() => button('Preferences').click());
+  const connections = [...document.querySelectorAll<HTMLButtonElement>('.preferences-window [role="tab"]')].find(
+    (el) => el.textContent === 'Connections',
+  )!;
+  await act(() => connections.click());
+  await act(() =>
+    document
+      .querySelector<HTMLInputElement>('.preferences-window [role="tabpanel"]:not([hidden]) input[type="checkbox"]')!
+      .click(),
+  );
+  await act(() =>
+    listeners.get('workspace-flush')?.({ payload: { owner: 'main', action: 'quit', generation: 92 } } as unknown as {
+      payload: string;
+    }),
+  );
+  expect(invoke).toHaveBeenCalledWith('workspace_cancel_exit', { generation: 92 });
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'workspace_finish_exit')).toBe(false);
+  expect(document.querySelector('.preferences-window [role="alert"]')?.textContent).toContain('Save or discard');
 });

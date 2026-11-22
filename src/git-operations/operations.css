@@ -38,7 +38,13 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.git-operations :where(button, select, input, textarea) {
+.git-operations
+  :where(
+    button,
+    select,
+    input:not([type="checkbox"]):not([type="radio"]),
+    textarea
+  ) {
   font: inherit;
   color: inherit;
   background: var(--bg-3);
@@ -63,7 +69,8 @@
   opacity: 0.45;
   cursor: default;
 }
-.git-operations :where(input, select, textarea) {
+.git-operations
+  :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
   padding: 7px;
   min-width: 0;
   width: 100%;

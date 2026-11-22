@@ -28,7 +28,9 @@ const elsewhere = { newSha: 'abc123', headSha: 'def456' };
 describe('lspBlocker', () => {
   it('names the run, the snapshot, the language, the server and the feature, in that order', () => {
     const on = status(server());
-    expect(lspBlocker({ enabled: false, servers: [], missing: [] }, checkout)).toMatch(/--no-lsp/);
+    expect(lspBlocker({ enabled: false, servers: [], missing: [] }, checkout)).toBe(
+      'Language servers are disabled for this review',
+    );
     expect(lspBlocker(on, null)).toMatch(/new side/);
     expect(lspBlocker(on, elsewhere)).toMatch(/new side/);
     expect(lspBlocker(on, checkout, { path: 'notes.txt' })).toBe('No language server for .txt files');

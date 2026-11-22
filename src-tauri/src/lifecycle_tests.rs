@@ -397,7 +397,7 @@ async fn settings_reach_warm_handles_and_changed_commands_revoke_the_existing_po
         )
         .await
         .unwrap();
-    engine.settings_changed(false).await;
+    engine.settings_changed(false, false).await;
     assert!(engine.runtime(&first.id).await.unwrap().lsp.is_none());
     assert_eq!(engine.lsp_slots.available_permits(), 1);
     engine.close().await;

@@ -46,12 +46,12 @@ impl Ledger {
         }
         anyhow::ensure!(
             tokio::fs::metadata(&self.file).await?.len() <= 1024 * 1024,
-            "Hosting operation ledger exceeds its limit; original file was preserved"
+            "Review operation history exceeds its limit; original file was preserved"
         );
         let doc: Document = serde_json::from_slice(&tokio::fs::read(&self.file).await?)?;
         anyhow::ensure!(
             doc.version == 1 && doc.records.len() <= 256,
-            "Unsupported hosting operation ledger; original file was preserved"
+            "Unsupported review operation history; original file was preserved"
         );
         Ok(doc)
     }
@@ -96,7 +96,7 @@ impl Ledger {
                     .iter()
                     .position(|r| matches!(r.receipt.status.as_str(), "succeeded" | "rejected"))
                     .ok_or_else(|| {
-                        anyhow::anyhow!("Reconcile pending hosting operations before starting more")
+                        anyhow::anyhow!("Reconcile pending review operations before starting more")
                     })?;
                 doc.records.remove(at);
             }
@@ -183,7 +183,7 @@ fn encode(doc: &Document) -> Result<String> {
     let value = serde_json::to_string(doc)?;
     anyhow::ensure!(
         value.len() <= 1024 * 1024,
-        "Hosting operation ledger is full; existing receipts were preserved"
+        "Review operation history is full; existing receipts were preserved"
     );
     Ok(value)
 }
