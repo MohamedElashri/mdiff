@@ -1,7 +1,7 @@
 import { uiText } from "../vendor/diffle/src/client/i18n/runtime";
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { ArrowUpRight, Code2 } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import { BrandMark } from "./Brand";
 
 export function About() {
@@ -28,20 +28,20 @@ export function About() {
           "A focused place to review changes, leave feedback, and return to your code.",
         )}
       </p>
-      <div className="about-links">
+      <nav className="about-links" aria-label={uiText("Project links")}>
+        <a href="https://melashri.net/soft/mdiff/">
+          {uiText("Project website")}
+        </a>
         <a href="https://github.com/MohamedElashri/mdiff">
-          <Code2 size={15} />
           {uiText("Source code")}
         </a>
         <a href="https://github.com/MohamedElashri/mdiff/issues">
           {uiText("Report an issue")}
-          <ArrowUpRight size={14} />
         </a>
         <a href="https://github.com/MohamedElashri/mdiff/releases">
-          {uiText("Releases")}
-          <ArrowUpRight size={14} />
+          {uiText("Release notes")}
         </a>
-      </div>
+      </nav>
       <div className="about-credits">
         <h4>{uiText("People & origins")}</h4>
         <p>
@@ -71,7 +71,7 @@ export function About() {
           .
         </p>
       </div>
-      <footer className="about-license">
+      <div className="about-license">
         <div>
           <strong>{uiText("Free and open source")}</strong>
           <span>
@@ -82,6 +82,9 @@ export function About() {
           {uiText("Licence & notices")}
           <ArrowUpRight size={14} />
         </a>
+      </div>
+      <footer className="about-support">
+        <a href="https://ko-fi.com/melashri">{uiText("Support on Ko-fi")}</a>
       </footer>
     </section>
   );
