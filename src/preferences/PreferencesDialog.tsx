@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Heart, X } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -28,6 +28,7 @@ export function PreferencesDialog({
   onClose: () => void;
 }) {
   const [visited, setVisited] = useState(() => new Set([section]));
+  const closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setVisited((old) => new Set([...old, section]));
   }, [section]);
@@ -36,12 +37,27 @@ export function PreferencesDialog({
       <DialogContent
         className="settings preferences-window"
         aria-labelledby="preferences-title"
+        initialFocus={closeButton}
       >
         <header>
           <h2 id="preferences-title">{uiText("Preferences")}</h2>
-          <button aria-label={uiText("Close preferences")} onClick={onClose}>
-            <X size={18} />
-          </button>
+          <div className="preferences-header-actions">
+            <a
+              className="preferences-tip"
+              data-in-about={section === "about"}
+              href="https://ko-fi.com/melashri"
+            >
+              <Heart size={15} aria-hidden="true" />
+              {uiText("Leave a tip on Ko-fi")}
+            </a>
+            <button
+              ref={closeButton}
+              aria-label={uiText("Close preferences")}
+              onClick={onClose}
+            >
+              <X size={18} />
+            </button>
+          </div>
         </header>
         {error && (
           <p role="alert" className="settings-error">

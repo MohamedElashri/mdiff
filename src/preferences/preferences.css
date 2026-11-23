@@ -18,6 +18,43 @@
 .preferences-window > header h2 {
   margin: 0;
 }
+.preferences-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.preferences-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-2);
+  font-size: 0.8rem;
+  text-align: center;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+}
+.preferences-tip[data-in-about="true"],
+.preferences-tip:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--bg-2);
+  font-weight: 600;
+  text-decoration: none;
+}
+.preferences-tip[data-in-about="true"] {
+  border-color: color-mix(in srgb, var(--fg) 32%, var(--bg-2));
+  background: color-mix(in srgb, var(--fg) 7%, var(--bg-2));
+}
+.preferences-tip[data-in-about="true"]:hover {
+  border-color: var(--fg-2);
+}
+.preferences-tip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 .preferences-layout {
   display: grid;
   grid-template-columns: 170px minmax(0, 1fr);

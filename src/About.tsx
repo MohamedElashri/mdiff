@@ -29,7 +29,7 @@ export function About() {
         )}
       </p>
       <nav className="about-links" aria-label={uiText("Project links")}>
-        <a href="https://melashri.net/soft/mdiff/">
+        <a href="https://melashri.net/software/mdiff/">
           {uiText("Project website")}
         </a>
         <a href="https://github.com/MohamedElashri/mdiff">
@@ -83,9 +83,6 @@ export function About() {
           <ArrowUpRight size={14} />
         </a>
       </div>
-      <footer className="about-support">
-        <a href="https://ko-fi.com/melashri">{uiText("Support on Ko-fi")}</a>
-      </footer>
     </section>
   );
 }
