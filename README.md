@@ -70,6 +70,10 @@ make help             # all commands
 
 Use `make build-debug` for a debug app, or `make build TARGET=x86_64-apple-darwin BUNDLES=app` for a specific installed Rust target. Signed packages use `make build-signed` with the updater signing environment variables; publishing remains tag-driven in GitHub Actions.
 
+## Support
+
+Visit the [project website](https://melashri.net/soft/mdiff/) for downloads and links. [Support on Ko-fi](https://ko-fi.com/melashri) if you’d like to leave an optional tip.
+
 ## License
 
 [GPL-3.0-only](LICENCE.md).

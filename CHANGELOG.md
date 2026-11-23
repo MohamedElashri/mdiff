@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-23
+
+### Changed
+
+- Refresh About with project links and an optional Ko-fi tip link.
+
 ## [0.3.1] - 2026-11-22
 
 ### Fixed
