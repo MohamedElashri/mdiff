@@ -1,8 +1,13 @@
 import { uiText } from "../vendor/diffle/src/client/i18n/runtime";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
-import Markdown from "react-markdown";
 import {
   ArrowUpRight,
   Check,
@@ -13,6 +18,8 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { UpdateController, type UpdateInfo } from "./update-controller";
+
+const ReleaseNotesMarkdown = lazy(() => import("react-markdown"));
 
 // Closing Preferences does not cancel an update or allow a second installation.
 export const updates = new UpdateController({
@@ -205,7 +212,9 @@ export function Updates() {
             {state.version}
           </h4>
           <div>
-            <Markdown>{state.notes}</Markdown>
+            <Suspense fallback={<p role="status">{uiText("Loading…")}</p>}>
+              <ReleaseNotesMarkdown>{state.notes}</ReleaseNotesMarkdown>
+            </Suspense>
           </div>
         </section>
       )}
