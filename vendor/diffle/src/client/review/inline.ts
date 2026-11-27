@@ -42,13 +42,13 @@ export function scrollInline(code: HTMLElement, fraction: number): void {
 export function installInlineWheel(scroller: HTMLElement): () => void {
   const onWheel = (e: WheelEvent) => {
     if (e.ctrlKey) return;
+    // Shift turns a plain wheel sideways where the browser has not done so already.
+    const dx = e.shiftKey && e.deltaX === 0 ? e.deltaY : e.deltaX;
+    if (dx === 0 || (!e.shiftKey && Math.abs(dx) < Math.abs(e.deltaY))) return;
     const code = e
       .composedPath()
       .find((n): n is HTMLElement => n instanceof HTMLElement && n.hasAttribute('data-code'));
     if (!code || siblingsOf(code).length === 0 || code.scrollWidth <= code.clientWidth) return;
-    // Shift turns a plain wheel sideways where the browser has not done so already.
-    const dx = e.shiftKey && e.deltaX === 0 ? e.deltaY : e.deltaX;
-    if (dx === 0 || (!e.shiftKey && Math.abs(dx) < Math.abs(e.deltaY))) return;
     e.preventDefault();
     const unit = e.deltaMode === 1 ? WHEEL_LINE_REM * remPx() : e.deltaMode === 2 ? code.clientWidth : 1;
     scrollColumns(code, code.scrollLeft + dx * unit);

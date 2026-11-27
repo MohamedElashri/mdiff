@@ -1,10 +1,11 @@
 import { diffsWorkerEntry } from "./vendor/diffle/scripts/diffs-worker-plugin";
+import { diffsLinuxScroll } from "./scripts/diffs-linux-scroll.ts";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 export default defineConfig({
-  plugins: [diffsWorkerEntry(), react(), tailwindcss()],
+  plugins: [diffsWorkerEntry(), diffsLinuxScroll(), react(), tailwindcss()],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./vendor/diffle/src", import.meta.url)),

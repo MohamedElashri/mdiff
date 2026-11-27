@@ -59,9 +59,8 @@ export function topRow(items: RenderedRoot[], top: number, bottom: number): RowA
 }
 
 /**
- * Re-run `apply` over the rendered items whenever their rows can have changed: on scroll
- * (virtualization hands out fresh row elements), on mutations inside each item's shadow root,
- * and whenever `subscribe`'s callback fires. Passes coalesce to one per frame. Returns the teardown.
+ * Re-run `apply` when items mount, their rows change, or `subscribe`'s callback fires.
+ * Scrolling within the rendered window needs no decoration pass. Passes coalesce to one per frame.
  */
 export function watchRenderedRows(
   viewer: () => CodeViewHandle<unknown, undefined> | null,
@@ -92,7 +91,6 @@ export function watchRenderedRows(
       apply(items);
     });
   };
-  scroller.addEventListener('scroll', schedule, { passive: true });
   // Items mount into the light DOM as they virtualize in; their shadow roots are observed on first paint.
   observer.observe(scroller, { childList: true, subtree: true });
   const unsubscribe = subscribe(schedule);
@@ -100,7 +98,6 @@ export function watchRenderedRows(
   return () => {
     cancelAnimationFrame(frame);
     observer.disconnect();
-    scroller.removeEventListener('scroll', schedule);
     unsubscribe();
   };
 }

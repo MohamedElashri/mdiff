@@ -6,7 +6,7 @@ import { watchRenderedRows } from '@/client/review/rows.js';
 const frame = () => new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
 describe('watchRenderedRows', () => {
-  it('runs one pass per frame for mount, scroll, store, and row mutations, and stops on teardown', async () => {
+  it('runs for mount, store changes, and row mutations while ignoring scroll alone', async () => {
     const scroller = document.createElement('div');
     document.body.append(scroller);
     const item = document.createElement('div');
@@ -23,6 +23,9 @@ describe('watchRenderedRows', () => {
     expect(apply).toHaveBeenCalledTimes(1);
     expect(apply.mock.calls[0]![0]).toEqual([{ id: 'diff:a.ts:1', root: item }]);
     scroller.dispatchEvent(new Event('scroll'));
+    await frame();
+    expect(apply).toHaveBeenCalledTimes(1);
+    notify();
     notify();
     await frame();
     expect(apply).toHaveBeenCalledTimes(2);
@@ -32,7 +35,7 @@ describe('watchRenderedRows', () => {
     expect(onMutation).toHaveBeenCalled();
     expect(apply).toHaveBeenCalledTimes(3);
     stop();
-    scroller.dispatchEvent(new Event('scroll'));
+    item.append(document.createElement('div'));
     await frame();
     expect(apply).toHaveBeenCalledTimes(3);
     scroller.remove();

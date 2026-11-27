@@ -196,6 +196,10 @@ const HEADER_CSS = `
 }
 ::highlight(diffle-search) { background: var(--search-match); }
 ::highlight(diffle-search-current) { background: var(--search-current); color: var(--search-current-fg); }
+/* Wrapped text can break within the available width. Avoid sizing the grid from its contents. */
+:is([data-diff], [data-file])[data-overflow='wrap'] {
+  --diffs-code-grid: var(--diffs-grid-number-column-width) minmax(0, 1fr);
+}
 /* With wrapping off, each code column scrolls sideways under a bar at its foot. The library paints the thumb
    only while the pointer is over the diff, in a context tint our dark palette makes invisible, so a line that
    ran off-screen gave no sign of it. Paint it whenever the column overflows: auto drops the bar from columns
@@ -268,6 +272,8 @@ function markHover(el: HTMLElement, on: boolean): void {
 const codeViewOptions = {
   preferredHighlighter: HIGHLIGHTER,
   stickyHeaders: true,
+  // Toggling pointer events on the rendered diff invalidates hit testing during scroll.
+  pointerEventsOnScroll: true,
   enableLineSelection: true,
   // Token hit-testing (data-char spans); also set on the worker pool in main.tsx, whose options win when the pool renders.
   useTokenTransformer: true,
@@ -432,7 +438,7 @@ export function ReviewPane() {
     setViewer(() => viewerRef.current as CodeViewHandle<unknown, undefined> | null);
     return () => setViewer(() => null);
   }, [setViewer]);
-  // Search-match highlights read the same rendered DOM; the scroller drives re-paints as rows virtualize.
+  // Search-match highlights and the other decorations follow changes to the rendered rows.
   useEffect(() => {
     if (!scroller) return;
     return installSearchHighlights(
@@ -466,9 +472,9 @@ export function ReviewPane() {
   }, [scroller, useStore]);
   // Sideways wheel gestures move both columns of a split diff together; see installInlineWheel.
   useEffect(() => {
-    if (!scroller) return;
+    if (!scroller || lineWrap || diffStyle !== 'split') return;
     return installInlineWheel(scroller);
-  }, [scroller]);
+  }, [scroller, lineWrap, diffStyle]);
   useEffect(() => {
     onSelectionChanged(selection);
   }, [selection, onSelectionChanged]);
@@ -514,6 +520,8 @@ export function ReviewPane() {
       const s = useStore.getState();
       const followViewport = !jumping.current && !s.selection;
       if (!windowed && !followViewport) return;
+      // If the only rendered file is already active, its bounds cannot change the active path.
+      if (!windowed && rendered.length === 1 && pathFromItemId(rendered[0]!.id) === s.activePath) return;
       const box = scroller.getBoundingClientRect();
       const header = geometry.itemMetrics.diffHeaderHeight;
       const eye = box.top + box.height * EYE_FRACTION;
@@ -1031,11 +1039,16 @@ export function ReviewPane() {
     [useStore],
   );
 
+  const headerHeights = useRef(new WeakMap<object, { geometry: typeof geometry; height: number }>());
   const resizeHeader = useCallback(
     (id: string, height: number) => {
       const viewer = viewerRef.current?.getInstance();
       const item = viewer?.getRenderedItems().find((r) => r.id === id);
       if (!viewer || !item) return;
+      const previous = headerHeights.current.get(item.instance);
+      const current = previous?.geometry === geometry ? previous.height : geometry.itemMetrics.diffHeaderHeight;
+      if (current === height) return;
+      headerHeights.current.set(item.instance, { geometry, height });
       const scroller = containerRef.current;
       const scrollTop = scroller?.scrollTop;
       // CodeView's default metrics assume equal headers; local search enlarges only its owning file.

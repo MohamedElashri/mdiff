@@ -14,7 +14,15 @@ export function reviewGeometry(
   const spacing = px(density === 'compact' ? 0.375 : 0.5);
   const diffHeaderHeight = lineHeight + 3 * spacing;
   const hunkSeparatorHeight = px(2);
-  const itemMetrics = { lineHeight, spacing, diffHeaderHeight, hunkSeparatorHeight };
+  // Keep row batches small when CodeView or an individual header applies these metrics.
+  // VirtualizedFile and VirtualizedFileDiff otherwise fall back to 50 rows per batch.
+  const itemMetrics = {
+    lineHeight,
+    spacing,
+    diffHeaderHeight,
+    hunkSeparatorHeight,
+    hunkLineCount: 12,
+  };
   const layout = { paddingTop: 0, paddingBottom: px(12.5), gap: px(1) };
   const css = `
 :host {
