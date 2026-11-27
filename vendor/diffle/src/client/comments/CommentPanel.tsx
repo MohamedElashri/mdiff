@@ -15,6 +15,7 @@ import { ButtonLabel } from '@/client/ui/ButtonLabel.js';
 import { useConfirm } from '@/client/useConfirm.js';
 import { CommitNavigator } from './CommitNavigator.js';
 import { IterationList } from './IterationList.js';
+import { GithubAnchorList } from './GithubAnchorList.js';
 import { ThreadRow } from './ThreadRow.js';
 
 export function CommentPanel() {
@@ -42,17 +43,26 @@ export function CommentPanel() {
     const t = setTimeout(() => setPosted(null), 2000);
     return () => clearTimeout(t);
   }, [posted]);
-  const post = useConfirm(() => {
+  const [previewVersion, setPreviewVersion] = useState<number>();
+  const previewing = snapshot != null && previewVersion === snapshot.version && canExport;
+  const saveToGithub = (eligible: CommentThread[]) => {
     setPosting(true);
-    void exportToGithub()
-      .then(setPosted)
+    void exportToGithub(
+      eligible.map((thread) => thread.id),
+      previewVersion,
+    )
+      .then((outcome) => {
+        if (outcome) setPreviewVersion(undefined);
+        setPosted(outcome);
+      })
       .finally(() => setPosting(false));
-  });
+  };
   const clear = useConfirm(() => void clearThreads());
   const stale = useConfirm(() => void deleteStaleThreads());
 
   const shown = useMemo(() => visibleThreads({ threads, showResolved }), [threads, showResolved]);
   const open = threads.filter((t) => !t.resolved);
+  const eligible = open.filter((t) => !t.stale);
   const resolvedCount = threads.length - open.length;
   const staleCount = threads.filter((t) => t.stale).length;
   const groups = useMemo(() => {
@@ -106,23 +116,15 @@ export function CommentPanel() {
         {canExport && (
           <Button
             variant="ghost"
-            icon={!post.armed && !posted}
-            feedback={post.armed ? 'confirm' : posted ? 'posted' : undefined}
-            disabled={posting || (open.length === 0 && !posted)}
-            title={
-              post.armed
-                ? uiText('Click again to add all open threads to the pending review')
-                : uiText('Add all open threads to a pending review on the GitHub pull request; you submit it on GitHub')
-            }
-            aria-label={
-              post.armed
-                ? uiText('Add all open threads to the pending review? Click again to confirm')
-                : uiText('Add all open threads to a pending review on the GitHub pull request')
-            }
-            onClick={post.fire}
+            icon={!posted}
+            feedback={posted ? 'posted' : undefined}
+            disabled={posting || !eligible.length || !snapshot}
+            aria-expanded={previewing}
+            title={uiText('Preview comment positions')}
+            onClick={() => setPreviewVersion(previewing ? undefined : snapshot?.version)}
           >
             {posted ? <Check size="0.875rem" /> : <GitPullRequestArrow size="0.875rem" />}
-            <ButtonLabel text={post.armed ? 'Add all?' : posted && exportLabel(posted)} />
+            <ButtonLabel text={posted && exportLabel(posted)} />
           </Button>
         )}
         <Button
@@ -138,6 +140,19 @@ export function CommentPanel() {
           <ButtonLabel text={clear.armed && 'Delete all?'} />
         </Button>
       </div>
+      {previewing && snapshot && (
+        <section className="border-b border-border p-2.5 text-xs">
+          <GithubAnchorList threads={eligible} revision={snapshot.newSha} />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button variant="primary" disabled={posting || !eligible.length} onClick={() => saveToGithub(eligible)}>
+              {uiText('Save comments to GitHub')}
+            </Button>
+            <Button disabled={posting} onClick={() => setPreviewVersion(undefined)}>
+              {uiText('Cancel')}
+            </Button>
+          </div>
+        </section>
+      )}
       <DiscussionSearch />
       {staleCount > 0 && (
         <div

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, GitPullRequest, RefreshCw, X } from "lucide-react";
 import { useApi, type ReviewApi } from "../vendor/diffle/src/client/api";
 import { useStore, useReviewStore } from "../vendor/diffle/src/client/store";
+import { GithubAnchorList } from "../vendor/diffle/src/client/comments/GithubAnchorList";
 import type { GithubExportResponse } from "../vendor/diffle/src/shared/protocol";
 
 type Context = {
@@ -59,6 +60,7 @@ export function GithubPanel({
   const [error, setError] = useState("");
   const [pull, setPull] = useState<Pull>();
   const [selector, setSelector] = useState("");
+  const [preview, setPreview] = useState(false);
   const [exported, setExported] = useState<GithubExportResponse>();
   const live = useRef(true);
   const pending = useRef(false);
@@ -68,12 +70,12 @@ export function GithubPanel({
   const metadata = github.data;
   const pr = metadata?.pullRequest;
   const { eligible, stale } = useMemo(() => {
-    let eligible = 0;
+    const eligible = [];
     let stale = 0;
     for (const thread of threads) {
       if (thread.resolved) continue;
       if (thread.stale) stale++;
-      else eligible++;
+      else eligible.push(thread);
     }
     return { eligible, stale };
   }, [threads]);
@@ -107,6 +109,7 @@ export function GithubPanel({
     setContext(undefined);
     setPull(undefined);
     setExported(undefined);
+    setPreview(false);
     void refresh();
   }, [authGeneration]);
   useEffect(() => {
@@ -122,6 +125,7 @@ export function GithubPanel({
     if (previousSnapshot.current !== snapshot) {
       previousSnapshot.current = snapshot;
       setExported(undefined);
+      setPreview(false);
     }
   }, [snapshot]);
   async function act(action: string, work: () => Promise<void>) {
@@ -228,9 +232,9 @@ export function GithubPanel({
       <section>
         <h3>{uiText("Transfer comments")}</h3>
         <p>
-          {eligible}
+          {eligible.length}
           {uiText(" open ")}
-          {eligible === 1 ? uiText("thread") : uiText("threads")}
+          {eligible.length === 1 ? uiText("thread") : uiText("threads")}
           {uiText(" ready")}
           {stale > 0
             ? uiText(" · {value0} stale skipped", { value0: String(stale) })
@@ -247,22 +251,48 @@ export function GithubPanel({
             {reason || uiText("Open the PR comparison to transfer comments.")}
           </p>
         )}
-        <button
-          className="primary"
-          disabled={!!busy || !canExport || !eligible}
-          onClick={() =>
-            void act("export", async () => {
-              const target = useStore.getState().snapshot;
-              const result = await api.exportToGithub({});
-              if (live.current && useStore.getState().snapshot === target)
-                setExported(result);
-            })
-          }
-        >
-          {busy === "export"
-            ? uiText("Saving comments…")
-            : uiText("Save comments to GitHub")}
-        </button>
+        {preview && snapshot ? (
+          <>
+            <GithubAnchorList threads={eligible} revision={snapshot.newSha} />
+            <div className="actions">
+              <button
+                className="primary"
+                disabled={!!busy || !canExport || !eligible.length}
+                onClick={() =>
+                  void act("export", async () => {
+                    if (useStore.getState().snapshot !== snapshot) return;
+                    const result = await api.exportToGithub({
+                      threadIds: eligible.map((thread) => thread.id),
+                      snapshotVersion: snapshot.version,
+                    });
+                    if (
+                      live.current &&
+                      useStore.getState().snapshot === snapshot
+                    ) {
+                      setExported(result);
+                      setPreview(false);
+                    }
+                  })
+                }
+              >
+                {busy === "export"
+                  ? uiText("Saving comments…")
+                  : uiText("Save comments to GitHub")}
+              </button>
+              <button disabled={!!busy} onClick={() => setPreview(false)}>
+                {uiText("Cancel")}
+              </button>
+            </div>
+          </>
+        ) : (
+          <button
+            className="primary"
+            disabled={!!busy || !canExport || !eligible.length || !snapshot}
+            onClick={() => setPreview(true)}
+          >
+            {uiText("Preview comment positions")}
+          </button>
+        )}
         {exported && (
           <div role="status" className="github-result">
             <p>

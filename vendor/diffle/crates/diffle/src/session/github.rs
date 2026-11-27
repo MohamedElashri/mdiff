@@ -65,12 +65,16 @@ impl Session {
 
     /// Adds threads to a pending review on the matching pull request, with fresh pull request data
     /// validated against the current comparison inside the export queue. The human submits it.
-    pub async fn export_github(self: &Arc<Self>, thread_ids: Option<Vec<String>>) -> Result<GithubExportResponse> {
+    pub async fn export_github(
+        self: &Arc<Self>,
+        thread_ids: Option<Vec<String>>,
+        snapshot_version: Option<i64>,
+    ) -> Result<GithubExportResponse> {
         self.exporter
             .export(|| async {
                 let a = self.active()?;
                 let snap = a.snapshotter.current().await?;
-                if !self.is_active(&a) {
+                if !self.is_active(&a) || snapshot_version.is_some_and(|version| version != snap.version) {
                     return Err(changed().into());
                 }
                 let Some(client) = self.github.client.clone() else {
@@ -88,6 +92,9 @@ impl Session {
                     return Err(changed().into());
                 }
                 let threads = a.comments.threads(&ThreadQuery { state: Some(ThreadState::All), path: None }).await?;
+                if !self.is_active(&a) || !Arc::ptr_eq(&snap, &a.snapshotter.current().await?) {
+                    return Err(changed().into());
+                }
                 Ok(ExportInput { new_sha: snap.new_sha.clone(), pull_request, threads, thread_ids, github: client })
             })
             .await

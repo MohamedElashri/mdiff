@@ -1,3 +1,4 @@
+import { uiText } from '@/client/i18n/runtime.js';
 import type { ChangedFile, ViewedState } from '@/shared/protocol.js';
 
 // The decoration lane holds one span of colored text parts: the viewed mark as a glyph, then the
@@ -21,16 +22,23 @@ const MARK: Record<ViewedState, { glyph: string; color: string; title: string }>
   },
 };
 
-export function rowDecoration(f: ChangedFile, state: ViewedState) {
+export function rowDecoration(f: ChangedFile, state: ViewedState, progress?: { reviewed: number; total: number }) {
   const mark = MARK[state];
   const parts: { text: string; color?: string }[] = [{ text: mark.glyph, color: mark.color }];
   if (f.additions > 0) parts.push({ text: `+${f.additions}`, color: 'var(--add)' });
   if (f.deletions > 0) parts.push({ text: `−${f.deletions}`, color: 'var(--del)' });
+  if (progress) parts.push({ text: `${progress.reviewed}/${progress.total}`, color: 'var(--fg-2)' });
+  const reviewed = progress
+    ? uiText('{reviewed} of {total} hunks reviewed', {
+        reviewed: String(progress.reviewed),
+        total: String(progress.total),
+      })
+    : null;
   const counts = f.binary ? 'binary' : `+${f.additions} −${f.deletions}`;
   return {
     text: parts.map((p) => p.text).join(' '),
     parts,
-    title: `${counts} · ${mark.title}`,
+    title: [counts, reviewed, mark.title].filter(Boolean).join(' · '),
   };
 }
 

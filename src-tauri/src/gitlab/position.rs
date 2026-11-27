@@ -7,8 +7,11 @@ struct Line {
     new: Option<u64>,
 }
 fn range_at(patch: &str, side: &str, first: u64, last: u64) -> Option<(Line, Line)> {
+    if first == 0 || first > last || !matches!(side, "old" | "new") {
+        return None;
+    }
     let (mut old, mut new) = (0, 0);
-    let (mut start, mut end) = (None, None);
+    let mut start = None;
     let mut hunk = false;
     for line in patch.lines() {
         if line.starts_with("@@ ") {
@@ -27,6 +30,7 @@ fn range_at(patch: &str, side: &str, first: u64, last: u64) -> Option<(Line, Lin
                 .next()?
                 .parse()
                 .ok()?;
+            start = None;
             hunk = true;
             continue;
         }
@@ -65,17 +69,14 @@ fn range_at(patch: &str, side: &str, first: u64, last: u64) -> Option<(Line, Lin
         if line == Some(first) {
             start.get_or_insert(pos);
         }
-        if line == Some(last) {
-            end.get_or_insert(pos);
-        }
-        if let (Some(start), Some(end)) = (start, end) {
-            return Some((start, end));
+        if let Some(start) = start.filter(|_| line == Some(last)) {
+            return Some((start, pos));
         }
     }
     None
 }
-fn range_line(line: Line, path_hash: &str) -> Value {
-    let mut value = json!({"line_code":format!("{path_hash}_{}_{}",line.old.unwrap_or(0),line.new.unwrap_or(0)),"type":if line.old.is_none(){"new"}else{"old"}});
+fn range_line(line: Line, path_hash: &str, side: &str) -> Value {
+    let mut value = json!({"line_code":format!("{path_hash}_{}_{}",line.old.unwrap_or(0),line.new.unwrap_or(0)),"type":side});
     if let Some(n) = line.old {
         value["old_line"] = n.into();
     }
@@ -109,14 +110,19 @@ pub fn position(anchor: &Value, file: &Value, refs: &Value, patch: &str) -> Opti
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        pos["line_range"] =
-            json!({"start":range_line(start,&path_hash),"end":range_line(end,&path_hash)});
+        pos["line_range"] = json!({"start":range_line(start,&path_hash,side),"end":range_line(end,&path_hash,side)});
     }
     Some(pos)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn range_cannot_cross_hunks() {
+        let patch = "@@ -1 +1,2 @@\n same\n+first\n@@ -5 +6,2 @@\n other\n+second\n";
+        assert!(range_at(patch, "new", 2, 7).is_none());
+        assert!(range_at(patch, "new", 6, 7).is_some());
+    }
     #[test]
     fn renamed_added_deleted_context_and_range() {
         let file = json!({"path":"new.rs","oldPath":"old.rs"});

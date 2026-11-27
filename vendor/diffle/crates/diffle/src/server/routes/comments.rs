@@ -155,13 +155,14 @@ async fn clear(State(d): State<Arc<ApiDeps>>, RawQuery(raw): RawQuery) -> ApiRes
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GithubExportRequest {
+    snapshot_version: Option<i64>,
     thread_ids: Option<Vec<String>>,
 }
 
 /// Adds threads to a pending review on the matching pull request; the human submits it on GitHub.
 async fn github_export(State(d): State<Arc<ApiDeps>>, raw: Bytes) -> ApiResult {
     let req: GithubExportRequest = body(&raw)?;
-    Ok(Json(d.session.export_github(req.thread_ids).await?).into_response())
+    Ok(Json(d.session.export_github(req.thread_ids, req.snapshot_version).await?).into_response())
 }
 
 async fn viewed(State(d): State<Arc<ApiDeps>>) -> ApiResult {

@@ -5,10 +5,11 @@ import { SegmentedControl, ToggleButton } from '@/client/ui/ToggleButton.js';
 import { Button } from '@/client/ui/Button.js';
 import type { GitStatusEntry } from '@pierre/trees';
 import { FileTree, useFileTree, useFileTreeSearch } from '@pierre/trees/react';
-import { EyeOff } from 'lucide-react';
+import { ArrowDownToLine, EyeOff } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { focusReview } from '@/client/keyboard/useKeymap.js';
 import { changedFile, isCollapsed, isViewed } from '@/client/model.js';
+import { hunkMark } from '@/client/review/hunks.js';
 import { remPx } from '@/client/scale.js';
 
 import { ButtonLabel } from '@/client/ui/ButtonLabel.js';
@@ -32,6 +33,19 @@ export function FileTreePane() {
   const [scope, setScope] = useState<Scope>('changed');
   const setViewedMany = useStore((s) => s.setViewedMany);
   const viewed = useStore((s) => s.viewed);
+  const progress = useStore((s) => s.hunkProgress);
+  const nextUnreviewed = useStore((s) => s.nextUnreviewedHunk);
+  const fullFile = useStore((s) => s.fileView != null);
+  const hunkMarks = useMemo(() => {
+    const marks = new Map<string, { reviewed: number; total: number }>();
+    if (snapshot && progress.length) {
+      for (const file of snapshot.changed) {
+        const mark = hunkMark(progress, snapshot, file);
+        if (mark) marks.set(file.path, { reviewed: mark.reviewed.length, total: mark.total });
+      }
+    }
+    return marks;
+  }, [snapshot, progress]);
   const config = useStore((s) => s.config);
   const changed = snapshot?.changed;
   const decorations = useMemo(() => treeDecorations({ viewed, config }, changed ?? []), [changed, viewed, config]);
@@ -50,8 +64,8 @@ export function FileTreePane() {
 
   const openRef = useRef(openFile);
   openRef.current = openFile;
-  const decorationRef = useRef({ snapshot, decorations });
-  decorationRef.current = { snapshot, decorations };
+  const decorationRef = useRef({ snapshot, decorations, hunkMarks });
+  decorationRef.current = { snapshot, decorations, hunkMarks };
 
   const { model } = useFileTree({
     paths,
@@ -74,14 +88,14 @@ export function FileTreePane() {
     // Counts and viewed mark in the lane; the model retains this callback from construction.
     // Clicks are handled below, since decorations are plain text.
     renderRowDecoration: ({ item }) => {
-      const { snapshot, decorations } = decorationRef.current;
+      const { snapshot, decorations, hunkMarks } = decorationRef.current;
       if (item.kind === 'directory') {
         const counts = decorations.directories.get(item.path);
         return counts ? directoryDecoration(counts.viewed, counts.total) : null;
       }
       const file = changedFile(snapshot, item.path);
       const mark = decorations.files.get(item.path);
-      return file && mark ? rowDecoration(file, mark) : null;
+      return file && mark ? rowDecoration(file, mark, hunkMarks.get(item.path)) : null;
     },
   });
 
@@ -216,9 +230,9 @@ export function FileTreePane() {
     () => ({
       paths: pathSignature,
       status: statusSignature,
-      decoration: decorations.key,
+      decoration: decorations.key + JSON.stringify([...hunkMarks]),
     }),
-    [pathSignature, statusSignature, decorations.key],
+    [pathSignature, statusSignature, decorations.key, hunkMarks],
   );
   const synced = useRef<SyncKeys | null>(null);
   const syncedScope = useRef(scope);
@@ -278,6 +292,18 @@ export function FileTreePane() {
         {/* The count goes first when the bar is too narrow for every control: the buttons stay reachable. */}
         <div className="ml-auto flex items-center gap-2">
           <span className="@max-[15rem]:hidden">{paths.length}</span>
+          <Button
+            variant="ghost"
+            icon
+            disabled={fullFile || !changed?.length}
+            title={uiText('Next unreviewed hunk')}
+            onClick={() => {
+              focusReview(root);
+              void nextUnreviewed();
+            }}
+          >
+            <ArrowDownToLine size="0.875rem" />
+          </Button>
           <Button
             variant="ghost"
             danger={unview.armed}

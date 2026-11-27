@@ -763,7 +763,8 @@ impl View {
                     "viewport",
                     "snapshotKey",
                     "versions",
-                    "fileView"
+                    "fileView",
+                    "hunkProgress"
                 ]
                 .contains(&k.as_str())),
                 "Invalid navigation state"

@@ -196,10 +196,21 @@ pub async fn gitlab_action(
                 let (discussions, drafts) = tokio::try_join!(gitlab.list("/discussions"), async {
                     if gitlab.token.is_some() { gitlab.list("/draft_notes").await } else { Ok(vec![]) }
                 })?;
+                let drafts: Vec<_> = drafts.into_iter().filter(|draft| gitlab.owns_draft(draft)).map(|mut draft| {
+                    draft["publishable"] = gitlab.publishable_draft(&draft).into();
+                    draft
+                }).collect();
                 Ok(json!({"mergeRequest":gitlab.metadata,"discussions":discussions,"drafts":drafts}))
             },
-            "export" => { let _guard=gitlab.writes.lock().await; gitlab.export(router).await },
-            "publish" => { let _guard=gitlab.writes.lock().await; gitlab.publish().await },
+            "preview_export" => gitlab.preview_export(router).await,
+            "export" => {
+                let _guard = gitlab.writes.lock().await;
+                gitlab.export(router, payload.context("Missing draft preview")?).await
+            },
+            "publish" => {
+                let _guard = gitlab.writes.lock().await;
+                gitlab.publish(payload.context("Missing confirmed drafts")?).await
+            },
             "reply" => {
                 let p=payload.context("Missing reply")?;
                 let discussion=p["discussion"].as_str().context("Missing discussion")?;
@@ -275,14 +286,17 @@ mod integration_tests {
         let (next, value) = if uri.contains("draft_notes") {
             (
                 "",
-                json!([{"id":1,"note":"<!-- mdiff:abc:owned -->"},{"id":2,"note":"My unrelated draft"},{"id":3,"note":"<!-- mdiff:older:owned -->"}]),
+                json!([{"id":1,"note":"<!-- mdiff:abc:owned -->","position":{"head_sha":"abc","base_sha":"base","start_sha":"start","position_type":"text","new_path":"file.rs","new_line":2}},{"id":2,"note":"My unrelated draft"},{"id":3,"note":"<!-- mdiff:older:owned -->"}]),
             )
         } else if uri.contains("discussions") && uri.contains("page=2") {
             ("", json!([{"id":"second","notes":[]}]))
         } else if uri.contains("discussions") {
             ("2", json!([{"id":"first","notes":[]}]))
         } else {
-            ("", json!({"diff_refs":{"head_sha":"abc"}}))
+            (
+                "",
+                json!({"diff_refs":{"head_sha":"abc","base_sha":"base","start_sha":"start"}}),
+            )
         };
         ([("x-next-page", next)], axum::Json(value)).into_response()
     }
@@ -304,19 +318,20 @@ mod integration_tests {
             origin,
             project: "group/sub/project".into(),
             iid: 17,
-            metadata: json!({"diff_refs":{"head_sha":"abc"}}),
+            metadata: json!({"diff_refs":{"head_sha":"abc","base_sha":"base","start_sha":"start"}}),
             token: Some("test-token".into()),
             client: Client::new(),
             writes: tokio::sync::Mutex::new(()),
         };
         let patch_reads = Arc::new(AtomicUsize::new(0));
         let router=Router::new()
-            .route("/api/snapshot",get(||async {axum::Json(json!({"newSha":"abc","changed":[{"path":"file.rs"},{"path":"other.rs"}]}))}))
+            .route("/api/snapshot",get(||async {axum::Json(json!({"newSha":"abc","oldSha":"base","version":1,"changed":[{"path":"file.rs"},{"path":"other.rs"}]}))}))
             .route("/api/threads",get(||async {axum::Json(json!([
                 {"id":"owned","anchor":{"kind":"line","path":"file.rs","side":"new","startLine":2,"endLine":2,"quoted":"new"},"messages":[{"body":"Please handle empty input."}],"stale":false},
                 {"id":"another","anchor":{"kind":"line","path":"file.rs","side":"new","startLine":3,"endLine":3},"messages":[{"body":"This is also new."}],"stale":false},
                 {"id":"file-note","anchor":{"kind":"file","path":"other.rs"},"messages":[{"body":"Comment on the whole file."}],"stale":false},
-                {"id":"stale","stale":true}
+                {"id":"stale","stale":true},
+                {"id":"unmapped","anchor":{"kind":"line","path":"file.rs","side":"new","startLine":50,"endLine":50},"messages":[{"body":"Keep this draft locally."}],"stale":false}
             ]))}))
             .route("/api/patch",get({
                 let patch_reads = patch_reads.clone();
@@ -325,10 +340,16 @@ mod integration_tests {
                     "@@ -1 +1,3 @@\n same\n+new\n+also new\n"
                 }
             }));
-        let result = gitlab.export(router.clone()).await.unwrap();
+        let preview = gitlab.preview_export(router.clone()).await.unwrap();
+        assert_eq!(preview["drafts"][0]["position"]["new_line"], 2);
+        assert_eq!(preview["skipped"][1]["id"], "unmapped");
+        let result = gitlab
+            .export(router.clone(), preview.clone())
+            .await
+            .unwrap();
         assert_eq!(result["exported"], 3);
-        assert_eq!(result["skipped"], 1);
-        assert_eq!(patch_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(result["skipped"], 2);
+        assert_eq!(patch_reads.load(Ordering::Relaxed), 2);
         {
             let calls = state.calls.lock().unwrap();
             let writes: Vec<_> = calls
@@ -347,7 +368,7 @@ mod integration_tests {
         }
         gitlab.metadata["diff_refs"]["head_sha"] = "outdated".into();
         assert!(gitlab
-            .export(router)
+            .export(router, preview)
             .await
             .unwrap_err()
             .to_string()
@@ -365,13 +386,22 @@ mod integration_tests {
             origin,
             project: "group/sub/project".into(),
             iid: 17,
-            metadata: json!({"diff_refs":{"head_sha":"abc"}}),
+            metadata: json!({"diff_refs":{"head_sha":"abc","base_sha":"base","start_sha":"start"}}),
             token: Some("test-token".into()),
             client: Client::new(),
             writes: tokio::sync::Mutex::new(()),
         };
         assert_eq!(gitlab.list("/discussions").await.unwrap().len(), 2);
-        assert_eq!(gitlab.publish().await.unwrap()["published"], 1);
+        let mut draft = gitlab.list("/draft_notes").await.unwrap().remove(0);
+        assert!(gitlab
+            .publish(json!([{"id":1,"position":null}]))
+            .await
+            .is_err());
+        draft.as_object_mut().unwrap().remove("note");
+        assert_eq!(
+            gitlab.publish(json!([draft])).await.unwrap()["published"],
+            1
+        );
         let calls = state.calls.lock().unwrap();
         assert!(calls.iter().all(|(_, uri, _)| uri
             .starts_with("/api/v4/projects/group%2Fsub%2Fproject/merge_requests/17")));

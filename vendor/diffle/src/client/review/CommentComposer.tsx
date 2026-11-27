@@ -5,7 +5,7 @@ import { Button } from '@/client/ui/Button.js';
 import { CopyIcon } from '@/client/ui/CopyIcon.js';
 import { FileDiff, Link, MessageSquare } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useCopied } from '@/client/clipboard.js';
+import { copyText, useCopied } from '@/client/clipboard.js';
 import { composerKey } from '@/client/model.js';
 import { useStore } from '@/client/store.js';
 import { draftPermalink } from './permalink.js';
@@ -16,6 +16,7 @@ import { draftPermalink } from './permalink.js';
  */
 export function CommentComposer({ label }: { label: string }) {
   const submitDraft = useStore((s) => s.submitDraft);
+  const flash = useStore((s) => s.flash);
   const closeDraft = useStore((s) => s.closeDraft);
   const draftQuote = useStore((s) => s.draftQuote);
   // Each open request makes a new draft; the viewer may keep this composer mounted across them.
@@ -55,7 +56,7 @@ export function CommentComposer({ label }: { label: string }) {
   }, [draft]);
 
   const submit = async () => {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || draft?.staleHunk) return;
     setBusy(true);
     try {
       await submitDraft(text);
@@ -77,9 +78,14 @@ export function CommentComposer({ label }: { label: string }) {
       <div className="flex items-center gap-2 border-b border-b-border bg-hover px-2.5 py-1 text-[0.75rem] text-muted [&>svg]:flex-none [&>svg]:text-accent">
         <MessageSquare size="0.8125rem" />
         <span className="font-mono font-semibold text-foreground">{label}</span>
-        <CopyLinkButton />
+        {!draft?.staleHunk && <CopyLinkButton />}
       </div>
       <div className="p-2">
+        {draft?.staleHunk && (
+          <p className="mb-2 text-warn" role="status">
+            {uiText('The hunk changed. Copy this draft and choose a new anchor.')}
+          </p>
+        )}
         <textarea
           className="max-h-[60vh] min-h-17.5 w-full resize-y rounded-sm border border-border bg-canvas p-1.5 font-mono text-[0.75rem] leading-[1.5]"
           ref={ref}
@@ -98,7 +104,18 @@ export function CommentComposer({ label }: { label: string }) {
             <kbd>Esc</kbd>
             {uiText(' to cancel')}
           </span>
-          {!fileLevel && (
+          {draft?.staleHunk && (
+            <Button
+              disabled={!text.trim()}
+              onClick={async () => {
+                if (await copyText(text)) flash(uiText('Draft copied'));
+                else ref.current?.select();
+              }}
+            >
+              {uiText('Copy draft text')}
+            </Button>
+          )}
+          {!fileLevel && !draft?.staleHunk && (
             <Button
               variant="ghost"
               onClick={() => void suggest()}
@@ -109,7 +126,7 @@ export function CommentComposer({ label }: { label: string }) {
             </Button>
           )}
           <Button onClick={closeDraft}>{uiText('Cancel')}</Button>
-          <Button variant="primary" onClick={() => void submit()} disabled={!text.trim() || busy}>
+          <Button variant="primary" onClick={() => void submit()} disabled={!text.trim() || busy || draft?.staleHunk}>
             {uiText('Comment')}
           </Button>
         </div>
