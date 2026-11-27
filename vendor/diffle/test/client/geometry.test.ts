@@ -8,7 +8,7 @@ describe('review geometry', () => {
     { rem: 18, lineHeight: 23, spacing: 9, diffHeaderHeight: 50, hunkSeparatorHeight: 36 },
   ])('shares row, header and separator sizes with CSS at $rem px/rem', ({ rem, ...metrics }) => {
     const { itemMetrics, css } = reviewGeometry(rem);
-    expect(itemMetrics).toEqual(metrics);
+    expect(itemMetrics).toEqual({ ...metrics, hunkLineCount: 12 });
     expect(css).toContain(`--diffs-line-height: ${metrics.lineHeight}px;`);
     expect(css).toContain(`--diffs-gap-block: ${metrics.spacing}px;`);
     expect(css).toContain(`--diffs-gap-inline: ${metrics.spacing}px;`);

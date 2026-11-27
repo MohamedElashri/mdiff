@@ -2,8 +2,7 @@ import type { CodeViewHandle } from '@pierre/diffs/react';
 import { watchRenderedRows } from './rows.js';
 
 /**
- * Visible spaces and tabs, like refined-github's: each run of spaces and each tab in a rendered
- * row is wrapped in a `data-ws` span that the viewer's injected CSS (`WHITESPACE_CSS`) paints.
+ * Visible indentation, trailing spaces, runs of spaces, and tabs in rendered code.
  * The spans keep the original characters, so layout, selection, copying, and the text-node
  * walkers (search, occurrences, word navigation) see the same text as before.
  */
@@ -24,30 +23,48 @@ export const WHITESPACE_CSS = `
 }
 `;
 
-const RUN = /( +|\t)/;
+const RUN = / +|\t/g;
 
 /** Longer lines stay unmarked, as the viewer leaves them unhighlighted (its `tokenizeMaxLineLength` default). */
 export const MAX_MARKED_LINE = 1000;
 
-/** Wrap the whitespace in `row`'s text that is not wrapped yet. */
+/** Mark whitespace that can be difficult to distinguish in a diff. */
 export function markWhitespace(row: Element): void {
-  if ((row.textContent?.length ?? 0) > MAX_MARKED_LINE) return;
+  const line = row.textContent ?? '';
+  // Interior single spaces are already visible as gaps. Avoid creating and painting a span
+  // for each of them, which can dominate the cost of redrawing highlighted rows in WebKit.
+  if (line.length > MAX_MARKED_LINE || !/^[ \t]|[ \t]$| {2,}|\t/.test(line)) return;
+
+  const indentation = line.match(/^[ \t]*/)?.[0].length ?? 0;
+  const trailing = line.length - (line.match(/[ \t]*$/)?.[0].length ?? 0);
   const walker = row.ownerDocument.createTreeWalker(row, NodeFilter.SHOW_TEXT);
-  const pending: Text[] = [];
-  for (let n = walker.nextNode() as Text | null; n; n = walker.nextNode() as Text | null)
-    if (!n.parentElement?.hasAttribute(WHITESPACE_ATTR) && RUN.test(n.data)) pending.push(n);
-  for (const text of pending) {
-    const parts = text.data.split(RUN).filter(Boolean);
-    text.replaceWith(
-      ...parts.map((part) => {
-        if (!RUN.test(part)) return part;
-        const span = row.ownerDocument.createElement('span');
-        span.setAttribute(WHITESPACE_ATTR, part === '\t' ? 'tab' : 'space');
-        span.textContent = part;
-        return span;
-      }),
-    );
+  const pending: { text: Text; parts: (Node | string)[] }[] = [];
+  let offset = 0;
+  for (let text = walker.nextNode() as Text | null; text; text = walker.nextNode() as Text | null) {
+    const start = offset;
+    offset += text.length;
+    if (text.parentElement?.hasAttribute(WHITESPACE_ATTR)) continue;
+
+    const parts: (Node | string)[] = [];
+    let end = 0;
+    for (const { 0: value, index } of text.data.matchAll(RUN)) {
+      const column = start + index;
+      const tab = value === '\t';
+      // Adjacent spaces can fall in different syntax or word-diff spans.
+      const isolated = value.length === 1 && line[column - 1] !== ' ' && line[column + 1] !== ' ';
+      if (!tab && isolated && column >= indentation && column < trailing) continue;
+      if (index > end) parts.push(text.data.slice(end, index));
+      const mark = row.ownerDocument.createElement('span');
+      mark.setAttribute(WHITESPACE_ATTR, tab ? 'tab' : 'space');
+      mark.textContent = value;
+      parts.push(mark);
+      end = index + value.length;
+    }
+    if (!parts.length) continue;
+    if (end < text.length) parts.push(text.data.slice(end));
+    pending.push({ text, parts });
   }
+  for (const { text, parts } of pending) text.replaceWith(...parts);
 }
 
 /** The rows a mutation touched or added, including those in an item's shadow root as it mounts. */
@@ -68,8 +85,7 @@ export function installWhitespaceMarks(
   viewer: () => CodeViewHandle<unknown, undefined> | null,
   scroller: HTMLElement,
 ): () => void {
-  // Rows already marked, so a scroll frame walks no text. Marking also runs straight from the mutation
-  // callback, before paint: the frame pass alone could leave a row the viewer rendered inside a frame bare for one frame.
+  // The frame pass discovers newly mounted roots. The observer marks changes inside known roots before paint.
   const marked = new WeakSet<Element>();
   const mark = (row: Element) => {
     markWhitespace(row);
@@ -84,7 +100,15 @@ export function installWhitespaceMarks(
         for (const row of root.querySelectorAll('[data-line]')) if (!marked.has(row)) mark(row);
     },
     (records) => {
-      for (const r of records) for (const row of touchedRows(r)) mark(row);
+      const rows = new Set<Element>();
+      for (const record of records) {
+        // Each replacement inserts a whitespace span. Ignore our own writes and process a
+        // row once even if the highlighter replaced several of its tokens.
+        if ([...record.addedNodes].some((node) => node instanceof Element && node.hasAttribute(WHITESPACE_ATTR)))
+          continue;
+        for (const row of touchedRows(record)) rows.add(row);
+      }
+      for (const row of rows) if (row.isConnected) mark(row);
     },
   );
 }
