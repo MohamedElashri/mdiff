@@ -82,6 +82,8 @@ import { CommentComposer } from './CommentComposer.js';
 import { PlaceholderBanner, type PlaceholderKind } from './PlaceholderBanner.js';
 import { hostOf } from './host.js';
 import { ImageDiff } from './ImageDiff.js';
+import { HunkReviewBar } from './HunkReviewBar.js';
+import { hunkMark } from './hunks.js';
 
 export type Annot =
   | { kind: 'placeholder'; placeholder: PlaceholderKind; message: string }
@@ -842,6 +844,11 @@ export function ReviewPane() {
       const viewer = viewerRef.current;
       const instance = viewer?.getInstance();
       if (!viewer || !instance || !viewer.getItem(scrollTarget.id)) return false;
+      if (scrollTarget.prepareFile && !instance.getRenderedItems().some((item) => item.id === scrollTarget.id)) {
+        // The first estimate for an offscreen wrapped file can put a line jump in the previous file.
+        viewer.scrollTo({ type: 'item', id: scrollTarget.id, align: 'start', behavior: 'instant' });
+        instance.render(true);
+      }
       viewer.scrollTo(target);
       instance.render(true);
       if (!exact) {
@@ -853,7 +860,7 @@ export function ReviewPane() {
         return true;
       }
       settle();
-      return true;
+      return !scrollTarget.prepareFile || renderedRow(scrollTarget) != null;
     };
     let cancelled = false;
     // Content that resizes after the landing (an image, a comment card, a row the viewer only
@@ -1082,9 +1089,13 @@ export function ReviewPane() {
         <div className="p-10 text-center text-muted">{uiText('Loading snapshot…')}</div>
       </main>
     );
+  const staleDraft = draft?.staleHunk && draft.hunk && (
+    <CommentComposer label={`${draft.path} · ${rangeLabel(draft.hunk)}`} />
+  );
   if (snapshot.changed.length === 0 && !fileView) {
     return (
       <main className="relative flex min-h-0 min-w-0 flex-col outline-none">
+        {staleDraft}
         <div className="p-10 text-center text-muted">
           {uiText('No changes for ')}
           <code>{comparisonLabel(snapshot.review)}</code>
@@ -1108,6 +1119,7 @@ export function ReviewPane() {
           </button>
         </div>
       )}
+      {staleDraft}
       <SearchBar />
       <SymbolPicker />
       <SymbolMenu />
@@ -1193,7 +1205,7 @@ function toItem(
         metadata: { kind: 'thread', thread: t },
       });
     }
-    if (draft?.path === path && draft.selection) {
+    if (draft?.path === path && draft.selection && !draft.staleHunk) {
       const { endLine } = lineBounds(draft.selection);
       const s = draft.selection.range.endSide ?? draft.selection.range.side ?? 'additions';
       annotations.push({ side: s, lineNumber: endLine, metadata: { kind: 'draft' } });
@@ -1247,7 +1259,7 @@ function toItem(
     if (t.anchor.kind === 'line' && t.anchor.side !== 'old')
       annotations.push({ lineNumber: t.anchor.endLine, metadata: { kind: 'thread', thread: t } });
   }
-  if (draft?.path === path && draft.selection && sideOf(draft.selection) === 'new') {
+  if (draft?.path === path && draft.selection && !draft.staleHunk && sideOf(draft.selection) === 'new') {
     annotations.push({ lineNumber: lineBounds(draft.selection).endLine, metadata: { kind: 'draft' } });
   }
   return { id, type: 'file', file: loaded.file, annotations, version, collapsed };
@@ -1288,6 +1300,32 @@ function standIn(
 function FileHeader({ id, resizeHeader }: { id: string; resizeHeader: (id: string, height: number) => void }) {
   const path = pathFromItemId(id);
   const ref = useRef<HTMLDivElement>(null);
+  const [hunksOpen, setHunksOpen] = useState(false);
+  const hunkTrigger = useRef<HTMLButtonElement>(null);
+  const hunkPanel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const trigger = hunkTrigger.current;
+    const panel = hunkPanel.current;
+    if (!hunksOpen || !trigger || !panel) return;
+    panel.querySelector('select')?.focus({ preventScroll: true });
+    const outside = (event: PointerEvent) => {
+      const path = event.composedPath();
+      if (!path.includes(trigger) && !path.includes(panel)) setHunksOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setHunksOpen(false);
+      trigger.focus({ preventScroll: true });
+    };
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', escape, true);
+    return () => {
+      document.removeEventListener('pointerdown', outside, true);
+      document.removeEventListener('keydown', escape, true);
+    };
+  }, [hunksOpen]);
   const localSearch = useStore(
     (s) => s.search.open && s.search.kind === 'text' && s.search.scope === 'file' && s.search.path === path,
   );
@@ -1307,6 +1345,14 @@ function FileHeader({ id, resizeHeader }: { id: string; resizeHeader: (id: strin
     return () => observer.disconnect();
   }, [id, resizeHeader, localSearch]);
   const file = useStore((s) => changedFile(s.snapshot, path));
+  const diff = useStore((s) => {
+    const loaded = s.loaded[path];
+    return !s.fileView && loaded?.kind === 'diff' && !loaded.refreshing ? loaded.fileDiff : null;
+  });
+  const mark = useStore((s) => (file && s.snapshot ? hunkMark(s.hunkProgress, s.snapshot, file) : undefined));
+  const commentable = useStore((s) => s.snapshot != null && commentsOff(s.snapshot.review) == null);
+  const reviewed = mark && mark.total === diff?.hunks.length ? mark.reviewed : [];
+  const hunkCount = diff?.hunks.length ?? 0;
   return (
     // `data-path` names the file for tests and scripts; the visible title splits it into styled parts.
     <div ref={ref} data-path={path}>
@@ -1328,8 +1374,34 @@ function FileHeader({ id, resizeHeader }: { id: string; resizeHeader: (id: strin
             <span className="text-add">+{file.additions}</span>
           </span>
         )}
+        {hunkCount > 0 && (
+          <Button
+            ref={hunkTrigger}
+            variant="ghost"
+            className="shrink-0 text-xs"
+            aria-expanded={hunksOpen}
+            title={uiText('{reviewed} of {total} hunks reviewed', {
+              reviewed: String(reviewed.length),
+              total: String(hunkCount),
+            })}
+            onClick={() => setHunksOpen((open) => !open)}
+          >
+            {uiText('Hunks')} {reviewed.length}/{hunkCount}
+          </Button>
+        )}
         <FileHeaderMeta path={path} />
       </div>
+      {hunksOpen && diff && hunkCount > 0 && (
+        <HunkReviewBar
+          path={path}
+          diff={diff}
+          reviewed={reviewed}
+          commentable={commentable}
+          trigger={hunkTrigger}
+          panel={hunkPanel}
+          close={() => setHunksOpen(false)}
+        />
+      )}
       <SearchBar path={path} />
     </div>
   );

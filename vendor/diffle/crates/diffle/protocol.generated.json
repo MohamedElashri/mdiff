@@ -433,6 +433,12 @@
     "GithubExportRequest": {
       "type": "object",
       "properties": {
+        "snapshotVersion": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Reject a transfer if the comparison changed after its positions were shown."
+        },
         "threadIds": {
           "type": "array",
           "items": {

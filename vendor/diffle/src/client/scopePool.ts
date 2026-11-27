@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { hunkProgressSchema, hunkVersion } from './review/hunks.js';
 import { changedFilesByPath, itemIdOf, pathFromItemId } from './model.js';
 const range = z.object({
   start: z.number().int().positive(),
@@ -30,7 +31,22 @@ const navigationSchema = z.object({
   activePath: z.string().nullable(),
   selection: selection.nullable(),
   collapsed: z.record(z.string(), z.boolean()),
-  draft: z.object({ path: z.string(), selection: selection.nullable() }).nullable(),
+  draft: z
+    .object({
+      path: z.string(),
+      selection: selection.nullable(),
+      hunk: z
+        .object({
+          version: z.string(),
+          review: z.string(),
+          side: z.enum(['old', 'new']),
+          startLine: z.number().int().positive(),
+          endLine: z.number().int().positive(),
+        })
+        .optional(),
+      staleHunk: z.literal(true).optional(),
+    })
+    .nullable(),
   paneScroll: z.number().finite().nonnegative(),
   jumps: z.array(jump).max(200),
   jumpIndex: z.number().int().nonnegative(),
@@ -38,6 +54,7 @@ const navigationSchema = z.object({
   graph,
   viewport: z.object({ x: z.number().finite(), y: z.number().finite(), k: z.number().positive().finite() }).nullable(),
   snapshotKey: z.string().optional(),
+  hunkProgress: hunkProgressSchema.default([]).catch([]),
   versions: z.record(z.string(), z.string()).default({}),
   fileView: z
     .object({ path: z.string(), from: z.object({ position: position.nullable(), activePath: z.string().nullable() }) })
@@ -90,6 +107,7 @@ export class ReviewScopePool {
       snapshotKey: s.snapshot
         ? JSON.stringify([s.snapshot.oldSha, s.snapshot.newSha, s.snapshot.commentKey])
         : undefined,
+      hunkProgress: s.hunkProgress,
       activePath: s.activePath,
       selection: s.selection,
       collapsed,
@@ -103,7 +121,7 @@ export class ReviewScopePool {
       graph: scope.graph.place(),
       viewport: scope.graph.store.getState().viewport,
     };
-    if (new TextEncoder().encode(JSON.stringify(value)).length > 64 * 1024) {
+    if (new TextEncoder().encode(JSON.stringify({ ...value, hunkProgress: [] })).length > 64 * 1024) {
       value.collapsed = {};
       value.versions = Object.fromEntries(
         [...paths]
@@ -168,16 +186,26 @@ export class ReviewScopePool {
             const selection =
               saved.selection && sameFile(pathFromItemId(saved.selection.id)) ? normalize(saved.selection) : null;
             const collapsed = Object.fromEntries(Object.entries(saved.collapsed).filter(([path]) => sameFile(path)));
+            const draft = saved.draft;
+            const hunk = draft?.hunk;
+            const file = draft && changedFilesByPath(snapshot.changed).get(draft.path);
+            const restoreDraft =
+              draft &&
+              ((hunk && hunk.review === snapshot.commentKey) ||
+                (snapshot.tree.includes(draft.path) && (!draft.selection || sameFile(draft.path))));
             scope.store.setState({
+              hunkProgress: saved.hunkProgress,
               activePath: saved.activePath && snapshot.tree.includes(saved.activePath) ? saved.activePath : null,
               selection,
               collapsed,
-              draft:
-                saved.draft &&
-                snapshot.tree.includes(saved.draft.path) &&
-                (!saved.draft.selection || sameFile(saved.draft.path))
-                  ? { ...saved.draft, selection: saved.draft.selection ? normalize(saved.draft.selection) : null }
-                  : null,
+              draft: restoreDraft
+                ? {
+                    ...draft,
+                    selection: draft.selection ? normalize(draft.selection) : null,
+                    staleHunk:
+                      draft.staleHunk || (hunk && (!file || hunk.version !== hunkVersion(snapshot, file))) || undefined,
+                  }
+                : null,
               paneScroll: same && (!saved.activePath || sameFile(saved.activePath)) ? saved.paneScroll : 0,
               jumps: same ? saved.jumps : [],
               jumpIndex: same ? saved.jumpIndex : 0,

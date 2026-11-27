@@ -522,6 +522,8 @@ export type ThreadState = z.infer<typeof ThreadStateSchema>;
 
 /** Body of `POST /api/github/export`. Without `threadIds`, every unresolved thread of the mode. */
 export const GithubExportRequestSchema = z.object({
+  /** Reject a transfer if the comparison changed after its positions were shown. */
+  snapshotVersion: z.number().int().optional(),
   threadIds: z.string().array().optional(),
 });
 export type GithubExportRequest = z.infer<typeof GithubExportRequestSchema>;

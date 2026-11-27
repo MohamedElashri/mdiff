@@ -66,9 +66,14 @@ beforeEach(() => {
     github: { status: 'ready', data: metadata },
     refreshGithub: refresh,
     enter,
-    snapshot: { version: 1 } as Snapshot,
+    snapshot: { version: 1, newSha: 'abc123' } as Snapshot,
     threads: [
-      { id: 'open', resolved: false, stale: false, anchor: { path: 'src/main.ts' } },
+      {
+        id: 'open',
+        resolved: false,
+        stale: false,
+        anchor: { kind: 'line', path: 'src/main.ts', side: 'new', startLine: 15, endLine: 17 },
+      },
       { id: 'stale', resolved: false, stale: true, anchor: { path: 'src/old.ts' } },
       { id: 'resolved', resolved: true, stale: false, anchor: { path: 'src/done.ts' } },
     ] as CommentThread[],
@@ -85,8 +90,13 @@ afterEach(async () => {
 it('transfers open threads with visible results and a GitHub submission link', async () => {
   await mount();
   expect(host.textContent).toContain('1 open thread ready · 1 stale skipped');
+  await act(() => button('Preview comment positions').click());
+  const positions = host.querySelector('[aria-label="GitHub comment positions"]');
+  expect(positions?.textContent).toContain('src/main.ts · RIGHT L15–17');
+  expect(positions?.textContent).not.toContain('src/old.ts');
+  expect(api.exportToGithub).not.toHaveBeenCalled();
   await act(() => button('Save comments to GitHub').click());
-  expect(api.exportToGithub).toHaveBeenCalledExactlyOnceWith({});
+  expect(api.exportToGithub).toHaveBeenCalledExactlyOnceWith({ threadIds: ['open'], snapshotVersion: 1 });
   expect(host.textContent).toContain('1 added · 0 updated · 1 skipped');
   expect(host.textContent).toContain('src/old.ts: stale');
   expect(host.querySelector('a[href="https://github.com/user/project/pull/7"]')).not.toBeNull();
@@ -96,6 +106,7 @@ it('transfers open threads with visible results and a GitHub submission link', a
 it('keeps errors visible and does not claim that a failed export succeeded', async () => {
   vi.mocked(api.exportToGithub).mockRejectedValue(new Error('The PR head changed'));
   await mount();
+  await act(() => button('Preview comment positions').click());
   await act(() => button('Save comments to GitHub').click());
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('The PR head changed');
   expect(host.querySelector('[role="status"]')).toBeNull();
@@ -107,7 +118,7 @@ it('disables comment transfer for an incompatible comparison', async () => {
     github: { status: 'ready', data: { ...metadata, reason: 'GitHub cannot anchor comments to the worktree' } },
   });
   await mount();
-  expect(button('Save comments to GitHub').disabled).toBe(true);
+  expect(button('Preview comment positions').disabled).toBe(true);
   expect(host.textContent).toContain('GitHub cannot anchor comments to the worktree');
   expect(api.exportToGithub).not.toHaveBeenCalled();
 });
@@ -164,8 +175,9 @@ it('ignores an export result after the comparison changes', async () => {
       }),
   );
   await mount();
+  await act(() => button('Preview comment positions').click());
   await act(() => button('Save comments to GitHub').click());
-  await act(() => useStore.setState({ snapshot: { version: 2 } as Snapshot }));
+  await act(() => useStore.setState({ snapshot: { version: 2, newSha: 'def456' } as Snapshot }));
   await act(() => resolve(result));
   expect(host.querySelector('[role="status"]')).toBeNull();
 });

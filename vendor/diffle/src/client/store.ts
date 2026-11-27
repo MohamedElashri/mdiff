@@ -36,6 +36,15 @@ import { hoverOnly, joinedBy, lspBlocker } from '@/shared/lsp.js';
 import { api as defaultApi, type ReviewApi } from './api.js';
 import { anchorFromRange, sideOf } from './comments/anchor.js';
 import {
+  hunkIndexAt,
+  hunkMark,
+  hunkProgressSchema,
+  hunkRange,
+  hunkVersion,
+  markHunk,
+  type HunkProgress,
+} from './review/hunks.js';
+import {
   buildNav,
   cursorFromSelection,
   selectionFor,
@@ -80,9 +89,10 @@ import {
 } from './model.js';
 import { applyTheme, readTheme, storeTheme, type ThemeChoice } from './theme.js';
 import type { ViewId } from './views/state.js';
+import { uiText } from './i18n/runtime.js';
 
 export type Loaded =
-  | { kind: 'diff'; fileDiff: FileDiffMetadata }
+  | { kind: 'diff'; fileDiff: FileDiffMetadata; refreshing?: true }
   | { kind: 'file'; file: FileContents }
   | { kind: 'binary' }
   /** A diff too large to load unasked (see OVERSIZED_LINES); `loadPatch` fetches it. */
@@ -95,6 +105,8 @@ export type Loaded =
 export interface Draft {
   path: string;
   selection: CodeViewLineSelection | null;
+  hunk?: { version: string; review: string; side: Side; startLine: number; endLine: number };
+  staleHunk?: true;
 }
 
 export type DiffStyle = 'split' | 'unified';
@@ -459,6 +471,10 @@ export interface ReviewState {
   /** `{n}gg` / `{n}G`: put the cursor on new-side line `line` of the current file, expanding context if needed. */
   goToLine(line: number): Promise<void>;
   moveHunk(delta: 1 | -1): void;
+  hunkProgress: HunkProgress;
+  toggleHunkReviewed(path: string, index: number): void;
+  goToHunk(path: string, index: number, comment?: boolean): void;
+  nextUnreviewedHunk(): Promise<void>;
   toggleVisual(): void;
   /** Edit the newest message of the thread under the cursor. */
   editCommentAtCursor(): void;
@@ -530,6 +546,8 @@ export interface ReviewState {
     col?: number;
     align?: 'start' | 'center' | 'nearest' | 'eye' | 'top' | 'bottom' | 'keep';
     offset?: number;
+    /** Land a hunk in an unmounted file after the viewer has measured that file's rows. */
+    prepareFile?: true;
     /** Leave the viewport alone while that part of this item is on screen: its search form whole, or its top edge. */
     unlessVisible?: 'search' | 'top';
     nonce: number;
@@ -583,7 +601,7 @@ export interface ReviewState {
   closeFullFile(): void;
   setSelection(sel: CodeViewLineSelection | null): void;
   /** Compose a comment on the selected lines. */
-  openDraft(sel: CodeViewLineSelection): Promise<void>;
+  openDraft(sel: CodeViewLineSelection, hunk?: Draft['hunk']): Promise<void>;
   /** Compose a comment on `path` as a whole; the composer sits above the file's first line. */
   openFileDraft(path: string): void;
   closeDraft(): void;
@@ -599,7 +617,7 @@ export interface ReviewState {
   deleteStaleThreads(): Promise<void>;
   /** Adds threads to the active PR's pending review; the human submits it on GitHub. A toast appears only when threads are skipped or the post fails. */
   /** Post open threads (or the given ones) to the PR; resolves to what happened, or null when the post failed. */
-  exportToGithub(threadIds?: string[]): Promise<ExportOutcome | null>;
+  exportToGithub(threadIds?: string[], snapshotVersion?: number): Promise<ExportOutcome | null>;
   /** Mark a file viewed (collapsing it) or not viewed (expanding it). The cursor and viewport stay put. */
   setViewed(path: string, viewed: boolean): Promise<void>;
   /** Mark the named changed files viewed (collapsing them) or not viewed (expanding them); explicit marks override auto-viewed globs. */
@@ -633,6 +651,9 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
   const owner = identity?.composerOwner ?? standaloneComposerOwner();
   let unsentKey = identity ? `diffle:unsent:v2:${JSON.stringify([identity.repository, identity.composerOwner])}` : null;
   const store = create<ReviewState>((rawSet, get) => {
+    let hunkSearch = 0;
+    const hunkStorageKey = (snapshot: Snapshot) =>
+      `diffle:hunk-progress:${JSON.stringify([snapshot.root, snapshot.commentKey])}`;
     const set: typeof rawSet = (update, replace?) => {
       const value = typeof update === 'function' ? update(get()) : update;
       if (value === get()) return;
@@ -1322,7 +1343,7 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
             loaded[f.path] = placeholder;
             if (stale) replaced.push(f.path);
           } else {
-            if (stale) loaded[f.path] = { ...stale };
+            if (stale) loaded[f.path] = stale.kind === 'diff' ? { ...stale, refreshing: true } : { ...stale };
             pending?.add(f.path);
           }
           delete contents[f.path];
@@ -1360,12 +1381,30 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
         }
       }
       // A watcher refresh must not take the comment being typed with it; only a new mode or a vanished file does.
-      const draft = get().draft;
-      const keepDraft = draft != null && !modeChanged && (nextChanged.has(draft.path) || fileView?.path === draft.path);
+      let draft = get().draft;
+      const keepDraft =
+        draft != null &&
+        (draft.hunk
+          ? draft.hunk.review === next.commentKey
+          : !modeChanged && (nextChanged.has(draft.path) || fileView?.path === draft.path));
+      if (draft?.hunk && !draft.staleHunk) {
+        const file = nextChanged.get(draft.path);
+        if (!file || draft.hunk.review !== next.commentKey || draft.hunk.version !== hunkVersion(next, file))
+          draft = { ...draft, staleHunk: true };
+      }
       patchWindow = pending && { generation: g, pending, next: null, running: null };
       resyncing = false;
+      let hunkProgress = get().hunkProgress;
+      if (!identity && (prev == null || prev.commentKey !== next.commentKey)) {
+        try {
+          hunkProgress = hunkProgressSchema.parse(JSON.parse(localStorage.getItem(hunkStorageKey(next)) ?? '[]'));
+        } catch {
+          hunkProgress = [];
+        }
+      }
       set((s) => ({
         snapshot: next,
+        hunkProgress,
         loaded,
         // Painted positions name the previous text; the next focus or hover asks afresh.
         occurrences: null,
@@ -2750,6 +2789,118 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
         const next = stepHunk(items, currentNavCursor(), delta);
         if (next && (next.rowIndex !== -1 || items[next.itemIndex]?.pending)) placeNavCursor(next, false, 'eye');
       },
+      hunkProgress: [],
+      toggleHunkReviewed(path, index) {
+        const { snapshot, loaded, hunkProgress } = get();
+        const file = changedFile(snapshot, path);
+        const patch = loaded[path];
+        if (!snapshot || !file || patch?.kind !== 'diff' || patch.refreshing || !patch.fileDiff.hunks[index]) return;
+        const total = patch.fileDiff.hunks.length;
+        const current = hunkMark(hunkProgress, snapshot, file);
+        const reviewed = current?.total === total ? current.reviewed : [];
+        const marks = markHunk(hunkProgress, {
+          path,
+          review: snapshot.commentKey,
+          version: hunkVersion(snapshot, file),
+          total,
+          reviewed: reviewed.includes(index) ? reviewed.filter((i) => i !== index) : [...reviewed, index],
+        });
+        if (!marks) return get().flash(uiText('Hunk review progress storage is full'));
+        set({ hunkProgress: marks });
+        if (!identity) {
+          try {
+            localStorage.setItem(hunkStorageKey(snapshot), JSON.stringify(marks));
+          } catch {
+            get().flash(uiText('Hunk review progress could not be saved'));
+          }
+        }
+      },
+      goToHunk(path, index, comment = false) {
+        const state = get();
+        const { snapshot } = state;
+        const file = changedFile(snapshot, path);
+        const patch = state.loaded[path];
+        if (!snapshot || !file || state.fileView || patch?.kind !== 'diff' || patch.refreshing) return;
+        const hunk = patch.fileDiff.hunks[index];
+        const range = hunk && hunkRange(hunk);
+        if (!range) return;
+        const { side, startLine, endLine } = range;
+        const column = side === 'old' ? 'deletions' : 'additions';
+        recordJump();
+        ensureExpanded(path);
+        const id = itemIdOf(get(), path);
+        const line = comment ? endLine : startLine;
+        const selection: CodeViewLineSelection = {
+          id,
+          range: { start: startLine, end: line, side: column, endSide: column },
+        };
+        set((s) => ({
+          activePath: path,
+          scrollTarget: { id, line, side, align: 'eye', prepareFile: true, nonce: (s.scrollTarget?.nonce ?? 0) + 1 },
+        }));
+        if (comment)
+          void state.openDraft(selection, {
+            ...range,
+            version: hunkVersion(snapshot, file),
+            review: snapshot.commentKey,
+          });
+        else state.setSelection(selection);
+      },
+      async nextUnreviewedHunk() {
+        const origin = get();
+        const snap = origin.snapshot;
+        if (!snap || origin.fileView) return;
+        const request = ++hunkSearch;
+        const paths = orderedPaths(snap);
+        const first = paths.indexOf(origin.activePath ?? '');
+        const path = paths[first];
+        const patch = path ? origin.loaded[path] : undefined;
+        const index =
+          patch?.kind === 'diff' &&
+          !patch.refreshing &&
+          origin.selection &&
+          pathFromItemId(origin.selection.id) === path
+            ? hunkIndexAt(patch.fileDiff, origin.selection)
+            : -1;
+        const visits = first < 0 ? paths : [...paths.slice(first), ...paths.slice(0, first + Number(index >= 0))];
+        let skipped = false;
+        for (let visit = 0; visit < visits.length; visit++) {
+          const path = visits[visit]!;
+          const file = changedFile(snap, path);
+          if (!file || file.binary) continue;
+          const known = hunkMark(get().hunkProgress, snap, file);
+          if (known && known.reviewed.length === known.total) continue;
+          const pending = demandPatch(path);
+          if (pending) await pending;
+          const state = get();
+          if (
+            request !== hunkSearch ||
+            state.snapshot !== snap ||
+            state.fileView ||
+            state.activePath !== origin.activePath ||
+            state.selection !== origin.selection ||
+            state.scrollTarget?.nonce !== origin.scrollTarget?.nonce
+          )
+            return;
+          const loaded = state.loaded[path];
+          if (loaded?.kind !== 'diff' || loaded.refreshing) {
+            skipped = true;
+            continue;
+          }
+          const reviewed = new Set(known?.total === loaded.fileDiff.hunks.length ? known.reviewed : []);
+          const start = path === origin.activePath && visit === 0 ? index + 1 : 0;
+          const end = path === origin.activePath && visit > 0 ? index + 1 : loaded.fileDiff.hunks.length;
+          for (let i = start; i < end; i++) {
+            if (!reviewed.has(i)) {
+              state.goToHunk(path, i);
+              return;
+            }
+          }
+        }
+        get().flash(
+          skipped ? uiText('Load the remaining diffs to check for unreviewed hunks') : uiText('All hunks reviewed'),
+        );
+      },
       toggleVisual() {
         const cur = currentCursor();
         if (get().visualAnchor) {
@@ -3178,16 +3329,16 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
       setSelection(sel) {
         set({ selection: sel, visualAnchor: null, focusedThread: null });
         // A line draft goes with its selection; a file draft has none to lose.
-        if (sel == null && get().draft?.selection) set({ draft: null });
+        if (sel == null && get().draft?.selection && !get().draft?.staleHunk) set({ draft: null });
       },
 
-      async openDraft(sel) {
+      async openDraft(sel, hunk) {
         const off = get().snapshot && commentsOff(get().snapshot!.review);
         if (off) return get().flash(off);
         if (get().fileView?.external) return get().flash('Comments go on repository files only');
         const path = pathFromItemId(sel.id);
         set({
-          draft: { path, selection: sel },
+          draft: { path, selection: sel, ...(hunk && { hunk }) },
           selection: sel,
           activePath: path,
           replyTo: null,
@@ -3234,8 +3385,9 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
 
       // The composer stays open with its text when a post fails; the toast says why.
       async submitDraft(body) {
-        const d = get().draft;
+        const { draft: d, snapshot } = get();
         if (!d || !body.trim()) return;
+        if (d.staleHunk) return get().flash(uiText('The hunk changed. Choose a new anchor for this draft.'));
         const key = composerKey(get(), { kind: 'draft' });
         if (!d.selection) {
           try {
@@ -3249,8 +3401,10 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
           return;
         }
         try {
-          const range = selectionRange(get(), d.path, d.selection);
+          const range = d.hunk ?? selectionRange(get(), d.path, d.selection);
           const contents = await ensureContents(d.path, range.side);
+          if (d.hunk && get().snapshot !== snapshot)
+            return get().flash(uiText('The comparison changed. Review the draft position again.'));
           const { path, side, startLine, endLine, quoted } = anchorFromRange(d.path, range, contents);
           await api.addThread({ path, side, startLine, endLine, quoted, body });
         } catch (e) {
@@ -3306,12 +3460,12 @@ export function createReviewStore(api: ReviewApi = defaultApi, identity?: StoreI
       clearThreads: () => mutateThreads('Deleting all threads', () => api.clearThreads()),
       deleteStaleThreads: () => mutateThreads('Deleting stale threads', () => api.deleteStaleThreads()),
 
-      async exportToGithub(threadIds) {
+      async exportToGithub(threadIds, snapshotVersion) {
         const snap = get().snapshot;
-        if (!snap) return null;
+        if (!snap || (snapshotVersion != null && snap.version !== snapshotVersion)) return null;
         let res;
         try {
-          res = await api.exportToGithub({ threadIds });
+          res = await api.exportToGithub({ threadIds, snapshotVersion: snap.version });
         } catch (e) {
           report('Adding to the GitHub review', e);
           return null;

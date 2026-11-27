@@ -346,7 +346,7 @@ export function selectionRange(
  */
 export function draftRange(state: Pick<ReviewState, 'draft' | 'loaded'>): ResolvedRange | null {
   const d = state.draft;
-  return d?.selection ? selectionRange(state, d.path, d.selection) : null;
+  return d?.hunk ?? (d?.selection ? selectionRange(state, d.path, d.selection) : null);
 }
 
 /** A comment editor whose unsent text the store keeps: the open draft, a reply, or an edit. */

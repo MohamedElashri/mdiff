@@ -122,6 +122,7 @@ export function subscribeWorkspace(id: string, changed: () => void) {
   const stop = scope.store.subscribe((s, p) => {
     if (
       s.unsent !== p.unsent ||
+      s.hunkProgress !== p.hunkProgress ||
       s.activePath !== p.activePath ||
       s.selection !== p.selection ||
       s.draft !== p.draft ||
