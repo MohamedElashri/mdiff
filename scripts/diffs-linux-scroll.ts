@@ -9,6 +9,8 @@ const scrollHandler = [
   "\t\tthis.render();",
   "\t};",
 ].join("\n");
+const overscrollSetting = "\t\t\toverscrollSize: this.config.overscrollSize";
+const linuxDesktop = String.raw`globalThis.isTauri && /^Linux\b/.test(globalThis.navigator?.platform)`;
 
 /**
  * CodeView 1.6.1 already patches overlapping rows in place. On Linux WebKit,
@@ -21,15 +23,26 @@ export function bufferLinuxDiffScroll(code: string): string {
     throw new Error(
       "Diffs CodeView scroll handler changed; review the Linux scroll buffer.",
     );
+  if (code.split(overscrollSetting).length !== 2)
+    throw new Error(
+      "Diffs CodeView scroll window changed; review the Linux scroll buffer.",
+    );
 
-  return code.replace(
-    scrollHandler,
-    scrollHandler.replace(
-      "\t\tthis.render();",
-      `\t\tif (!globalThis.isTauri || !/^Linux\\b/.test(globalThis.navigator?.platform) ||
+  return code
+    .replace(
+      overscrollSetting,
+      `\t\t\toverscrollSize: ${linuxDesktop}
+\t\t\t\t? this.getLinuxScrollOverscroll(targetScrollTop - this.header.height, viewportHeight)
+\t\t\t\t: this.config.overscrollSize`,
+    )
+    .replace(
+      scrollHandler,
+      scrollHandler.replace(
+        "\t\tthis.render();",
+        `\t\tif (!(${linuxDesktop}) ||
 \t\t    !this.canReuseLinuxScrollRows()) this.render();`,
-    ) +
-      `
+      ) +
+        `
 \tcanReuseLinuxScrollRows() {
 \t\tconst { firstIndex, lastIndex, stickyTop, stickyBottom } = this.renderState;
 \t\t// Use the reconciled bounds of a single, contiguous mounted file.
@@ -44,8 +57,20 @@ export function bufferLinuxDiffScroll(code: string): string {
 \t\tconst margin = 72;
 \t\treturn (stickyTop === 0 || top >= stickyTop + margin) &&
 \t\t       (stickyBottom >= this.getScrollHeight() || bottom <= stickyBottom - margin);
+\t}
+\tgetLinuxScrollOverscroll(scrollTop, viewportHeight) {
+\t\t// A larger window reduces remounts inside long diffs. Keep the usual
+\t\t// buffer near file boundaries to avoid mounting additional files.
+\t\tconst { firstIndex, lastIndex } = this.renderState;
+\t\tif (firstIndex !== lastIndex) return this.config.overscrollSize;
+\t\tconst item = this.items[firstIndex];
+\t\tconst top = Math.max(0, scrollTop);
+\t\tconst overscroll = 520;
+\t\treturn item != null && (item.top === 0 || top >= item.top + overscroll) &&
+\t\t       top + viewportHeight + overscroll <= item.top + item.height
+\t\t       ? overscroll : this.config.overscrollSize;
 \t}`,
-  );
+    );
 }
 
 export function diffsLinuxScroll(): Plugin {
