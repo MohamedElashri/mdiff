@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-27
+
+### Added
+
+- Mark individual hunks reviewed, track progress in the file tree, and jump to the next unreviewed hunk.
+- Comment on a hunk and preview the exact GitHub or GitLab line range before transferring drafts.
+
+### Changed
+
+- Load the update notes renderer when you open the notes.
+
+### Fixed
+
+- Reduce scrolling stalls in long, wrapped diffs on Linux.
+- Keep inline comments local when their original lines can no longer be matched.
+
 ## [0.3.3] - 2026-11-23
 
 ### Changed
